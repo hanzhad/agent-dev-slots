@@ -46,11 +46,12 @@ doctor_state() {
 }
 
 # A port a slot would be given that something else already holds. A slot's own
-# ports are busy by design, so a slot with a recorded port file is skipped.
+# ports are busy by design, so a slot number that any project has a port file
+# for is skipped.
 doctor_ports() {
   local number index name port busy=""
   for (( number = 1; number <= SLOT_INDEX_CEILING; number++ )); do
-    [[ ! -f "$STATE/ports/$SLOT_PROJECT_PREFIX-slot-$number.ports" ]] || continue
+    ! compgen -G "$STATE/ports/*-slot-$number.ports" >/dev/null || continue
     index=0
     for name in $SLOT_PORT_NAMES; do
       port=$(( SLOT_PORT_BASE + number * SLOT_PORT_BLOCK + index ))

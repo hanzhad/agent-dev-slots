@@ -1,0 +1,25 @@
+# dev-container-engine template: docker-compose.yml version: 1
+# Seeded once by `adopt`: this file is the project's now and is never rewritten.
+# Requirements for dev-container-engine:
+# 1. Compose service is named app and mounts the checkout at /workspace.
+# 2. Container image includes unprivileged user node (uid 1000).
+# 3. Agent git identity (GIT_USER_NAME, GIT_USER_EMAIL) is set in <compose dir>/.env, or SLOT_GIT_NAME and SLOT_GIT_EMAIL in project.env.
+# 4. Host ports come from SLOT_PORTS in project.env, written as ${NAME}, never a number.
+# 5. No secret is written here: pass it by name or ${NAME} and keep the value in the credential file.
+services:
+  app:
+    build:
+      context: .
+      dockerfile: engine.Dockerfile
+    init: true
+    user: root
+    entrypoint: ["/usr/local/bin/entrypoint.sh"]
+    working_dir: /workspace
+    volumes:
+      - ${WORKSPACE_DIR:-..}:/workspace
+      - ssh-host-keys:/etc/ssh/keys
+    ports:
+      - "127.0.0.1:${SSH_PORT:-2222}:22"
+
+volumes:
+  ssh-host-keys:

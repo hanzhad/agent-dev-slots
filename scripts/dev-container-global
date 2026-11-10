@@ -1,0 +1,128 @@
+#!/bin/sh
+# The one `dev-container` command. Put it on PATH (scripts/install-cli.sh) and run
+# it from anywhere inside a connected project: it checks that the directory is in
+# a project (a project.env here or in a parent) and forwards the call to the
+# engine exactly as scripts/dev-container-thin does. A project carries no launcher.
+# Needs docker and sh, nothing else; runs on Linux, macOS and inside WSL.
+#
+# On Windows the shim (scripts/install-cli.ps1) runs this inside WSL and hands over
+# the Windows directory in DEV_CONTAINER_WINDOWS_CWD; it is mapped with wslpath
+# when it is inside a project, and the working directory is used otherwise.
+set -eu
+
+unset DEV_CONTAINER_CLI_STATE DEV_CONTAINER_CLI_CLONE DEV_CONTAINER_CLI_FOUND
+
+# The absolute path of a file with every symlink followed, using only what BSD
+# readlink on macOS also has.
+real_file() {
+  rf_path=$1
+  rf_hops=0
+  while [ -L "$rf_path" ] && [ "$rf_hops" -lt 40 ]; do
+    rf_link=$(readlink "$rf_path")
+    case $rf_link in
+      /*) rf_path=$rf_link ;;
+      *) rf_path=$(dirname "$rf_path")/$rf_link ;;
+    esac
+    rf_hops=$((rf_hops + 1))
+  done
+  rf_dir=$(cd "$(dirname "$rf_path")" && pwd -P) || return 1
+  printf '%s/%s\n' "$rf_dir" "$(basename "$rf_path")"
+}
+
+# The nearest directory, from $1 upwards, that holds a project.env.
+project_root() {
+  pr_dir=$1
+  while :; do
+    if [ -f "$pr_dir/project.env" ]; then
+      printf '%s\n' "$pr_dir"
+      return 0
+    fi
+    [ "$pr_dir" != / ] || return 1
+    pr_dir=$(dirname "$pr_dir")
+  done
+}
+
+# Verbs that act on the project the caller is in. The others name no project (adopt
+# connects one, acquire connects it when it must, status and doctor report), and
+# an unknown verb is left for the engine to refuse with its usage.
+needs_project() {
+  case ${1:-} in
+    release | park | list | resume | evict | up | down | restart | run | put | install | db-target) return 0 ;;
+    reap) [ "${2:-}" != --all ] ;;
+    *) return 1 ;;
+  esac
+}
+
+wants_help() {
+  for wh_arg in "$@"; do
+    [ "$wh_arg" != -- ] || return 1
+    [ "$wh_arg" != --help ] || return 0
+  done
+  return 1
+}
+
+case $0 in
+  */*) self=$0 ;;
+  *) self=$(command -v -- "$0") ;;
+esac
+self=$(real_file "$self") || { echo "dev-container: cannot find where $0 is" >&2; exit 1; }
+clone=$(cd "$(dirname "$self")/.." && pwd -P)
+thin=$clone/scripts/dev-container-thin
+[ -f "$thin" ] || {
+  echo "dev-container: $clone/scripts/dev-container-thin is missing — this command is a link into an engine clone that is gone or incomplete. Install it again from a clone: scripts/install-cli.sh" >&2
+  exit 1
+}
+
+win=${DEV_CONTAINER_WINDOWS_CWD:-}
+if [ -n "$win" ] && command -v wslpath >/dev/null 2>&1; then
+  mapped=$(wslpath -u "$win" 2>/dev/null) || mapped=
+  if [ -n "$mapped" ] && [ -d "$mapped" ]; then
+    mapped=$(cd "$mapped" && pwd -P)
+    if project_root "$mapped" >/dev/null; then
+      cd "$mapped"
+    fi
+  fi
+fi
+
+here=$(pwd -P)
+if needs_project "$@" && ! wants_help "$@" && ! project_root "$here" >/dev/null; then
+  {
+    echo "dev-container: no project.env in $here or in any directory above it, so this is not a connected project."
+    if [ -n "$win" ]; then printf '  (the Windows directory %s is not inside one either)' "$win"; echo; fi
+    echo "  Connect a checkout with: dev-container adopt <dir>"
+  } >&2
+  exit 1
+fi
+
+# doctor reports these; adopt and acquire (which connects a checkout on its own) use them
+# to say how to install the command when it is not on PATH.
+case ${1:-} in
+  doctor | adopt | acquire) cli_facts=1 ;;
+  *) cli_facts=0 ;;
+esac
+if [ "$cli_facts" = 1 ]; then
+  found=
+  if [ -n "$win" ]; then
+    state=windows-shim
+  else
+    found=$(command -v dev-container 2>/dev/null) || found=
+    if [ -z "$found" ]; then
+      state=off-path
+    elif [ "$(real_file "$found" 2>/dev/null || true)" = "$self" ]; then
+      state=path
+    else
+      state=shadowed
+    fi
+  fi
+  DEV_CONTAINER_CLI_STATE=$state
+  DEV_CONTAINER_CLI_CLONE=$clone
+  export DEV_CONTAINER_CLI_STATE DEV_CONTAINER_CLI_CLONE
+  if [ -n "$found" ]; then
+    DEV_CONTAINER_CLI_FOUND=$found
+    export DEV_CONTAINER_CLI_FOUND
+  fi
+fi
+
+DEV_CONTAINER_CALLER=dev-container
+export DEV_CONTAINER_CALLER
+exec sh "$thin" "$@"

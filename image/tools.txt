@@ -1,0 +1,15 @@
+# The only packages in the engine image, one per line. The image build installs
+# exactly these; a test compares them with what the image reports as installed.
+bash                # the engine is bash
+coreutils           # realpath -m, stat, sleep
+git                 # clones, branch proofs, merge-tree --write-tree
+jq                  # leases and state are JSON
+docker-cli          # the client; the daemon is the host's, through the mounted socket
+docker-cli-compose  # docker compose, for the slot stacks
+openssh-keygen      # lease keys
+openssl             # signing for the project's own key files
+curl                # HTTP calls the engine makes
+tar                 # moving files into and out of slots
+tini                # the entrypoint: reaps children, forwards signals
+github-cli          # gh, for pull requests and merged-branch proofs
+perl                # flock for projects whose install scripts call it through perl

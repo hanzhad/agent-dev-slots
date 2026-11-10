@@ -1,0 +1,7 @@
+services:
+  app:
+    image: second-app:local
+    working_dir: /workspace
+    ports:
+      - "127.0.0.1:${SSH_PORT}:22"
+      - "127.0.0.1:${WEB_PORT}:8080"

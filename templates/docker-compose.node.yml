@@ -1,0 +1,24 @@
+# dev-container-engine template: docker-compose.yml version: 1
+# Seeded once by `adopt`: this file is the project's now and is never rewritten.
+services:
+  app:
+    build:
+      context: .
+      dockerfile: engine.Dockerfile
+    init: true
+    user: root
+    entrypoint: ["/usr/local/bin/entrypoint.sh"]
+    working_dir: /workspace
+    volumes:
+      - ${WORKSPACE_DIR:-..}:/workspace:cached
+      - node_modules:/workspace/node_modules
+      - ssh-host-keys:/etc/ssh/keys
+    ports:
+      - "127.0.0.1:${SSH_PORT:-2222}:22"
+
+volumes:
+  ssh-host-keys:
+  node_modules:
+    name: ${COMPOSE_PROJECT_NAME}_node_modules
+    labels:
+      dev.slot.volume: "true"

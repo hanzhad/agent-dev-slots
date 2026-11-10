@@ -1,0 +1,111 @@
+#!/bin/sh
+# Starts and removes the container the engine runs in. Needs docker and sh, nothing else.
+#
+#   scripts/engine install [--projects-root DIR]   build the image, start the container
+#   scripts/engine uninstall                       remove the container; state and images stay
+#
+# The container sees three directories at the same absolute path as on the host
+# (state, the projects root, machine-limits read-only), plus the docker socket.
+# That socket is root on this machine; nothing else is added.
+set -eu
+
+name=${DEV_CONTAINER_ENGINE_NAME:-dev-container}
+image=${DEV_CONTAINER_ENGINE_IMAGE:-dev-container-engine:local}
+socket=/var/run/docker.sock
+
+die() {
+  echo "engine: $*" >&2
+  exit 1
+}
+
+usage() {
+  echo "Usage: $0 install [--projects-root DIR] | uninstall" >&2
+  exit 1
+}
+
+absolute_dir() {
+  (cd -P "$1" 2>/dev/null && pwd -P)
+}
+
+install_engine() {
+  root=${DEV_CONTAINER_PROJECTS_ROOT:-}
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --projects-root)
+        [ $# -ge 2 ] || die "--projects-root needs a directory"
+        root=$2
+        shift 2 ;;
+      --projects-root=*)
+        root=${1#--projects-root=}
+        shift ;;
+      *) usage ;;
+    esac
+  done
+  [ -n "$root" ] || die "install needs --projects-root DIR: the one directory that holds your checkouts, the only place the engine can see."
+  [ -d "$root" ] || die "the projects-root '$root' is not a directory."
+  root=$(absolute_dir "$root")
+
+  [ -n "${HOME:-}" ] && [ "${HOME#/}" != "$HOME" ] || die "HOME must be an absolute path."
+  state=${DEV_CONTAINER_HOME:-$HOME/.dev-containers}
+  mkdir -p "$state"
+  state=$(absolute_dir "$state")
+  uid=$(id -u)
+  gid=$(id -g)
+  user=$(id -un)
+
+  here=$(absolute_dir "$(dirname "$0")/..")
+  docker build -t "$image" -f "$here/image/Dockerfile" "$here"
+
+  # The socket's group as the daemon's side sees it, which is not always the host's.
+  socket_gid=$(docker run --rm --entrypoint stat -v "$socket:$socket" "$image" -c %g "$socket")
+  case $socket_gid in
+    ''|*[!0-9]*) die "could not read the group of $socket (got '$socket_gid')." ;;
+  esac
+
+  # ssh-keygen refuses to run as a uid with no passwd entry.
+  passwd=$state/passwd
+  {
+    [ "$uid" = 0 ] || echo "root:x:0:0:root:/root:/bin/sh"
+    echo "$user:x:$uid:$gid:$user:$HOME:/bin/sh"
+  } > "$passwd"
+
+  limits=$HOME/.config/machine-limits
+  limits_mount=
+  [ -d "$limits" ] && limits_mount=$limits
+
+  # A reinstall replaces the container; everything it keeps is in state.
+  docker rm -f "$name" >/dev/null 2>&1 || true
+
+  set -- run -d --name "$name" --restart unless-stopped \
+    --user "$uid:$gid" --group-add "$socket_gid" \
+    -e "HOME=$HOME" -e "DEV_CONTAINER_HOME=$state" -e "DEV_CONTAINER_PROJECTS_ROOT=$root" \
+    --tmpfs "$HOME:uid=$uid,gid=$gid,mode=0700,size=64m" \
+    --tmpfs "/run/dev-container:uid=$uid,gid=$gid,mode=0700,noexec,nosuid,nodev,size=16m" \
+    -v "$state:$state" -v "$root:$root" \
+    -v "$socket:$socket" -v "$passwd:/etc/passwd:ro"
+  if [ -n "$limits_mount" ]; then
+    set -- "$@" -v "$limits_mount:$limits_mount:ro"
+  fi
+  for var in DEV_CONTAINER_SCHEDULE_FAST DEV_CONTAINER_SCHEDULE_SLOW DEV_CONTAINER_SCHEDULE_TICK; do
+    eval "val=\${$var:-}"
+    [ -z "$val" ] || set -- "$@" -e "$var=$val"
+  done
+  docker "$@" "$image" >/dev/null
+  echo "engine: '$name' is running (image $image); projects root $root, state $state."
+}
+
+uninstall_engine() {
+  [ $# -eq 0 ] || usage
+  docker rm -f "$name" >/dev/null
+  echo "engine: '$name' is removed. State, volumes and images are untouched."
+}
+
+command -v docker >/dev/null 2>&1 || die "docker is not on PATH."
+[ $# -ge 1 ] || usage
+verb=$1
+shift
+case $verb in
+  install) install_engine "$@" ;;
+  uninstall) uninstall_engine "$@" ;;
+  *) usage ;;
+esac

@@ -1,0 +1,299 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0
+
+command -v jq >/dev/null || {
+  echo "jq is not on PATH — leases, and the state this script keeps about them, are read and written as JSON." >&2
+  exit 1
+}
+
+engine_src=${BASH_SOURCE[0]}
+while [[ -L "$engine_src" ]]; do
+  engine_dir=$(CDPATH= cd -P "$(dirname "$engine_src")" && pwd)
+  engine_src=$(readlink "$engine_src")
+  [[ "$engine_src" == /* ]] || engine_src="$engine_dir/$engine_src"
+done
+lib_dir=$(CDPATH= cd -P "$(dirname "$engine_src")" && pwd)/../lib
+[[ -f "$lib_dir/commands.sh" && -f "$lib_dir/project-env.sh" ]] || {
+  echo "dev-container: bin/ and lib/ must stay together — there is no engine in $lib_dir" >&2
+  exit 1
+}
+
+# The name the caller typed: the thin passes its own, so usage and next steps
+# name a command that exists on the caller's machine, not this script's path.
+CALLER=${DEV_CONTAINER_CALLER:-$0}
+
+# shellcheck source=../lib/common.sh
+source "$lib_dir/common.sh"
+# shellcheck source=../lib/project-env.sh
+source "$lib_dir/project-env.sh"
+# shellcheck source=../lib/engine-paths.sh
+source "$lib_dir/engine-paths.sh"
+# shellcheck source=../lib/preflight.sh
+source "$lib_dir/preflight.sh"
+# shellcheck source=../lib/leases.sh
+source "$lib_dir/leases.sh"
+# shellcheck source=../lib/activity.sh
+source "$lib_dir/activity.sh"
+# shellcheck source=../lib/schedule.sh
+source "$lib_dir/schedule.sh"
+# shellcheck source=../lib/adopt.sh
+source "$lib_dir/adopt.sh"
+# shellcheck source=../lib/adopt-docs.sh
+source "$lib_dir/adopt-docs.sh"
+# shellcheck source=../lib/seed.sh
+source "$lib_dir/seed.sh"
+# shellcheck source=../lib/contract.sh
+source "$lib_dir/contract.sh"
+# shellcheck source=../lib/adopt-launcher.sh
+source "$lib_dir/adopt-launcher.sh"
+# shellcheck source=../lib/status.sh
+source "$lib_dir/status.sh"
+# shellcheck source=../lib/migrate-names.sh
+source "$lib_dir/migrate-names.sh"
+
+if [[ "${1:-}" == project ]]; then
+  [[ $# -eq 2 ]] || die "Usage: $CALLER project <dir>"
+  read_project_env "$2"
+  check_project_env "$2/project.env" "$PE_DEFAULT_BRANCH" "$PE_SLOT_PORTS" "${PE_SLOT_MOUNT_DIRS:-}" "${PE_SLOT_OVERLAYS:-}" "${PE_SLOT_ENV_KEYS:-}" "${PE_SLOT_MEMORY_LIMIT:-}"
+  for key in $PROJECT_ENV_KEYS; do
+    var="PE_$key"
+    [[ -z "${!var+x}" ]] || printf '%s=%s\n' "$key" "${!var}"
+  done
+  exit 0
+fi
+
+SLOT_PORT_BASE=${DEV_CONTAINER_PORT_BASE:-42000}
+if [[ ! "$SLOT_PORT_BASE" =~ ^[1-9][0-9]{0,4}$ ]] || (( SLOT_PORT_BASE > 65200 )); then
+  die "DEV_CONTAINER_PORT_BASE must be a positive integer, at most 65200 — got: $SLOT_PORT_BASE"
+fi
+SLOT_PORT_NAMES="SSH_PORT NOVNC_PORT VITE_DEV_PORT"
+
+SIGNING_KEY_VOLUME=${SIGNING_KEY_VOLUME:-demo-container-ssh}
+SHARED_CACHE_VOLUME=${SHARED_CACHE_VOLUME:-demo-shared-cache}
+
+PNPM_STORE_VOLUME=${PNPM_STORE_VOLUME:-}
+
+SLOT_PROJECT_PREFIX=${SLOT_PROJECT_PREFIX:-demo}
+
+SLOT_PROJECT_GLOB=${SLOT_PROJECT_GLOB:-*-slot-*}
+
+SLOT_INDEX_CEILING=20
+MACHINE_CAP=$SLOT_INDEX_CEILING
+MACHINE_CAP_WARNED=0
+
+DEFAULT_BRANCH=${DEFAULT_BRANCH:-master}
+
+BASE_PROCS=${BASE_PROCS:-"docker-init sleep sshd ps sh bash entrypoint.sh"}
+
+STATE=${DEV_CONTAINER_HOME:-$HOME/.dev-containers}
+state_error=""
+if [[ "${1:-}" != adopt && "${1:-}" != unlock && "${1:-}" != status ]]; then
+  mkdir -p "$STATE/leases" "$STATE/keys" "$STATE/rescue" "$STATE/seen" "$STATE/delivered" "$STATE/closed" "$STATE/parked" "$STATE/env" "$STATE/ports" "$STATE/activity" "$STATE/overlays" 2>/dev/null \
+    || state_error="cannot create the state directory $STATE"
+fi
+LOCK_DIR="$STATE/lock"
+
+[[ -z "$state_error" || "${1:-}" == doctor || "${1:-}" == adopt || "${1:-}" == unlock || "${1:-}" == status ]] || die "$state_error"
+[[ $# -ge 1 || "${DEV_CONTAINER_LIB:-}" == 1 ]] || usage
+if [[ "${DEV_CONTAINER_LIB:-}" == 1 ]]; then
+  verb=""
+else
+  verb=$1
+  shift
+fi
+
+for arg in "$@"; do
+  if [[ "$arg" == "--" ]]; then
+    break
+  fi
+  if [[ "$arg" == "--help" ]]; then
+    verb_help "$verb"
+    exit 0
+  fi
+done
+
+[[ "$verb" == adopt || "$verb" == doctor || "$verb" == unlock || "$verb" == status || "$verb" == migrate-names ]] || boot_check
+
+projects_root=${DEV_CONTAINER_PROJECTS_ROOT:-}
+outside_root() {
+  # $2 = strict: the path must be below the root, not the root itself (a checkout's
+  # slots directory is its parent's sibling, which must stay inside the root).
+  if [[ -n "$projects_root" && "$1/" == "${projects_root%/}/"* ]]; then
+    [[ "${2:-}" != strict || "$1" != "${projects_root%/}" ]] && return 0
+  fi
+  die "$(engine_cannot_see_message "$1")"
+}
+
+# Like `project`, these name no repository: each reaches the projects through the leases.
+if [[ "$verb" == schedule ]]; then
+  cmd_schedule "$@"
+elif [[ "$verb" == unlock ]]; then
+  cmd_unlock "$@"
+elif [[ "$verb" == check ]]; then
+  cmd_check "$@"
+elif [[ "$verb" == verdict ]]; then
+  cmd_verdict "$@"
+  exit 0
+elif [[ "$verb" == clean ]]; then
+  cmd_clean "$@"
+  exit 0
+elif [[ "$verb" == status ]]; then
+  cmd_status "$@"
+  exit 0
+elif [[ "$verb" == reap && "${1:-}" == --all ]]; then
+  shift
+  cmd_reap_all "$@"
+elif [[ "$verb" == clean && "${1:-}" == --all ]]; then
+  shift
+  cmd_clean_all "$@"
+elif [[ "$verb" == adopt ]]; then
+  cmd_adopt "$@"
+elif [[ "$verb" == migrate-names ]]; then
+  cmd_migrate_names "$@"
+fi
+
+self_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+# The checkout this acts on is the directory the caller was in, seen at the same
+# path here, and it must sit under the one projects root the engine was installed with.
+caller_pwd=${DEV_CONTAINER_CALLER_PWD:-}
+[[ -n "$caller_pwd" ]] || die "dev-container was not told which directory it was run from, and it never guesses one — run it through dev-container-thin, which passes it."
+# Before any git call: a directory the engine cannot see would only read as "not a checkout".
+outside_root "$caller_pwd"
+common_dir=$(git -C "$caller_pwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || die "$caller_pwd is not inside a git checkout — run 'git init' or create the repository first, then run $CALLER from a project checkout."
+repo_root=$(dirname "$common_dir")
+outside_root "$repo_root" strict
+DOCS_PIN_FILE=${DOCS_PIN_FILE:-.github/docs-pin}
+COMPOSE_DIR=${COMPOSE_DIR:-.devcontainer}
+COMPOSE_FILES=${COMPOSE_FILES:-docker-compose.yml}
+SECRETS_OVERLAY=${SECRETS_OVERLAY:-docker-compose.secrets.yml}
+SLOT_ENV_SET=${SLOT_ENV_SET:-}
+SLOT_ENV_KEYS=${SLOT_ENV_KEYS:-}
+SLOT_COPY_FILES=${SLOT_COPY_FILES:-}
+SLOT_MOUNT_DIRS=${SLOT_MOUNT_DIRS:-}
+SLOT_OVERLAYS=${SLOT_OVERLAYS:-}
+FORGE_AUTH=""
+FORGE_AUTH_FILE=""
+LIVE_ENV_FILE=""
+LIVE_SERVICE=""
+LIVE_GATEWAY=""
+SLOT_GIT_NAME=""
+SLOT_GIT_EMAIL=""
+AUTO_ADOPTED=0
+if [[ "$verb" == acquire && ! -f "$repo_root/project.env" ]]; then
+  adopt_auto_connect "$repo_root"
+fi
+export AUTO_ADOPTED
+
+if [[ -f "$repo_root/project.env" ]]; then
+  read_project_env "$repo_root"
+  apply_project_env
+  if [[ "$verb" == acquire ]]; then
+    # project.env without the compose file it names: the starter stack is
+    # written, as for a project with no project.env; anything else is named.
+    case "$(adopt_compose_plan "$repo_root" "$COMPOSE_DIR" "$COMPOSE_FILES")" in
+      ok)
+        preflight_reset
+        contract_problems "$repo_root" "$COMPOSE_DIR" "$COMPOSE_FILES" "$SLOT_PORT_NAMES" "${LIVE_SERVICE:-}"
+        (( ${#PF_WHAT[@]} == 0 )) || preflight_fail
+        ;;
+      starter) adopt_auto_connect "$repo_root" ;;
+      *)
+        preflight_reset
+        compose_problems "$repo_root" "$COMPOSE_DIR" "$COMPOSE_FILES"
+        preflight_fail
+        ;;
+    esac
+  fi
+fi
+project_label="$repo_root/project.env"
+[[ -f "$project_label" ]] || project_label="the environment"
+check_project_env "$project_label" "$DEFAULT_BRANCH" "$SLOT_PORT_NAMES" "$SLOT_MOUNT_DIRS" "$SLOT_OVERLAYS" "$SLOT_ENV_KEYS" "${PE_SLOT_MEMORY_LIMIT:-}"
+read -r PRIMARY_PORT _ <<<"$SLOT_PORT_NAMES"
+if origin_url=$(git -C "$repo_root" remote get-url origin 2>/dev/null); then
+  gh_repo=$(echo "$origin_url" | sed -E 's#^(https://|ssh://)?(git@)?github\.com[:/]##; s#\.git$##')
+else
+  origin_url="$repo_root"
+  gh_repo=""
+fi
+
+DOCS_REPO_URL=${DOCS_REPO_URL:-https://github.com/example/demo.docs.git}
+docs_gh_repo=$(echo "$DOCS_REPO_URL" | sed -E 's#^(https://|ssh://)?(git@)?github\.com[:/]##; s#\.git$##')
+slots_dir=$(dirname "$repo_root")/dev-containers
+
+if [[ "$(basename "$(dirname "$repo_root")")" == dev-containers ]]; then
+  die "repo_root ($repo_root) is itself a slot checkout — its own parent directory is a dev-containers directory. This script was run from inside a slot; run it from the owner's own checkout instead."
+fi
+
+# shellcheck source=../lib/leases.sh
+source "$lib_dir/leases.sh"
+# shellcheck source=../lib/activity.sh
+source "$lib_dir/activity.sh"
+# shellcheck source=../lib/memory.sh
+source "$lib_dir/memory.sh"
+# shellcheck source=../lib/ports.sh
+source "$lib_dir/ports.sh"
+# shellcheck source=../lib/compose.sh
+source "$lib_dir/compose.sh"
+# shellcheck source=../lib/facts.sh
+source "$lib_dir/facts.sh"
+# shellcheck source=../lib/git.sh
+source "$lib_dir/git.sh"
+# shellcheck source=../lib/docs.sh
+source "$lib_dir/docs.sh"
+# shellcheck source=../lib/delivery.sh
+source "$lib_dir/delivery.sh"
+# shellcheck source=../lib/agent-auth.sh
+source "$lib_dir/agent-auth.sh"
+# shellcheck source=../lib/forge-credential.sh
+source "$lib_dir/forge-credential.sh"
+# shellcheck source=../lib/overlay.sh
+source "$lib_dir/overlay.sh"
+# shellcheck source=../lib/signing.sh
+source "$lib_dir/signing.sh"
+# shellcheck source=../lib/provision.sh
+source "$lib_dir/provision.sh"
+# shellcheck source=../lib/images.sh
+source "$lib_dir/images.sh"
+# shellcheck source=../lib/slots.sh
+source "$lib_dir/slots.sh"
+# shellcheck source=../lib/teardown.sh
+source "$lib_dir/teardown.sh"
+# shellcheck source=../lib/reap.sh
+source "$lib_dir/reap.sh"
+# shellcheck source=../lib/doctor.sh
+source "$lib_dir/doctor.sh"
+# shellcheck source=../lib/commands.sh
+source "$lib_dir/commands.sh"
+# shellcheck source=../lib/archive.sh
+source "$lib_dir/archive.sh"
+# shellcheck source=../lib/resume.sh
+source "$lib_dir/resume.sh"
+
+trap '(( LOCK_HELD )) && lock_release; (( AGENT_TOKEN_LOCK_HELD )) && rm -f "$AGENT_TOKEN_LOCK"; (( LIVE_LOCK_HELD )) && live_gateway_cleanup; [[ -n "$RESERVED_LEASE" ]] && rm -f "$RESERVED_LEASE"' EXIT
+
+if [[ "${DEV_CONTAINER_LIB:-}" != 1 ]]; then
+case "$verb" in
+  acquire) cmd_acquire "$@" ;;
+  release) cmd_release "$@" ;;
+  park) cmd_park "$@" ;;
+  renew) cmd_renew "$@" ;;
+  list) cmd_list "$@" ;;
+  reap) cmd_reap "$@" ;;
+  evict) cmd_evict "$@" ;;
+  up) cmd_up "$@" ;;
+  down) cmd_down "$@" ;;
+  restart) cmd_restart "$@" ;;
+  run) cmd_run "$@" ;;
+  put) cmd_put "$@" ;;
+  db-target) cmd_db_target "$@" ;;
+  install) cmd_install "$@" ;;
+  doctor) cmd_doctor "$@" ;;
+  clean) cmd_clean "$@" ;;
+  verdict) cmd_verdict "$@" ;;
+  resume) cmd_resume "$@" ;;
+  *) usage ;;
+esac
+fi

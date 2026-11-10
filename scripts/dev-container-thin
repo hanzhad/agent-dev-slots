@@ -1,0 +1,118 @@
+#!/bin/sh
+# Runs the engine's dev-container, which lives in a container, with these arguments.
+# Needs docker and sh, nothing else. If the container is not running, says how to start it.
+set -eu
+
+name=${DEV_CONTAINER_ENGINE_NAME:-dev-container}
+
+# The command that runs this (scripts/dev-container-global) names itself, so usage
+# and next steps say `dev-container`, not this script's path.
+if [ -n "${DEV_CONTAINER_CALLER:-}" ]; then
+  caller=$DEV_CONTAINER_CALLER
+else
+  case $0 in
+    /*) caller=$0 ;;
+    */*) caller=$(cd "$(dirname "$0")" && pwd -P)/$(basename "$0") ;;
+    *) caller=$(command -v "$0" || echo "$0") ;;
+  esac
+fi
+
+status=$(docker inspect --format '{{.State.Status}}' "$name" 2>/dev/null) || status=missing
+
+if [ "${1:-}" = "status" ]; then
+  is_json=0
+  for arg in "$@"; do
+    if [ "$arg" = "--json" ]; then is_json=1; fi
+  done
+  case $status in
+    running) ;;
+    missing)
+      if [ "$is_json" = "1" ]; then
+        printf '{"version":1,"engine":"not installed","status":"not installed","slots":[],"cleaners":{},"archives":[]}\n'
+      else
+        echo "engine: not installed"
+      fi
+      exit 0 ;;
+    *)
+      if [ "$is_json" = "1" ]; then
+        printf '{"version":1,"engine":"not running","status":"not running","slots":[],"cleaners":{},"archives":[]}\n'
+      else
+        echo "engine: not running ($status)"
+      fi
+      exit 0 ;;
+  esac
+fi
+
+case $status in
+  running) ;;
+  missing)
+    echo "$caller: there is no engine container named '$name'. Install it once with:" >&2
+    echo "    scripts/engine install --projects-root <the directory that holds your checkouts>" >&2
+    exit 1 ;;
+  paused)
+    echo "$caller: the engine container '$name' is paused. Resume it with: docker unpause $name" >&2
+    exit 1 ;;
+  *)
+    echo "$caller: the engine container '$name' is $status. Start it with: docker start $name" >&2
+    exit 1 ;;
+esac
+
+tty=
+if [ -t 0 ]; then tty=-t; fi
+# What the global command found out for `doctor`, passed by name only when it set it.
+cli_env=
+if [ -n "${DEV_CONTAINER_CLI_STATE+set}" ]; then cli_env="$cli_env -e DEV_CONTAINER_CLI_STATE"; fi
+if [ -n "${DEV_CONTAINER_CLI_CLONE+set}" ]; then cli_env="$cli_env -e DEV_CONTAINER_CLI_CLONE"; fi
+if [ -n "${DEV_CONTAINER_CLI_FOUND+set}" ]; then cli_env="$cli_env -e DEV_CONTAINER_CLI_FOUND"; fi
+here=$(pwd -P)
+
+if [ "${1:-}" = "put" ]; then
+  if [ "${3:-}" = "--stdin" ]; then
+    if [ -n "${CLAUDE_CODE_HOST_SESSION_ID+set}" ]; then
+      exec docker exec -i -e "DEV_CONTAINER_CALLER_PWD=$here" -e "DEV_CONTAINER_CALLER=$caller" \
+        -e CLAUDE_CODE_HOST_SESSION_ID "$name" dev-container "$@"
+    fi
+    exec docker exec -i -e "DEV_CONTAINER_CALLER_PWD=$here" -e "DEV_CONTAINER_CALLER=$caller" \
+      "$name" dev-container "$@"
+  elif [ $# -eq 4 ]; then
+    slot="$2"
+    src="$3"
+    dst="$4"
+    if [ ! -e "$src" ]; then
+      echo "$caller put: no such file or directory on this host: $src" >&2
+      exit 1
+    fi
+    case "$dst" in
+      /*) echo "$caller put: <dst> is relative to the slot's workspace (/workspace), not absolute: $dst" >&2; exit 1 ;;
+      ..|../*|*/..|*/../*) echo "$caller put: <dst> must stay inside the slot's workspace: $dst" >&2; exit 1 ;;
+    esac
+    if [ -n "${CLAUDE_CODE_HOST_SESSION_ID+set}" ]; then
+      if [ -d "$src" ]; then
+        tar -C "$src" -cf - . | docker exec -i -e "DEV_CONTAINER_CALLER_PWD=$here" -e "DEV_CONTAINER_CALLER=$caller" \
+          -e CLAUDE_CODE_HOST_SESSION_ID "$name" dev-container put "$slot" --stdin-tar "$dst"
+      else
+        docker exec -i -e "DEV_CONTAINER_CALLER_PWD=$here" -e "DEV_CONTAINER_CALLER=$caller" \
+          -e CLAUDE_CODE_HOST_SESSION_ID "$name" dev-container put "$slot" --stdin "$dst" <"$src"
+      fi
+      exit $?
+    else
+      if [ -d "$src" ]; then
+        tar -C "$src" -cf - . | docker exec -i -e "DEV_CONTAINER_CALLER_PWD=$here" -e "DEV_CONTAINER_CALLER=$caller" \
+          "$name" dev-container put "$slot" --stdin-tar "$dst"
+      else
+        docker exec -i -e "DEV_CONTAINER_CALLER_PWD=$here" -e "DEV_CONTAINER_CALLER=$caller" \
+          "$name" dev-container put "$slot" --stdin "$dst" <"$src"
+      fi
+      exit $?
+    fi
+  fi
+fi
+
+if [ -n "${CLAUDE_CODE_HOST_SESSION_ID+set}" ]; then
+  # shellcheck disable=SC2086
+  exec docker exec -i $tty $cli_env -e "DEV_CONTAINER_CALLER_PWD=$here" -e "DEV_CONTAINER_CALLER=$caller" \
+    -e CLAUDE_CODE_HOST_SESSION_ID "$name" dev-container "$@"
+fi
+# shellcheck disable=SC2086
+exec docker exec -i $tty $cli_env -e "DEV_CONTAINER_CALLER_PWD=$here" -e "DEV_CONTAINER_CALLER=$caller" \
+  "$name" dev-container "$@"

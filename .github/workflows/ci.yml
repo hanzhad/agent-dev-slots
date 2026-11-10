@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: python3 -m unittest discover -s tests
+
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          # The synthetic merge commit of a pull request is not part of what lands.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Scan the tree and the history
+        env:
+          SCAN_DENY: ${{ secrets.SCAN_DENY }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -n "$SCAN_DENY" ]; then
+            printf '%s\n' "$SCAN_DENY" > "$RUNNER_TEMP/deny.txt"
+            export SCAN_DENY_FILE="$RUNNER_TEMP/deny.txt"
+          fi
+          python3 scripts/scan.py --tree .
+          # Only what this change adds; published history on main cannot be rewritten.
+          base="$BASE_SHA"
+          case "$base" in ""|0000000000000000000000000000000000000000) base="HEAD~1" ;; esac
+          python3 scripts/scan.py --history --range "$base..HEAD"
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Real docker tests
+        env:
+          DEV_CONTAINER_DOCKER_TESTS: "1"
+        run: python3 -m unittest discover -s tests/docker -v

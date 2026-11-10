@@ -1,0 +1,7 @@
+services:
+  app:
+    image: demo-workspace:local
+    working_dir: /workspace
+    volumes:
+      - ${WORKSPACE_DIR:-..}:/workspace
+      - ${SHARED_DIR:-../.local/shared}:/workspace/.local/shared:ro

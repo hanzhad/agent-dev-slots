@@ -109,6 +109,30 @@ forge_git() {
   )
 }
 
+# The docker arguments that give a container the same git credential forge_git
+# gives the host, in FORGE_CONTAINER_ENV. Only the name travels for the secret
+# (--env=FORGE_HOST_SECRET): docker reads the value from its own environment, so
+# it is in no argument, file, image or log. The caller exports FORGE_HOST_SECRET
+# for the docker call alone, in a subshell. Returns 2 when the project has a
+# credential it could not produce, else 0 (no FORGE_AUTH is not an error: the
+# container then runs unable to prompt, like forge_git).
+forge_container_env() {
+  local rc=0 n=2
+  forge_host_credential_load || rc=$?
+  FORGE_CONTAINER_ENV=(--env=GIT_TERMINAL_PROMPT=0 --env=GIT_ASKPASS=/bin/false)
+  FORGE_CONTAINER_ENV+=("--env=GIT_CONFIG_KEY_0=safe.directory" "--env=GIT_CONFIG_VALUE_0=*")
+  FORGE_CONTAINER_ENV+=("--env=GIT_CONFIG_KEY_1=credential.$FORGE_HOST_ORIGIN.helper" "--env=GIT_CONFIG_VALUE_1=")
+  if (( rc == 0 )); then
+    FORGE_CONTAINER_ENV+=("--env=GIT_CONFIG_KEY_2=credential.$FORGE_HOST_ORIGIN.helper" "--env=GIT_CONFIG_VALUE_2=$FORGE_HOST_HELPER")
+    FORGE_CONTAINER_ENV+=("--env=GIT_CONFIG_KEY_3=core.hooksPath" "--env=GIT_CONFIG_VALUE_3=/dev/null")
+    FORGE_CONTAINER_ENV+=(--env=FORGE_HOST_SECRET)
+    n=4
+  fi
+  FORGE_CONTAINER_ENV+=("--env=GIT_CONFIG_COUNT=$n")
+  (( rc != 2 )) || return 2
+  return 0
+}
+
 # gh, with the project's credential in place of whatever the owner is logged in
 # as. A credential the project configured but cannot produce stops the call.
 forge_gh() {

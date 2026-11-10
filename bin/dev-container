@@ -248,6 +248,8 @@ source "$lib_dir/facts.sh"
 source "$lib_dir/git.sh"
 # shellcheck source=../lib/docs.sh
 source "$lib_dir/docs.sh"
+# shellcheck source=../lib/docs-volume.sh
+source "$lib_dir/docs-volume.sh"
 # shellcheck source=../lib/delivery.sh
 source "$lib_dir/delivery.sh"
 # shellcheck source=../lib/agent-auth.sh

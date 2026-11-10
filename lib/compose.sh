@@ -326,6 +326,18 @@ slot_helper_run() {
     --user "$uid" -v "$vol:/workspace" -w /workspace "$image" "$@"
 }
 
+# The same helper container with a network, for the one step that has to reach
+# the forge. FORGE_CONTAINER_ENV (the credential's --env=NAME arguments) goes in.
+slot_helper_run_online() {
+  local sid="$1"; shift
+  local vol; vol=$(slot_volume_of "$sid")
+  local image="${DEV_CONTAINER_ENGINE_IMAGE:-dev-container-engine:local}"
+  local uid="${CONTAINER_UID:-1000}"
+  docker run --rm -i --cap-drop ALL --security-opt no-new-privileges \
+    --user "$uid" ${FORGE_CONTAINER_ENV[@]+"${FORGE_CONTAINER_ENV[@]}"} \
+    -v "$vol:/workspace" -w /workspace "$image" "$@"
+}
+
 slot_exec_stream() {
   local sid="$1"; shift
   if compose_running "$sid"; then

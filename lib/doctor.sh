@@ -136,7 +136,7 @@ doctor_docs() {
   [[ -f "$repo_root/project.env" ]] || return 0
   while IFS= read -r line; do
     [[ -z "$line" ]] || doctor_ok "$line"
-  done < <(adopt_docs_report "$repo_root"; seed_report "$repo_root")
+  done < <(adopt_docs_report "$repo_root" "$COMPOSE_DIR"; seed_report "$repo_root" "$COMPOSE_DIR")
 }
 
 doctor_image_commit() {

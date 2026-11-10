@@ -116,7 +116,7 @@ contract_workspace_uses() {
 
 # contract_problems ROOT DIR FILES PORTS LIVE_SERVICE — appends to PF_WHAT/PF_FIX.
 contract_problems() {
-  local root="$1" dir="${2:-.devcontainer}" files="${3:-docker-compose.yml}" ports="${4:-}" live="${5:-}"
+  local root="$1" dir="${2:-$DEFAULT_COMPOSE_DIR}" files="${3:-docker-compose.yml}" ports="${4:-}" live="${5:-}"
   local base f rel line item host name what services="" judged="" first=""
   dir=${dir%/}
   [[ -n "$dir" ]] || dir=.

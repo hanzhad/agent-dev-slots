@@ -1,5 +1,8 @@
 # shellcheck shell=bash disable=SC2034,SC2154
 
+DEFAULT_COMPOSE_DIR=.devcontainer
+COMPOSE_DIR=${COMPOSE_DIR:-$DEFAULT_COMPOSE_DIR}
+
 die() {
   echo "$*" >&2
   exit 1

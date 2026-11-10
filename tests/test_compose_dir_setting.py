@@ -109,7 +109,7 @@ class ComposeDirIsHonoured(DevContainerTestCase):
         h = self.harness
         checkout = os.path.join(h.tmp, "alpha-app")
         write_text(os.path.join(checkout, "README.md"), "alpha\n")
-        write_text(os.path.join(checkout, OTHER, "docker-compose.yml"), "services: {}\n")
+        write_text(os.path.join(checkout, OTHER, "docker-compose.yml"), "services:\n  app:\n    image: alpine\n")
         git = lambda *args: subprocess.run(
             [h.real_git_bin, "-C", checkout, *args],
             check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

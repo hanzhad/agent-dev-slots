@@ -21,7 +21,7 @@ docs_repo_configured() {
 DOCS_VOLUME_SCRIPT='set -e
 url=$1; fallback=$2; pinfile=$3; refusal=$4; hooks=$5; pushurl=$6; excludes=$7
 git clone --depth 1 --quiet -- "$url" docs/repo
-exclude=$(git rev-parse --git-path info/exclude)
+exclude=$(git rev-parse --path-format=absolute --git-path info/exclude)
 mkdir -p "$(dirname "$exclude")"
 for p in $excludes; do grep -Fxq "$p" "$exclude" 2>/dev/null || echo "$p" >>"$exclude"; done
 branch=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null) || branch=$fallback

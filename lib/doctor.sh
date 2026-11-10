@@ -168,6 +168,20 @@ doctor_command() {
   esac
 }
 
+# A registered project whose root is gone from disk: a note only, nothing is
+# judged and the registry is left as it is.
+doctor_vanished_roots() {
+  local file root label key
+  for file in "$STATE"/projects/*.json; do
+    [[ -f "$file" ]] || continue
+    root=$(jq -r '.root // empty' "$file" 2>/dev/null || true)
+    [[ -n "$root" && ! -e "$root" ]] || continue
+    label=$(jq -r '.label // empty' "$file" 2>/dev/null || true)
+    key=$(basename "$file" .json)
+    echo "note  registered project $label ($key) root $root no longer exists"
+  done
+}
+
 cmd_doctor() {
   local live=0
   if [[ "${1:-}" == --live ]]; then
@@ -186,6 +200,7 @@ cmd_doctor() {
   doctor_workspace_volume
   doctor_credential "$live"
   doctor_docs
+  doctor_vanished_roots
   echo "SLOT_MEMORY_LIMIT = $(slot_memory_limit) ($(slot_memory_limit_source))"
   (( ! docker_ok )) || doctor_image_commit
   (( DOCTOR_FAILURES == 0 )) || exit 1

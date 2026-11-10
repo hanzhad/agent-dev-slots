@@ -71,6 +71,24 @@ The engine runs git and gh on the host too: fetching before a delivery check, pu
 
 A call can never stop to ask: `GIT_TERMINAL_PROMPT=0` is set for the whole engine and any askpass program is replaced by one that fails. A fetch that cannot authenticate is a warning (the delivered/held verdicts are then only as fresh as the last fetch) and `evict` goes on to reset to the last fetched `origin/<default branch>`. With no `FORGE_AUTH` the failure carries a one-line pointer to the two settings. A purely local project, or a remote that is not on `https://github.com`, behaves as before.
 
+## Project identity
+
+A project is identified by the absolute path of its repository root, not by its name.
+
+- **Key**: the first 8 hex characters of the sha256 of the root path (symlinks resolved). It is stable for a checkout location and changes if the checkout moves. A copy or a moved checkout is simply another project; the engine does not judge, refuse or warn about it.
+- **Label**: the name that prefixes the slot ids. It starts from `PROJECT` in `project.env`, or from the folder name (lower-case, other characters turned into `-`) when there is none. It must match `^[a-z0-9][a-z0-9_-]*$`, or the command is refused.
+- **Collisions**: the first root to claim a label keeps it. A later root that asks for a taken name gets `<name>_<key>` (an underscore, so a `<name>-*` glob over slot ids cannot match it). A name nobody has claimed goes first to another root that already runs slots under it, found from its leases and volume labels, so a copy cannot take the original project's label before the original has run once.
+- **Sticky**: while a root's registry entry exists and its name is unchanged, it keeps its label, so a slot name does not change because another root went away.
+
+The registry is in the state directory (`~/.dev-containers`, or `DEV_CONTAINER_HOME`):
+
+- `projects/<key>.json`: `{"root": ..., "base": ..., "label": ...}`, the root path, the name asked for, and the label it got.
+- `projects/labels/<label>`: a file holding the key that owns the label. It is created with `noclobber`, so the first claim wins, also when two runs race.
+
+Every command that acts on one repository reads and, if needed, writes the registry: `acquire`, `run`, `list`, `release`, `doctor` and the other verbs that act on a checkout. The commands that name no repository (`status`, `schedule`, `unlock`, `check`, `verdict`, `clean`, `reap --all`, `adopt`, `migrate-names`) do not. If the state directory cannot be written, the label is simply the name, with no registry entry.
+
+Nothing yet moves existing per-project state from the label to the key; state already named by label stays where it is.
+
 ## What it does not do
 
 It limits what dependency code can reach; it does not make that code safe. Anything you put in a container, a token included, is within reach of the code running there.

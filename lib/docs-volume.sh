@@ -62,5 +62,8 @@ clone_docs_repo_in_volume() {
     slot_helper_run_online "$proj" sh -s -- \
       "$DOCS_REPO_URL" "$DEFAULT_BRANCH" "$DOCS_PIN_FILE" "$DOCS_REPO_REFUSAL" \
       "$DOCS_REPO_HOOKS" "$DOCS_REPO_PUSHURL" "$DOCS_CLONE_EXCLUDES" <<<"$DOCS_VOLUME_SCRIPT"
-  ) || echo "  ! could not set up docs/repo in the volume of '$proj' — the reason is above this line" >&2
+  ) || {
+    remove_slot_volume "$proj" || true
+    die "could not set up docs/repo in the volume of '$proj' — the reason is above this line."
+  }
 }

@@ -101,3 +101,22 @@ class VolumeSlotDocsClone(DevContainerTestCase):
         result = self.harness.run_acquire()
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         self.assertNotIn(self.harness.docs_repo_stub, self._docker_log())
+
+    def test_volume_slot_acquire_fails_when_the_docs_clone_fails_and_leaves_no_slot(self):
+        # With DOCS_REPO_URL configured, a slot is only reported as created when
+        # docs/repo exists; a directory slot stops the acquire on a failed clone.
+        self.harness.build_fixture_repo(with_parent_env=MAIN_ENV)
+        real_env = self.harness._env
+        unreachable = os.path.join(self.harness.tmp, "no-such-docs-repo")
+
+        def env_with_unreachable_docs(port_overrides):
+            env = real_env(port_overrides)
+            env["DOCS_REPO_URL"] = unreachable
+            return env
+
+        self.harness._env = env_with_unreachable_docs
+        result = self.harness.run_acquire()
+        self.assertNotEqual(result.returncode, 0, result.stdout.decode())
+        self.assertEqual(self.harness.volume_names(), [], "a failed acquire left a slot volume behind")
+        leases = os.path.join(self.harness.state_dir, "leases")
+        self.assertEqual(os.listdir(leases) if os.path.isdir(leases) else [], [], "a failed acquire left a lease")

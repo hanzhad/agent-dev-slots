@@ -115,10 +115,16 @@ forge_git() {
 # it is in no argument, file, image or log. The caller exports FORGE_HOST_SECRET
 # for the docker call alone, in a subshell. Returns 2 when the project has a
 # credential it could not produce, else 0 (no FORGE_AUTH is not an error: the
-# container then runs unable to prompt, like forge_git).
+# container then runs unable to prompt, like forge_git). With a URL as $1 that is
+# not on the forge, the credential is not loaded at all, as forge_git leaves such
+# a call alone: nothing is minted for a clone that cannot use it.
 forge_container_env() {
   local rc=0 n=2
-  forge_host_credential_load || rc=$?
+  if [[ -n "${1:-}" && "$1" != "$FORGE_HOST_ORIGIN"/* ]]; then
+    rc=1
+  else
+    forge_host_credential_load || rc=$?
+  fi
   FORGE_CONTAINER_ENV=(--env=GIT_TERMINAL_PROMPT=0 --env=GIT_ASKPASS=/bin/false)
   FORGE_CONTAINER_ENV+=("--env=GIT_CONFIG_KEY_0=safe.directory" "--env=GIT_CONFIG_VALUE_0=*")
   FORGE_CONTAINER_ENV+=("--env=GIT_CONFIG_KEY_1=credential.$FORGE_HOST_ORIGIN.helper" "--env=GIT_CONFIG_VALUE_1=")

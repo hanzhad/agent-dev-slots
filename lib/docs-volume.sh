@@ -14,11 +14,12 @@ docs_repo_configured() {
   [[ -n "${DOCS_REPO_URL:-}" && "$DOCS_REPO_URL" != "$DOCS_PLACEHOLDER_URL" ]]
 }
 
-# Runs in /workspace of the helper. $1 docs url, $2 fallback default branch,
-# $3 pin file, $4 hook text, $5 hooks dir, $6 push url, $7 excluded paths.
+# Runs in /workspace of the helper, read from its stdin so that no argument carries
+# a newline. $1 docs url, $2 fallback default branch, $3 pin file, $4 refusal
+# text, $5 hooks dir, $6 push url, $7 excluded paths.
 # shellcheck disable=SC2016
 DOCS_VOLUME_SCRIPT='set -e
-url=$1; fallback=$2; pinfile=$3; hook=$4; hooks=$5; pushurl=$6; excludes=$7
+url=$1; fallback=$2; pinfile=$3; refusal=$4; hooks=$5; pushurl=$6; excludes=$7
 git clone --depth 1 --quiet -- "$url" docs/repo
 exclude=$(git rev-parse --git-path info/exclude)
 mkdir -p "$(dirname "$exclude")"
@@ -45,7 +46,7 @@ else
 fi
 mkdir -p "docs/repo/$hooks"
 for h in pre-commit pre-push; do
-  printf "%s\n" "$hook" >"docs/repo/$hooks/$h"
+  printf "#!/bin/sh\ncat >&2 <<'MSG'\n%s\nMSG\nexit 1\n" "$refusal" >"docs/repo/$hooks/$h"
   chmod +x "docs/repo/$hooks/$h"
 done
 git -C docs/repo config --local core.hooksPath "$hooks"
@@ -55,11 +56,11 @@ clone_docs_repo_in_volume() {
   local proj="$1"
   docs_repo_configured || return 0
   echo "▸ cloning the docs repository into docs/repo"
-  forge_container_env || die "the forge credential for '$proj' could not be produced — the reason is above this line."
+  forge_container_env "$DOCS_REPO_URL" || die "the forge credential for '$proj' could not be produced — the reason is above this line."
   (
     export FORGE_HOST_SECRET
-    slot_helper_run_online "$proj" sh -c "$DOCS_VOLUME_SCRIPT" sh \
-      "$DOCS_REPO_URL" "$DEFAULT_BRANCH" "$DOCS_PIN_FILE" "$(docs_repo_hook_script)" \
-      "$DOCS_REPO_HOOKS" "$DOCS_REPO_PUSHURL" "$DOCS_CLONE_EXCLUDES"
+    slot_helper_run_online "$proj" sh -s -- \
+      "$DOCS_REPO_URL" "$DEFAULT_BRANCH" "$DOCS_PIN_FILE" "$DOCS_REPO_REFUSAL" \
+      "$DOCS_REPO_HOOKS" "$DOCS_REPO_PUSHURL" "$DOCS_CLONE_EXCLUDES" <<<"$DOCS_VOLUME_SCRIPT"
   ) || echo "  ! could not set up docs/repo in the volume of '$proj' — the reason is above this line" >&2
 }

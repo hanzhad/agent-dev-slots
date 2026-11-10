@@ -5,7 +5,8 @@
 # the file and line, prints the fix, and changes nothing:
 #   - a service named app exists (and LIVE_SERVICE, when project.env names one);
 #   - a host port comes from SLOT_PORTS, written ${NAME}, never a number;
-#   - no secret is written into the file.
+#   - no secret is written into the file;
+#   - ${WORKSPACE_DIR} is a host path only in the app service.
 # Only a file with a top-level `services:` is judged: anything else is not a
 # compose stack. Secret values are never printed, only the line and the name.
 
@@ -88,6 +89,31 @@ contract_secret_lines() {
     }' "$1"
 }
 
+# "LINE<TAB>SERVICE" for each volume outside the app service whose host path
+# starts with ${WORKSPACE_DIR}: a short-form source or a long-form bind source.
+contract_workspace_uses() {
+  awk -v app="$CONTRACT_SERVICE" '
+    function indent(s) { match(s, /^ */); return RLENGTH }
+    /^services:[ \t]*$/ { ins = 1; ind = -1; next }
+    ins && /^[^ \t#]/ { ins = 0 }
+    !ins || /^[ \t]*#/ || /^[ \t]*$/ { next }
+    {
+      n = indent($0)
+      if (ind < 0) ind = n
+      if (n == ind && match($0, /^ *[A-Za-z0-9_.-]+:/)) {
+        svc = $0; sub(/^ */, "", svc); sub(/:.*/, "", svc); inv = 0; next
+      }
+      if (inv && (n < vind || (n == vind && $0 !~ /^ *-/))) inv = 0
+      if ($0 ~ /^ *volumes:[ \t]*$/) { inv = 1; vind = n; next }
+      if (!inv || svc == app) next
+      v = $0; sub(/^ *(-[ \t]*)?/, "", v)
+      if (v ~ /^source:/) sub(/^source:[ \t]*/, "", v)
+      else if (v ~ /^[A-Za-z_]+:[ \t]/) next
+      gsub(/^["\047]/, "", v)
+      if (v ~ /^\$\{WORKSPACE_DIR[:}-]/) print NR "\t" svc
+    }' "$1"
+}
+
 # contract_problems ROOT DIR FILES PORTS LIVE_SERVICE — appends to PF_WHAT/PF_FIX.
 contract_problems() {
   local root="$1" dir="${2:-.devcontainer}" files="${3:-docker-compose.yml}" ports="${4:-}" live="${5:-}"
@@ -127,6 +153,11 @@ contract_problems() {
       preflight_problem "$rel:$line writes a secret into the compose file ($what)" \
         "take the value out of $rel: pass it by name or as \${NAME}, and keep the value in the credential file ($(dirname "${FORGE_AUTH_FILE:-.devcontainer/agent.env}")/), which is never committed or copied into a slot."
     done < <(contract_secret_lines "$base/$f")
+    while IFS=$'\t' read -r line name; do
+      [[ -n "$line" ]] || continue
+      preflight_problem "$rel:$line uses \${WORKSPACE_DIR} as a host path in the $name service" \
+        "\${WORKSPACE_DIR} is the slot's path on the host and only the $CONTRACT_SERVICE service may mount it: remove the mount from $name, or mount a path of its own."
+    done < <(contract_workspace_uses "$base/$f")
   done
   [[ -n "$judged" ]] || return 0
   for name in $CONTRACT_SERVICE $live; do

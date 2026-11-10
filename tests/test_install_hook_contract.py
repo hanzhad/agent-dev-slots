@@ -7,6 +7,7 @@ token, no credential helper, no signing key. In a volume slot WORKSPACE_DIR is
 the volume's compose name, not a path. A hook that fails stops the command.
 """
 import os
+import subprocess
 import unittest
 from unittest import mock
 
@@ -110,6 +111,86 @@ class InstallHookInAVolumeSlot(DevContainerTestCase):
         self.assertIn("hook: boom", result.stderr.decode())
         images = [f for f in os.listdir(self.harness.docker_state) if f.endswith(".image-hash")]
         self.assertEqual(images, [])
+
+
+class InstallHookAbsent(DevContainerTestCase):
+    """What each entry point that reaches the hook does when install.sh is missing."""
+
+    def _slot_without_hook(self):
+        h = self.harness
+        h.build_fixture_repo(with_parent_env=ENV.replace(SECRET, "x"), project_env=project_env_text())
+        os.remove(os.path.join(h.fixture_repo, ".devcontainer", "install.sh"))
+        for args in (("branch", "-M", "master"), ("add", "-A"), ("commit", "-q", "-m", "no hook")):
+            subprocess.run(["git", "-C", h.fixture_repo, *args], check=True, stdout=subprocess.PIPE)
+        result = h.run_acquire()
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        return h.acquired_slot_name(result)
+
+    def _text(self, result):
+        return (result.stdout + result.stderr).decode()
+
+    def test_install_command_refuses_a_missing_hook_without_a_store_volume(self):
+        name = self._slot_without_hook()
+        result = self.harness.run("install", name)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("this project has no install script", self._text(result))
+
+    def test_install_command_refuses_a_missing_hook_with_a_store_volume(self):
+        name = self._slot_without_hook()
+        result = self.harness.run("install", name, port_overrides={"PNPM_STORE_VOLUME": "store-x"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("this project has no install script", self._text(result))
+
+    def test_acquire_says_the_install_is_skipped(self):
+        h = self.harness
+        h.build_fixture_repo(with_parent_env=ENV.replace(SECRET, "x"), project_env=project_env_text())
+        os.remove(os.path.join(h.fixture_repo, ".devcontainer", "install.sh"))
+        result = h.run_acquire()
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertIn("install is skipped", result.stdout.decode())
+
+    def test_acquire_refuses_a_missing_hook_with_a_store_volume(self):
+        h = self.harness
+        h.build_fixture_repo(
+            with_parent_env=ENV.replace(SECRET, "x"), project_env=project_env_text(PNPM_STORE_VOLUME="store-x")
+        )
+        os.remove(os.path.join(h.fixture_repo, ".devcontainer", "install.sh"))
+        result = h.run_acquire()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("PNPM_STORE_VOLUME", result.stderr.decode())
+
+    def test_resync_reruns_the_hook_when_node_modules_drifted(self):
+        h = self.harness
+        h.build_fixture_repo(with_parent_env=ENV.replace(SECRET, "x"), project_env=project_env_text())
+        acquired = h.run_acquire()
+        self.assertEqual(acquired.returncode, 0, acquired.stderr.decode())
+        name = h.acquired_slot_name(acquired)
+        calls = os.path.join(h.docker_state, f"{PROJECT_PREFIX}-{name}.install-calls")
+
+        def count():
+            with open(calls, encoding="utf-8") as handle:
+                return len(handle.read().splitlines())
+
+        self.assertEqual(h.run("release", name, "--for", "test").returncode, 0)
+        reused = h.run("acquire", "--for", "test", port_overrides={"PNPM_STORE_VOLUME": "store-x"})
+        self.assertEqual(reused.returncode, 0, reused.stderr.decode())
+        without_drift = count()
+        self.assertIn("already matches pnpm-lock.yaml", reused.stdout.decode())
+        self.assertEqual(h.run("release", name, "--for", "test").returncode, 0)
+        with open(os.path.join(h.docker_state, f"{PROJECT_PREFIX}-{name}.lockfile-drift"), "w"):
+            pass
+        drifted = h.run("acquire", "--for", "test", port_overrides={"PNPM_STORE_VOLUME": "store-x"})
+        self.assertEqual(drifted.returncode, 0, drifted.stderr.decode())
+        self.assertIn("node_modules resynced", drifted.stdout.decode())
+        self.assertEqual(count(), without_drift + 2)
+
+    def test_readme_hook_section_names_every_entry_point_and_the_install_command_refusal(self):
+        with open(os.path.join(os.path.dirname(__file__), "..", "README.md"), encoding="utf-8") as handle:
+            readme = handle.read()
+        section = readme.split("## The install hook", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("node_modules", section)
+        self.assertIn("pnpm-lock.yaml", section)
+        self.assertIn("this project has no install script", section)
 
 
 if __name__ == "__main__":

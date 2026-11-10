@@ -20,16 +20,6 @@ adopt_templates_dir() {
   printf '%s' "${DEV_CONTAINER_TEMPLATES_DIR:-$lib_dir/../templates}"
 }
 
-adopt_sha256() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum | cut -d' ' -f1
-  elif command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 | cut -d' ' -f1
-  else
-    openssl dgst -sha256 | awk '{print $NF}'
-  fi
-}
-
 # A setting of a project.env that is not read through read_project_env yet.
 adopt_env_setting() {
   local value

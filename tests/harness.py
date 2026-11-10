@@ -1,4 +1,5 @@
 
+import hashlib
 import json
 import os
 import re
@@ -838,6 +839,10 @@ class DevContainerHarness:
     @property
     def project_prefix(self):
         return PROJECT_PREFIX
+
+    @property
+    def project_key(self):
+        return hashlib.sha256(os.path.realpath(self.fixture_repo).encode()).hexdigest()[:8]
 
     @property
     def volumes_dir(self):

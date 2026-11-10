@@ -40,6 +40,8 @@ source "$lib_dir/activity.sh"
 source "$lib_dir/schedule.sh"
 # shellcheck source=../lib/adopt.sh
 source "$lib_dir/adopt.sh"
+# shellcheck source=../lib/identity.sh
+source "$lib_dir/identity.sh"
 # shellcheck source=../lib/adopt-docs.sh
 source "$lib_dir/adopt-docs.sh"
 # shellcheck source=../lib/seed.sh
@@ -75,7 +77,7 @@ SHARED_CACHE_VOLUME=${SHARED_CACHE_VOLUME:-demo-shared-cache}
 
 PNPM_STORE_VOLUME=${PNPM_STORE_VOLUME:-}
 
-SLOT_PROJECT_PREFIX=${SLOT_PROJECT_PREFIX:-demo}
+SLOT_PROJECT_PREFIX=${SLOT_PROJECT_PREFIX:-}
 
 SLOT_PROJECT_GLOB=${SLOT_PROJECT_GLOB:-*-slot-*}
 
@@ -208,6 +210,9 @@ if [[ -f "$repo_root/project.env" ]]; then
     esac
   fi
 fi
+# The label that prefixes every slot id: the project's name where no other root
+# has claimed it, a name made unique by the root's key where one has.
+resolve_project_identity "$repo_root" "${PE_PROJECT:-}"
 project_label="$repo_root/project.env"
 [[ -f "$project_label" ]] || project_label="the environment"
 check_project_env "$project_label" "$DEFAULT_BRANCH" "$SLOT_PORT_NAMES" "$SLOT_MOUNT_DIRS" "$SLOT_OVERLAYS" "$SLOT_ENV_KEYS" "${PE_SLOT_MEMORY_LIMIT:-}"

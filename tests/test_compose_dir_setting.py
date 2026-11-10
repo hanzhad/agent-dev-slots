@@ -10,7 +10,7 @@ LITERAL = ".devcontainer"
 
 # A line of lib/ or bin/ may spell the literal only as one of these. Everything else
 # is a real path use and must come from COMPOSE_DIR instead.
-ALLOWED = [
+ALLOWED_LITERAL_PATTERNS = [
     # a comment
     re.compile(r"^\s*#"),
     # the default of the setting itself, or of the credential file inside it
@@ -21,8 +21,8 @@ ALLOWED = [
     # a message for the person at the terminal: said by echo, die, a problem
     # report, the usage text, or the continuation line of one of those
     re.compile(r"^\s*echo\s"),
-    re.compile(r"die\s+\""),
-    re.compile(r"preflight_problem\s+\""),
+    re.compile(r"\bdie\s+\""),
+    re.compile(r"\bpreflight_problem\s+\""),
     re.compile(r"^\s+\"[^\"]* [^\"]*\"\s*\?$"),
     re.compile(r"^\s+\$CALLER\s"),
 ]
@@ -38,6 +38,26 @@ def write_text(path, text):
         handle.write(text)
 
 
+class AllowListPatterns(unittest.TestCase):
+    def allowed(self, line):
+        return any(rule.search(line) for rule in ALLOWED_LITERAL_PATTERNS)
+
+    def test_no_pattern_holds_a_control_character(self):
+        for rule in ALLOWED_LITERAL_PATTERNS:
+            bad = [c for c in rule.pattern if ord(c) < 0x20 and c not in "\n\t"]
+            self.assertEqual([], bad, "control character in " + ascii(rule.pattern))
+
+    def test_messages_are_allowed(self):
+        for line in (
+            'die "no compose file in .devcontainer"',
+            '  preflight_problem "missing .devcontainer/agent.env"',
+        ):
+            self.assertTrue(self.allowed(line), line)
+
+    def test_a_real_path_use_is_not_allowed(self):
+        self.assertFalse(self.allowed('dst="$root/.devcontainer/x"'))
+
+
 class NoLiteralComposeDirInTheEngine(unittest.TestCase):
     def test_every_use_of_the_literal_is_a_default_or_a_message(self):
         offenders = []
@@ -49,7 +69,7 @@ class NoLiteralComposeDirInTheEngine(unittest.TestCase):
                 for number, line in enumerate(handle, 1):
                     if LITERAL not in line:
                         continue
-                    if any(rule.search(line) for rule in ALLOWED):
+                    if any(rule.search(line) for rule in ALLOWED_LITERAL_PATTERNS):
                         continue
                     rel = os.path.relpath(path, REPO_ROOT)
                     offenders.append(f"{rel}:{number}: {line.strip()}")

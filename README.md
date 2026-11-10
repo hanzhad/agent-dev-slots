@@ -87,7 +87,7 @@ The registry is in the state directory (`~/.dev-containers`, or `DEV_CONTAINER_H
 
 Every command that acts on one repository reads and, if needed, writes the registry: `acquire`, `run`, `list`, `release`, `doctor` and the other verbs that act on a checkout. The commands that name no repository (`status`, `schedule`, `unlock`, `check`, `verdict`, `clean`, `reap --all`, `adopt`, `migrate-names`) do not. If the state directory cannot be written, the label is simply the name, with no registry entry.
 
-Nothing yet moves existing per-project state from the label to the key; state already named by label stays where it is.
+`migrate-identity` (above) moves existing per-project state (tokens, signing keys, rescue) from the label to the key; state already named by label stays where it is until it is run.
 
 ## What it does not do
 

@@ -188,7 +188,7 @@ contract_workspace_facts() {
 # the files are fine. Not a contract failure: `run` adds its own overlay, so an
 # acquire works; only `install` runs the project script without it.
 workspace_volume_warning() {
-  local root="$1" dir="${2:-.devcontainer}" files="${3:-docker-compose.yml}" project="${4:-project}"
+  local root="$1" dir="${2:-$DEFAULT_COMPOSE_DIR}" files="${3:-docker-compose.yml}" project="${4:-project}"
   local base f rel facts mounting="" declared=""
   dir=${dir%/}
   [[ -n "$dir" ]] || dir=.

@@ -338,5 +338,70 @@ class TheContractIsCheckedAtEveryAcquire(SeedTestCase):
         self.assertIn("SLOT_PORTS", text)
 
 
+    def worker_mounting(self, source):
+        return GOOD_COMPOSE + NL.join(
+            ["  worker:", "    image: x", "    volumes:", "      - " + source + ":/workspace", ""]
+        )
+
+    def test_workspace_dir_as_a_host_path_outside_app_is_refused_with_file_line_and_fix(self):
+        self.compose(self.worker_mounting("${WORKSPACE_DIR}"))
+
+        text = self.refused(self.harness.run_acquire())
+
+        self.assertIn("docker-compose.yml:12 uses ${WORKSPACE_DIR} as a host path in the worker service", text)
+        self.assertFixAndNext(text)
+
+    def test_workspace_dir_with_a_default_or_subpath_outside_app_is_refused(self):
+        for source in ("${WORKSPACE_DIR:-..}", "${WORKSPACE_DIR}/src"):
+            with self.subTest(source=source):
+                self.compose(self.worker_mounting(source))
+
+                text = self.refused(self.harness.run_acquire())
+
+                self.assertIn("docker-compose.yml:12 uses ${WORKSPACE_DIR}", text)
+
+    def test_workspace_dir_as_a_long_syntax_bind_source_outside_app_is_refused(self):
+        self.compose(
+            GOOD_COMPOSE
+            + NL.join(
+                ["  worker:", "    image: x", "    volumes:", "      - type: bind",
+                 "        source: ${WORKSPACE_DIR}", "        target: /workspace", ""]
+            )
+        )
+
+        text = self.refused(self.harness.run_acquire())
+
+        self.assertIn("docker-compose.yml:13 uses ${WORKSPACE_DIR}", text)
+
+    def test_doctor_reports_workspace_dir_outside_app_and_changes_nothing(self):
+        broken = self.worker_mounting("${WORKSPACE_DIR}")
+        self.compose(broken)
+
+        result = self.engine("doctor")
+
+        text = output_of(result)
+        self.assertNotEqual(result.returncode, 0, text)
+        self.assertIn("docker-compose.yml:12 uses ${WORKSPACE_DIR}", text)
+        self.assertEqual(read(os.path.join(self.harness.fixture_repo, ".devcontainer", "docker-compose.yml")), broken)
+
+    def test_workspace_dir_as_the_app_service_host_path_is_accepted(self):
+        for source in ("${WORKSPACE_DIR:-..}", "${WORKSPACE_DIR}"):
+            with self.subTest(source=source):
+                self.compose(GOOD_COMPOSE.replace(
+                    "    ports:", "    volumes:" + NL + "      - " + source + ":/workspace" + NL + "    ports:"))
+
+                result = self.harness.run_acquire()
+
+                self.assertEqual(result.returncode, 0, output_of(result))
+
+    def test_workspace_dir_in_a_non_path_position_outside_app_is_accepted(self):
+        self.compose(GOOD_COMPOSE + NL.join(
+            ["  worker:", "    image: x", "    environment:", "      - WORKSPACE_DIR=${WORKSPACE_DIR}", ""]))
+
+        result = self.harness.run_acquire()
+
+        self.assertEqual(result.returncode, 0, output_of(result))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -343,6 +343,29 @@ class DoctorChecksPrerequisites(DoctorTestCase):
         self.assertEqual(result.returncode, 0, output_of(result))
 
 
+class DoctorSkipsPortsAnySlotHolds(DoctorTestCase):
+    def other_projects_slot_ports(self, number):
+        ports_dir = os.path.join(self.harness.state_dir, "ports")
+        os.makedirs(ports_dir, exist_ok=True)
+        with open(os.path.join(ports_dir, f"other-slot-{number}.ports"), "w", encoding="utf-8") as handle:
+            handle.write(PORTS)
+
+    def test_a_port_held_by_another_projects_slot_is_not_a_conflict(self):
+        self.other_projects_slot_ports(1)
+
+        result = self.doctor(FAKE_BUSY_PORT=str(slot_port(1, 0)))
+
+        self.assertEqual(result.returncode, 0, output_of(result))
+        self.assertNotRegex(output_of(result), r"(?i)not a slot")
+
+    def test_a_port_with_no_slot_holding_it_is_still_a_conflict(self):
+        self.other_projects_slot_ports(1)
+
+        result = self.doctor(FAKE_BUSY_PORT=str(slot_port(2, 0)))
+
+        self.named(result, r"(?i)not a slot")
+
+
 class DoctorReportsTheCeiling(DoctorTestCase):
     def test_default_ceiling_is_printed_with_its_source(self):
         result = self.doctor()

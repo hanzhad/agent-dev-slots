@@ -160,3 +160,13 @@ reject_duration_as_holder() {
 }
 
 now_epoch() { date +%s; }
+
+adopt_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | cut -d' ' -f1
+  else
+    openssl dgst -sha256 | awk '{print $NF}'
+  fi
+}

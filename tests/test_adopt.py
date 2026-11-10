@@ -397,10 +397,11 @@ class AdoptConnectionIsProjectEnvOnly(AdoptTestCase):
         self.assertIn("project.env", output_of(doc_before))
 
         fresh_state = os.path.join(self.harness.tmp, "untouched-state")
+        state_before = self.state_files()
         adopted = self.adopt(checkout, DEV_CONTAINER_HOME=fresh_state)
         self.assertEqual(adopted.returncode, 0, output_of(adopted))
         self.assertFalse(os.path.exists(fresh_state))
-        self.assertEqual(self.state_files(), [])
+        self.assertEqual(self.state_files(), state_before)
 
         code_conn, got_conn, err_conn = self.project_keys(checkout)
         self.assertEqual(code_conn, 0, err_conn)

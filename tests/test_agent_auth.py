@@ -189,11 +189,21 @@ def text(res):
     return res.stdout.decode() + res.stderr.decode()
 
 
+# The one read the engine makes before any refusal: which roots already have volumes
+# under the project's name, to give the name to the right one (lib/identity.sh).
+IDENTITY_LOOKUP = re.compile(r"volume ls --filter label=dev-container\.project=\S+ --format \{\{\.Name\}\}")
+
+
 def read_if(path):
     if not os.path.isfile(path):
         return ""
     with open(path, encoding="utf-8", errors="replace") as handle:
         return handle.read()
+
+
+def logged_docker_calls(harness):
+    lines = read_if(harness.docker_log).split("\n")
+    return [l for l in lines if l and not IDENTITY_LOOKUP.match(l.removeprefix("ARGS: "))]
 
 
 def write(path, content, mode=None):
@@ -303,6 +313,8 @@ class AuthTestCase(DevContainerTestCase):
             if not line:
                 continue
             verb, argv, gh, profiles, passed, svc, pdir = line.split("\t")
+            if IDENTITY_LOOKUP.fullmatch(argv):
+                continue
             names = {}
             for item in filter(None, passed.split(";")):
                 key, state, value = item.split(":", 2)
@@ -947,7 +959,7 @@ class SlotIdentityCase(AuthTestCase):
         self.assertEqual(self.git_local(name, "commit.gpgsign"), "true")
 
     def no_docker_call(self):
-        self.assertEqual(read_if(self.harness.docker_log), "")
+        self.assertEqual(logged_docker_calls(self.harness), [])
         self.assertEqual(self.calls(), [])
 
     def no_slot_directory(self):
@@ -1279,7 +1291,7 @@ class ContainerEnvCopiesTheTokenIntoTheSlotEnv(AuthTestCase):
                 self.assertIn("GH_TOKEN", err)
                 self.assertIn(ENV_FILE_REL, err)
                 self.assertNotIn(MARK, text(res))
-                self.assertEqual(read_if(self.harness.docker_log), "")
+                self.assertEqual(logged_docker_calls(self.harness), [])
                 slots = self.harness.slots_dir
                 self.assertEqual(os.listdir(slots) if os.path.isdir(slots) else [], [])
 

@@ -208,6 +208,7 @@ class AutoAdoptTestCase(DevContainerTestCase):
             "schedule",
             "limits.json",
             "tokens",
+            "projects",
         }
         for entry in os.listdir(self.harness.state_dir):
             self.assertIn(entry, allowed_dirs, f"unexpected central entry in state: {entry}")

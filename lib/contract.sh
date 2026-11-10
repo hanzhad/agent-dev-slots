@@ -171,3 +171,42 @@ contract_problems() {
     esac
   done
 }
+
+# Whether a compose file mounts ${WORKSPACE_DIR} (any form) and whether it
+# declares a top-level slot-workspace volume: prints "mounts" and/or "declares".
+contract_workspace_facts() {
+  awk '
+    /^[ \t]*#/ { next }
+    /WORKSPACE_DIR/ { mounts = 1 }
+    /^volumes:[ \t]*$/ { inv = 1; next }
+    /^[^ \t#]/ { inv = 0 }
+    inv && /^[ \t]+slot-workspace:/ { declares = 1 }
+    END { if (mounts) print "mounts"; if (declares) print "declares" }' "$1"
+}
+
+# workspace_volume_warning ROOT DIR FILES PROJECT — prints a warning, nothing when
+# the files are fine. Not a contract failure: `run` adds its own overlay, so an
+# acquire works; only `install` runs the project script without it.
+workspace_volume_warning() {
+  local root="$1" dir="${2:-.devcontainer}" files="${3:-docker-compose.yml}" project="${4:-project}"
+  local base f rel facts mounting="" declared=""
+  dir=${dir%/}
+  [[ -n "$dir" ]] || dir=.
+  base="$root"
+  [[ "$dir" == . ]] || base="$root/$dir"
+  for f in $files; do
+    [[ -f "$base/$f" ]] || continue
+    grep -Eq '^services:[[:space:]]*$' "$base/$f" || continue
+    rel="$f"
+    [[ "$dir" == . ]] || rel="$dir/$f"
+    facts=$(contract_workspace_facts "$base/$f")
+    case $'\n'"$facts"$'\n' in *$'\nmounts\n'*) [[ -n "$mounting" ]] || mounting="$rel" ;; esac
+    case $'\n'"$facts"$'\n' in *$'\ndeclares\n'*) declared=1 ;; esac
+  done
+  [[ -n "$mounting" && -z "$declared" ]] || return 0
+  echo "$mounting mounts \${WORKSPACE_DIR} without declaring a slot-workspace volume: 'run' works (the engine adds its own overlay), but 'install' fails with: service \"app\" refers to undefined volume slot-workspace. Add to $mounting:"
+  echo "  volumes:"
+  echo "    slot-workspace:"
+  echo "      external: true"
+  echo "      name: \${SLOT_WORKSPACE_VOLUME:-${project}-workspace}"
+}

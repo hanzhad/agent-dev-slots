@@ -362,6 +362,10 @@ cmd_adopt() {
   adopt_exclude_project_files "$root"
   adopt_write_docs "$root"
   echo "adopted $root ($PE_PROJECT)"
+  local volume_warning
+  volume_warning=$(workspace_volume_warning "$root" "$compose_dir" "${PE_COMPOSE_FILES:-${ADOPT_COMPOSE_FILES:-docker-compose.yml}}" "$PE_PROJECT")
+  [[ -z "$volume_warning" ]] || printf 'warn  %s
+' "$volume_warning"
   # The credential file is the owner's to fill: it is checked last, after everything else is written.
   preflight_reset
   credential_problems "$root" "${PE_FORGE_AUTH:-}" "${PE_FORGE_AUTH_FILE:-}"

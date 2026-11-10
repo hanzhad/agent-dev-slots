@@ -15,6 +15,7 @@ Usage: $CALLER acquire --for <holder> [--as '<name> [<ref>]'] [--wait [--timeout
        $CALLER project <dir> — print the keys of <dir>/project.env, the file that connects a project
        $CALLER adopt [<dir>] [--template | --no-template] — connect a project checkout: write project.env and the .devcontainer/README.md and AGENTS.md; reports a credential file that is not ready
        $CALLER migrate-names [--dry-run] [<dir>] — rename the old AGENT_* credential names (and the modes container-env, github-app) to the FORGE_* ones in the project.env of <dir> and in the credential file it names; prints the names it changes, never a value; --dry-run writes nothing; refuses a setting given under both names
+       $CALLER migrate-identity [--dry-run] — move this project's tokens, signing key and rescue directory from the names of its label to the names of its key; refuses while a lease for the project exists and never overwrites; --dry-run prints the moves and changes nothing
        $CALLER reap
        $CALLER reap --all — reap every project that holds a lease, each from its own root
        $CALLER clean [<slot>] [--all] — fast clean abandoned slots to local archives without network

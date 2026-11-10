@@ -47,6 +47,10 @@ ensure_signing_key() {
   local state="$1" project="$2" key dir tmp
   key=$(signing_key_path "$state" "$project") || return 1
   dir=$(dirname "$key")
+  if [[ -n "${PROJECT_KEY:-}" && -d "$state/signing/$project" && ! -e "$state/signing/$PROJECT_KEY" ]]; then
+    echo "signing key: $state/signing/$project is kept under the project's old name. Run \`${CALLER:-dev-container} migrate-identity\` first, so the key is not generated a second time." >&2
+    return 1
+  fi
   (umask 077; mkdir -p "$dir") && chmod 700 "$dir" || { echo "signing key: cannot create $dir" >&2; return 1; }
   if [[ ! -e "$key" ]]; then
     if [[ -e "$key.pub" ]]; then

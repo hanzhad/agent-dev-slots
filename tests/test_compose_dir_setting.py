@@ -76,7 +76,7 @@ class NoLiteralComposeDirInTheEngine(unittest.TestCase):
         self.assertEqual([], offenders, "path uses of the literal " + LITERAL)
 
 
-class ComposeDirIsHonoured(DevContainerTestCase):
+class ComposeDirFixture(DevContainerTestCase):
     def setUp(self):
         super().setUp()
         h = self.harness
@@ -98,6 +98,7 @@ class ComposeDirIsHonoured(DevContainerTestCase):
             found += [os.path.join(root, d) for d in dirs if d == LITERAL]
         self.assertEqual([], found, f"a {LITERAL} directory appeared")
 
+class ComposeDirIsHonoured(ComposeDirFixture):
     def test_doctor_finds_the_compose_file_in_the_configured_dir(self):
         result = self.harness.run("doctor")
         text = output_of(result)
@@ -149,6 +150,21 @@ class ComposeDirIsHonoured(DevContainerTestCase):
         self.assertEqual(0, result.returncode, output_of(result))
         self.assertFalse(os.path.exists(os.path.join(checkout, LITERAL)), output_of(result))
         self.assertTrue(os.path.isfile(os.path.join(checkout, OTHER, "README.md")))
+
+
+class ContractAdviceNamesTheConfiguredDir(ComposeDirFixture):
+    def test_inline_secret_advice_names_the_credential_file_in_the_configured_dir(self):
+        h = self.harness
+        write_text(
+            os.path.join(h.fixture_repo, OTHER, "docker-compose.yml"),
+            "services:\n  app:\n    image: alpine\n    environment:\n"
+            "      API_TOKEN: abcdefghijklmnopqrstuvwxyz0123\n",
+        )
+        result = h.run("doctor")
+        text = output_of(result)
+        self.assertIn("writes a secret into the compose file", text)
+        self.assertIn(f"{OTHER}/agent.env", text)
+        self.assertNotIn(f"{LITERAL}/agent.env", text)
 
 
 if __name__ == "__main__":

@@ -151,7 +151,7 @@ contract_problems() {
     while IFS=$'\t' read -r line what; do
       [[ -n "$line" ]] || continue
       preflight_problem "$rel:$line writes a secret into the compose file ($what)" \
-        "take the value out of $rel: pass it by name or as \${NAME}, and keep the value in the credential file ($(dirname "${FORGE_AUTH_FILE:-.devcontainer/agent.env}")/), which is never committed or copied into a slot."
+        "take the value out of $rel: pass it by name or as \${NAME}, and keep the value in the credential file (${FORGE_AUTH_FILE:-$dir/agent.env}), which is never committed or copied into a slot."
     done < <(contract_secret_lines "$base/$f")
     while IFS=$'\t' read -r line name; do
       [[ -n "$line" ]] || continue

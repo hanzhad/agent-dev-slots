@@ -12,6 +12,14 @@ doctor_fail() {
 
 doctor_ok() { echo "ok    $*"; }
 
+# A warning does not fail the run: the first line is prefixed, the rest follow as given.
+doctor_warn() {
+  local first=1 line
+  while IFS= read -r line; do
+    if (( first )); then echo "warn  $line"; first=0; else echo "$line"; fi
+  done <<<"$1"
+}
+
 doctor_docker() {
   local in_container=0 where="the Docker daemon"
   [[ -f "${DEV_CONTAINER_DOCKERENV_PATH:-/.dockerenv}" ]] && in_container=1
@@ -114,6 +122,14 @@ doctor_contract() {
   done
 }
 
+# A compose file that mounts ${WORKSPACE_DIR} without a slot-workspace volume: a warning only.
+doctor_workspace_volume() {
+  local text
+  [[ -f "$repo_root/project.env" ]] || return 0
+  text=$(workspace_volume_warning "$repo_root" "$COMPOSE_DIR" "$COMPOSE_FILES" "$SLOT_PROJECT_PREFIX")
+  [[ -z "$text" ]] || doctor_warn "$text"
+}
+
 doctor_docs() {
   local line
   [[ -f "$repo_root/project.env" ]] || return 0
@@ -166,6 +182,7 @@ cmd_doctor() {
   doctor_command
   doctor_compose
   doctor_contract
+  doctor_workspace_volume
   doctor_credential "$live"
   doctor_docs
   echo "SLOT_MEMORY_LIMIT = $(slot_memory_limit) ($(slot_memory_limit_source))"

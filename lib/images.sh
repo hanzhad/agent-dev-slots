@@ -127,6 +127,20 @@ drop_unused_stale_images() {
   done < <(slot_image_names "$proj")
 }
 
+# A fresh slot has no image of its own yet, so any image carrying its compose
+# project label is a leftover of an earlier slot of the same name. The build
+# must not start from it; the layer cache of other images still applies. Only
+# this project's images are touched (found by label, never by name prefix), an
+# image a container uses stays, and a removal that fails is logged and ignored.
+drop_leftover_slot_images() {
+  local proj="$1" img
+  while IFS= read -r img; do
+    [[ -n "$img" ]] || continue
+    [[ -z "$(docker ps -aq --filter "ancestor=$img" 2>/dev/null)" ]] || continue
+    docker image rm "$img" >/dev/null 2>&1 || echo "  ! could not remove the leftover image $img of '$proj'" >&2
+  done < <(slot_image_names "$proj")
+}
+
 build_slot_image() {
   local dir="$1" proj="$2" refresh="${3:-0}" hash
   local -a cache_flag=()

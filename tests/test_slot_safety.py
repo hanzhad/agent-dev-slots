@@ -41,7 +41,7 @@ do_build() {
   local h
   h=$(printf '%s' "$*" | grep -oE 'build-hash=[^ ]+' | head -1 | cut -d= -f2)
   [[ -n "$h" ]] || h=$(env | grep -iE 'build_hash=' | head -1 | cut -d= -f2)
-  if [[ -f "$state/$p.build-noop" && -f "$img/$p.present" ]]; then return 0; fi
+  if [[ -f "$state/$p.build-noop" ]]; then [[ -f "$img/$p.present" ]] || : > "$img/$p.present"; return 0; fi
   : > "$img/$p.present"
   if [[ -n "$h" ]]; then printf '%s' "$h" > "$img/$p.label"; else drop "$p.label"; fi
 }

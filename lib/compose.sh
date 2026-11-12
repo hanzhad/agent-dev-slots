@@ -362,7 +362,10 @@ install_slot() {
     echo "▸ installing dependencies into '$proj'"
   fi
   local ws="${dir:-slot-workspace}"
-  env ${store[@]+"${store[@]}"} WORKSPACE_DIR="$ws" COMPOSE_PROJECT_NAME="$proj" \
+  # The hook runs on the host with no forge credential: scrub the token names
+  # the engine and gh read, whatever the caller's shell holds.
+  local -a scrub=(-u GH_TOKEN -u GITHUB_TOKEN)
+  env "${scrub[@]}" ${store[@]+"${store[@]}"} WORKSPACE_DIR="$ws" COMPOSE_PROJECT_NAME="$proj" \
     bash "$installer" \
     || die "installing dependencies into '$proj' failed — the reason is above this line."
 }

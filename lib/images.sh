@@ -85,6 +85,12 @@ slot_image_names() {
   docker image ls --filter "label=dev-container.compose-project=$1" --format '{{.Repository}}:{{.Tag}}' 2>/dev/null || true
 }
 
+# The same images as slot_image_names, by id and without repeats: an image
+# with several tags is listed once per tag.
+slot_image_ids() {
+  docker image ls --filter "label=dev-container.compose-project=$1" --format '{{.ID}}' 2>/dev/null | sort -u || true
+}
+
 slot_image_label() {
   docker image inspect --format '{{ index .Config.Labels "dev-container.build-hash" }}' "$1" 2>/dev/null || true
 }
@@ -132,13 +138,15 @@ drop_unused_stale_images() {
 # must not start from it; the layer cache of other images still applies. Only
 # this project's images are touched (found by label, never by name prefix), an
 # image a container uses stays, and a removal that fails is logged and ignored.
+# Each image is identified by its id: one that lost its tag reads <none>:<none>
+# by name, which names no image for the in-use check or the removal.
 drop_leftover_slot_images() {
   local proj="$1" img
   while IFS= read -r img; do
     [[ -n "$img" ]] || continue
     [[ -z "$(docker ps -aq --filter "ancestor=$img" 2>/dev/null)" ]] || continue
     docker image rm "$img" >/dev/null 2>&1 || echo "  ! could not remove the leftover image $img of '$proj'" >&2
-  done < <(slot_image_names "$proj")
+  done < <(slot_image_ids "$proj")
 }
 
 build_slot_image() {

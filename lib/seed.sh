@@ -35,7 +35,7 @@ seed_file() {
 # The compose file for STACK ("" is the plain starter, node:* and python:* add
 # their dependency volume), then the image and entrypoint it builds.
 seed_stack() {
-  local root="$1" stack="${2:-}" base="${3:-node:22-bookworm}" dir="$1/.devcontainer" t template compose
+  local root="$1" stack="${2:-}" base="${3:-node:22-bookworm}" dir="$1/$DEFAULT_COMPOSE_DIR" t template compose
   t=$(adopt_templates_dir)
   SEED_ROOT="$root"
   case "$stack" in
@@ -50,21 +50,21 @@ seed_stack() {
 }
 
 seed_sshd_image() {
-  local root="$1" base="$2" t
+  local root="$1" base="$2" cdir="${3:-$DEFAULT_COMPOSE_DIR}" t
   t=$(adopt_templates_dir)
   SEED_ROOT="$root"
-  seed_file "$root/.devcontainer/engine.Dockerfile" "$t/engine.Dockerfile" "$base"
-  seed_file "$root/.devcontainer/engine-entrypoint.sh" "$t/engine-entrypoint.sh" "" 0755
+  seed_file "$root/$cdir/engine.Dockerfile" "$t/engine.Dockerfile" "$base"
+  seed_file "$root/$cdir/engine-entrypoint.sh" "$t/engine-entrypoint.sh" "" 0755
 }
 
 # A compose file the engine seeded (it carries the stamp) is the engine's stack,
 # so the image and entrypoint it builds are added when they are missing. A
 # project's own compose file is never given an image.
 seed_missing_image() {
-  local root="$1" compose="$1/.devcontainer/docker-compose.yml" base=node:22-bookworm
+  local root="$1" cdir="${2:-$DEFAULT_COMPOSE_DIR}" base=node:22-bookworm compose="$1/${2:-$DEFAULT_COMPOSE_DIR}/docker-compose.yml"
   [[ -n "$(seed_stamp_version "$compose")" ]] || return 0
   grep -q '^  venv:' "$compose" && base=python:3.12-bookworm
-  seed_sshd_image "$root" "$base"
+  seed_sshd_image "$root" "$base" "$cdir"
 }
 
 # Which template the credential-file template is: the App's names when the
@@ -79,10 +79,10 @@ seed_credential_template_name() {
 # NAME.example beside the credential file project.env names. It lists the names
 # to fill in and holds no value; the credential file itself is the owner's.
 seed_credential_template() {
-  local root="$1" mode credential
+  local root="$1" cdir="${2:-$DEFAULT_COMPOSE_DIR}" mode credential
   mode=$(adopt_env_setting "$root/project.env" FORGE_AUTH)
   credential=$(adopt_env_setting "$root/project.env" FORGE_AUTH_FILE)
-  [[ -n "$credential" ]] || credential=".devcontainer/agent.env"
+  [[ -n "$credential" ]] || credential="$cdir/agent.env"
   SEED_ROOT="$root"
   seed_file "$root/$credential.example" "$(adopt_templates_dir)/$(seed_credential_template_name "$mode")"
 }
@@ -91,15 +91,15 @@ seed_credential_template() {
 # when the template has moved on, the command that shows the difference.
 # Changes nothing.
 seed_report() {
-  local root="$1" mode credential t name template file seeded current
+  local root="$1" cdir="${2:-$DEFAULT_COMPOSE_DIR}" mode credential t name template file seeded current
   t=$(adopt_templates_dir)
   mode=$(adopt_env_setting "$root/project.env" FORGE_AUTH)
   credential=$(adopt_env_setting "$root/project.env" FORGE_AUTH_FILE)
-  [[ -n "$credential" ]] || credential=".devcontainer/agent.env"
+  [[ -n "$credential" ]] || credential="$cdir/agent.env"
   local -a pairs=(
-    ".devcontainer/docker-compose.yml:docker-compose.yml"
-    ".devcontainer/engine.Dockerfile:engine.Dockerfile"
-    ".devcontainer/engine-entrypoint.sh:engine-entrypoint.sh"
+    "$cdir/docker-compose.yml:docker-compose.yml"
+    "$cdir/engine.Dockerfile:engine.Dockerfile"
+    "$cdir/engine-entrypoint.sh:engine-entrypoint.sh"
     "$credential.example:$(seed_credential_template_name "$mode")"
   )
   for name in "${pairs[@]}"; do

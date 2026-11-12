@@ -51,11 +51,11 @@ adopt_write_doc_file() {
 }
 
 adopt_write_doc() {
-  local root="$1" name="$2" project="$3" credential="$4"
+  local root="$1" name="$2" project="$3" credential="$4" cdir="${5:-$DEFAULT_COMPOSE_DIR}"
   local template dst first version body cur_version cur_digest now_digest
   template="$(adopt_templates_dir)/$name"
   [[ -f "$template" ]] || die "adopt: the engine has no template $template — the engine installation is incomplete."
-  dst="$root/.devcontainer/$name"
+  dst="$root/$cdir/$name"
   first=$(head -n 1 "$template")
   version=$(printf '%s' "$first" | sed -n 's/^<!-- dev-container-engine template: [A-Za-z.]* version: \([0-9][0-9]*\) -->$/\1/p')
   [[ -n "$version" ]] || die "adopt: $template does not start with a template version line."
@@ -63,50 +63,52 @@ adopt_write_doc() {
   [[ ! -e "$dst" ]] || return 0
   body=$(adopt_doc_body "$template" "$project" "$credential"; printf x)
   body=${body%x}
-  mkdir -p "$root/.devcontainer"
+  mkdir -p "$root/$cdir"
   adopt_write_doc_file "$dst" "$name" "$version" "$body"
-  echo "▸ wrote .devcontainer/$name (template version $version)"
+  echo "▸ wrote $cdir/$name (template version $version)"
 }
 
 # .devcontainer/ ignores itself: a .gitignore holding `*` goes with the folder
 # into every checkout and slot, where .git/info/exclude of one clone would not.
 # A project that tracks files in .devcontainer/ keeps its git as it is.
 adopt_ignore_devcontainer() {
-  local root="$1" file="$1/.devcontainer/.gitignore"
-  if [[ -n "$(git -C "$root" ls-files -- .devcontainer 2>/dev/null)" ]]; then
-    echo "▸ .devcontainer/ has files tracked in git: its git ignore rules are left as they are"
+  local root="$1" cdir="${2:-$DEFAULT_COMPOSE_DIR}" file="$1/${2:-$DEFAULT_COMPOSE_DIR}/.gitignore"
+  # a project that composes from its root must not ignore everything in it
+  [[ "$cdir" != . ]] || return 0
+  if [[ -n "$(git -C "$root" ls-files -- "$cdir" 2>/dev/null)" ]]; then
+    echo "▸ $cdir/ has files tracked in git: its git ignore rules are left as they are"
     return 0
   fi
-  mkdir -p "$root/.devcontainer"
+  mkdir -p "$root/$cdir"
   if [[ -f "$file" ]]; then
     grep -Fxq '*' "$file" && return 0
-    echo "▸ .devcontainer/.gitignore exists without a \`*\` line: left as it is, add the line so secrets in this folder stay out of git"
+    echo "▸ $cdir/.gitignore exists without a \`*\` line: left as it is, add the line so secrets in this folder stay out of git"
     return 0
   fi
   printf '# Written by dev-container adopt: nothing in this folder is committed (credentials live here).\n*\n' >"$file"
-  echo "▸ wrote .devcontainer/.gitignore"
+  echo "▸ wrote $cdir/.gitignore"
 }
 
 adopt_write_docs() {
-  local root="$1" project credential name
-  adopt_ignore_devcontainer "$root"
+  local root="$1" cdir="${2:-$DEFAULT_COMPOSE_DIR}" project credential name
+  adopt_ignore_devcontainer "$root" "$cdir"
   project=$(adopt_env_setting "$root/project.env" PROJECT)
   credential=$(adopt_env_setting "$root/project.env" FORGE_AUTH_FILE)
   [[ -n "$project" ]] || project=$(basename "$root")
-  [[ -n "$credential" ]] || credential=".devcontainer/agent.env"
+  [[ -n "$credential" ]] || credential="$cdir/agent.env"
   for name in $ADOPT_DOC_NAMES; do
-    adopt_write_doc "$root" "$name" "$project" "$credential"
+    adopt_write_doc "$root" "$name" "$project" "$credential" "$cdir"
   done
-  seed_credential_template "$root"
-  seed_missing_image "$root"
+  seed_credential_template "$root" "$cdir"
+  seed_missing_image "$root" "$cdir"
 }
 
 # doctor: for each document, which template version it was seeded from and, when
 # the template has moved on, the command that shows the difference. Changes nothing.
 adopt_docs_report() {
-  local root="$1" name dst template first seeded current
+  local root="$1" cdir="${2:-$DEFAULT_COMPOSE_DIR}" name dst template first seeded current
   for name in $ADOPT_DOC_NAMES; do
-    dst="$root/.devcontainer/$name"
+    dst="$root/$cdir/$name"
     template="$(adopt_templates_dir)/$name"
     [[ -f "$dst" && -f "$template" ]] || continue
     first=$(head -n 1 "$dst")

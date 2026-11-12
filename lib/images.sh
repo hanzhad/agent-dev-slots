@@ -128,10 +128,12 @@ drop_unused_stale_images() {
 }
 
 build_slot_image() {
-  local dir="$1" proj="$2" hash
+  local dir="$1" proj="$2" refresh="${3:-0}" hash
+  local -a cache_flag=()
+  (( ! refresh )) || cache_flag=(--no-cache)
   hash=$(slot_build_hash) || die "cannot read the build hash of $repo_root."
   echo "▸ building a fresh image for '$proj'"
-  if ! DEV_CONTAINER_BUILD_HASH="$hash" slot_compose "$dir" "$proj" build --no-cache; then
+  if ! DEV_CONTAINER_BUILD_HASH="$hash" slot_compose "$dir" "$proj" build ${cache_flag[@]+"${cache_flag[@]}"}; then
     die "building the image for '$proj' failed — nothing was started."
   fi
   if [[ -z "$(slot_image_names "$proj")" ]]; then

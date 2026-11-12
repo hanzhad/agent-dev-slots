@@ -424,7 +424,7 @@ create_slot() {
   sync_slot_env_identity "$proj" "$proj"
 
   run_slot_install "$name" "" "$proj"
-  build_slot_image "" "$proj"
+  build_slot_image "" "$proj" "${2:-0}"
   echo "▸ starting compose project '$proj' on $(ports_summary "$proj")"
   local overlay
   while IFS= read -r overlay; do

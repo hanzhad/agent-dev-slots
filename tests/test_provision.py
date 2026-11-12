@@ -123,7 +123,7 @@ class ProvisionCase(DevContainerTestCase):
         return os.path.join(self.sandbox(name), "home", ".ssh", "container_signing")
 
     def host_key(self):
-        return os.path.join(self.harness.state_dir, "signing", PROJECT_PREFIX, "container_signing")
+        return os.path.join(self.harness.state_dir, "signing", self.harness.project_key, "container_signing")
 
     def git_env(self, name):
         env = {k: v for k, v in os.environ.items() if not k.startswith(("GIT_", "SSH_ASKPASS"))}
@@ -347,7 +347,7 @@ class Failures(ProvisionCase):
     def test_a_signing_key_dir_that_cannot_be_made_stops_before_anything_is_sent(self):
         self.project("token")
         os.makedirs(os.path.join(self.harness.state_dir, "signing"), exist_ok=True)
-        open(os.path.join(self.harness.state_dir, "signing", PROJECT_PREFIX), "w").close()
+        open(os.path.join(self.harness.state_dir, "signing", self.harness.project_key), "w").close()
         result = self.harness.run("acquire", "--for", "test")
         self.assertNotEqual(result.returncode, 0, text(result))
         self.assertIn("signing key", text(result))

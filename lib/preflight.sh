@@ -56,7 +56,7 @@ credential_problems() {
   if [[ ! -f "$file" ]]; then
     for name in $(cred_names_for "$mode"); do stub+="${stub:+ }$name"; done
     preflight_problem "FORGE_AUTH=$mode: the credential file $file is missing: $stub" \
-      "create it, readable by you only, and fill in $stub — (umask 077; printf '%s=\\n' $stub >> $file). The README beside it, $root/.devcontainer/README.md, says what each value is."
+      "create it, readable by you only, and fill in $stub — (umask 077; printf '%s=\\n' $stub >> $file). The README beside it, $root/$COMPOSE_DIR/README.md, says what each value is."
     return 0
   fi
   perm=$(cred_mode_of "$file")
@@ -78,10 +78,10 @@ credential_problems() {
   base=$(basename "$path")
   if ! path_is_engine_visible "$path"; then
     preflight_problem "FORGE_APP_KEY_FILE in $rel points at $path, which is $(engine_outside_phrase)" \
-      "put the key where the engine can read it — cp $path $root/.devcontainer/$base && chmod 600 $root/.devcontainer/$base — then set FORGE_APP_KEY_FILE=.devcontainer/$base in $rel (that directory is git-ignored and never copied into a slot)."
+      "put the key where the engine can read it — cp $path $root/$COMPOSE_DIR/$base && chmod 600 $root/$COMPOSE_DIR/$base — then set FORGE_APP_KEY_FILE=$COMPOSE_DIR/$base in $rel (that directory is git-ignored and never copied into a slot)."
   elif [[ ! -f "$path" || ! -r "$path" ]]; then
     preflight_problem "FORGE_APP_KEY_FILE in $rel does not name a readable file — the App cannot sign its token request" \
-      "set FORGE_APP_KEY_FILE in $rel to the App's private key, a .pem you can read, e.g. FORGE_APP_KEY_FILE=.devcontainer/app.pem"
+      "set FORGE_APP_KEY_FILE in $rel to the App's private key, a .pem you can read, e.g. FORGE_APP_KEY_FILE=$COMPOSE_DIR/app.pem"
   fi
 }
 
@@ -97,11 +97,11 @@ compose_problems() {
   case "$plan" in
     ok) ;;
     starter)
-      preflight_problem "project.env names .devcontainer/docker-compose.yml, which does not exist" \
+      preflight_problem "project.env names $DEFAULT_COMPOSE_DIR/docker-compose.yml, which does not exist" \
         "run $CALLER adopt — it writes the starter stack — or change COMPOSE_DIR and COMPOSE_FILES in project.env to the compose file the project really has."
       ;;
     "missing "*)
-      preflight_problem "project.env names ${plan#missing }, which does not exist (COMPOSE_DIR=${2:-.devcontainer} COMPOSE_FILES=${3:-docker-compose.yml})" \
+      preflight_problem "project.env names ${plan#missing }, which does not exist (COMPOSE_DIR=${2:-$DEFAULT_COMPOSE_DIR} COMPOSE_FILES=${3:-docker-compose.yml})" \
         "create ${plan#missing }, or change COMPOSE_DIR and COMPOSE_FILES in project.env to the compose file the project really has."
       ;;
   esac

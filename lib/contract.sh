@@ -116,7 +116,7 @@ contract_workspace_uses() {
 
 # contract_problems ROOT DIR FILES PORTS LIVE_SERVICE — appends to PF_WHAT/PF_FIX.
 contract_problems() {
-  local root="$1" dir="${2:-.devcontainer}" files="${3:-docker-compose.yml}" ports="${4:-}" live="${5:-}"
+  local root="$1" dir="${2:-$DEFAULT_COMPOSE_DIR}" files="${3:-docker-compose.yml}" ports="${4:-}" live="${5:-}"
   local base f rel line item host name what services="" judged="" first=""
   dir=${dir%/}
   [[ -n "$dir" ]] || dir=.
@@ -151,7 +151,7 @@ contract_problems() {
     while IFS=$'\t' read -r line what; do
       [[ -n "$line" ]] || continue
       preflight_problem "$rel:$line writes a secret into the compose file ($what)" \
-        "take the value out of $rel: pass it by name or as \${NAME}, and keep the value in the credential file ($(dirname "${FORGE_AUTH_FILE:-.devcontainer/agent.env}")/), which is never committed or copied into a slot."
+        "take the value out of $rel: pass it by name or as \${NAME}, and keep the value in the credential file (${FORGE_AUTH_FILE:-$dir/agent.env}), which is never committed or copied into a slot."
     done < <(contract_secret_lines "$base/$f")
     while IFS=$'\t' read -r line name; do
       [[ -n "$line" ]] || continue
@@ -188,7 +188,7 @@ contract_workspace_facts() {
 # the files are fine. Not a contract failure: `run` adds its own overlay, so an
 # acquire works; only `install` runs the project script without it.
 workspace_volume_warning() {
-  local root="$1" dir="${2:-.devcontainer}" files="${3:-docker-compose.yml}" project="${4:-project}"
+  local root="$1" dir="${2:-$DEFAULT_COMPOSE_DIR}" files="${3:-docker-compose.yml}" project="${4:-project}"
   local base f rel facts mounting="" declared=""
   dir=${dir%/}
   [[ -n "$dir" ]] || dir=.

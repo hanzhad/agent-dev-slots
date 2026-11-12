@@ -60,6 +60,10 @@ The first names of these settings (`AGENT_AUTH`, `AGENT_AUTH_ENV_FILE`, `AGENT_A
 
 `dev-container migrate-names [--dry-run] [<dir>]` rewrites a project's old names. It works on the `project.env` of `<dir>` (the current directory by default) and the credential file that `FORGE_AUTH_FILE` names. It prints the key names it changes and never a value, keeps each file's mode, changes nothing on a second run, and refuses, before writing anything, a setting that is given under both names. `--dry-run` prints the same and writes nothing.
 
+### Moving a project's state to its key: `migrate-identity`
+
+A project is known by a key derived from its repository path, no longer by its name. `dev-container migrate-identity [--dry-run]` moves the current project's state from the old names to the key's: `tokens/<label>*` to `tokens/<key>*`, `signing/<label>/` to `signing/<key>/` and `rescue/<label>/` to `rescue/<key>/`, all under the state directory. Run it once per project after an upgrade, before any `acquire`, and then rebuild the engine container. It refuses, and moves nothing, while a lease for the project exists (release its slots first; parked slots do not block) and when a destination already exists; it never overwrites. A second run prints `nothing to migrate`. `--dry-run` prints each planned move and changes nothing. Until a project is migrated, creating its signing key is refused with a pointer to this command, so a second key is never generated beside the first.
+
 
 ### What a slot is provisioned with
 
@@ -97,7 +101,7 @@ The registry is in the state directory (`~/.dev-containers`, or `DEV_CONTAINER_H
 
 Every command that acts on one repository reads and, if needed, writes the registry: `acquire`, `run`, `list`, `release`, `doctor` and the other verbs that act on a checkout. The commands that name no repository (`status`, `schedule`, `unlock`, `check`, `verdict`, `clean`, `reap --all`, `adopt`, `migrate-names`) do not. If the state directory cannot be written, the label is simply the name, with no registry entry.
 
-Nothing yet moves existing per-project state from the label to the key; state already named by label stays where it is.
+`migrate-identity` (above) moves existing per-project state (tokens, signing keys, rescue) from the label to the key; state already named by label stays where it is until it is run.
 
 ## What it does not do
 

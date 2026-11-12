@@ -42,11 +42,19 @@ HINT
 }
 
 # Creates the project's pair when it has none and prints the private key's path.
+# The pair is kept under the project's key when one is resolved, so the guard
+# below is not met by the engine's own first key.
 # An existing key is never regenerated: its public half is already registered.
 ensure_signing_key() {
   local state="$1" project="$2" key dir tmp
-  key=$(signing_key_path "$state" "$project") || return 1
+  # A project with a key lives under it (signing/<key>/); the name is only the
+  # fallback for callers that have no identity resolved.
+  key=$(signing_key_path "$state" "${PROJECT_KEY:-$project}") || return 1
   dir=$(dirname "$key")
+  if [[ -n "${PROJECT_KEY:-}" && -d "$state/signing/$project" && ! -e "$state/signing/$PROJECT_KEY" ]]; then
+    echo "signing key: $state/signing/$project is kept under the project's old name. Run \`${CALLER:-dev-container} migrate-identity\` first, so the key is not generated a second time." >&2
+    return 1
+  fi
   (umask 077; mkdir -p "$dir") && chmod 700 "$dir" || { echo "signing key: cannot create $dir" >&2; return 1; }
   if [[ ! -e "$key" ]]; then
     if [[ -e "$key.pub" ]]; then

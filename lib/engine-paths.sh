@@ -92,5 +92,5 @@ copy_devcontainer_dir() {
   local -a words=()
   read -ra words <<<"$(devcontainer_exclude_words "$src")"
   mkdir -p "$dst"
-  tar -C "$src" -cf - "${words[@]}" .devcontainer | tar -C "$dst" -xpf -
+  tar -C "$src" -cf - "${words[@]}" "$COMPOSE_DIR" | tar -C "$dst" -xpf -
 }

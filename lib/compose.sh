@@ -161,7 +161,7 @@ docker_project_of_dir() {
   local dir="$1" proj
   proj=$(docker ps -a --filter "label=dev-container.workspace=$dir" \
     --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null | head -1)
-  [[ -n "$proj" ]] || proj=$(docker ps -a --filter "label=com.docker.compose.project.working_dir=$dir/.devcontainer" \
+  [[ -n "$proj" ]] || proj=$(docker ps -a --filter "label=com.docker.compose.project.working_dir=$dir/$COMPOSE_DIR" \
     --format '{{.Label "com.docker.compose.project"}}' 2>/dev/null | head -1)
   echo "$proj"
 }
@@ -452,10 +452,10 @@ ensure_slot_env() {
   fi
   sync_agent_auth_env "$proj"
   sync_slot_git_identity "$proj"
-  if [[ -n "$check_dir" && -f "$check_dir/.devcontainer/.env" ]]; then
-    rm -f "$check_dir/.devcontainer/.env" "$(slot_ports_file "$proj")"
+  if [[ -n "$check_dir" && -f "$check_dir/$COMPOSE_DIR/.env" ]]; then
+    rm -f "$check_dir/$COMPOSE_DIR/.env" "$(slot_ports_file "$proj")"
     local sname; sname=$(slot_name_of "${dir:-$check_dir}")
-    echo "▸ $sname: removed its in-checkout .devcontainer/.env — the slot's env now lives at $env_file; its ports are allocated afresh on this bring-up"
+    echo "▸ $sname: removed its in-checkout $COMPOSE_DIR/.env — the slot's env now lives at $env_file; its ports are allocated afresh on this bring-up"
   fi
 }
 

@@ -645,7 +645,7 @@ cmd_restart() {
   fi
   [[ -d "$dir" ]] || dir=""
   if [[ ! -f "$(compose_file_of)" ]]; then
-    die "no $(compose_file_of) — every slot is composed from the main checkout's .devcontainer/, and this checkout has none."
+    die "no $(compose_file_of) — every slot is composed from the main checkout's $COMPOSE_DIR/, and this checkout has none."
   fi
 
   local fresh_env=0
@@ -877,7 +877,7 @@ cmd_run() {
   fi
 
   local cf; cf=$(compose_file_of)
-  [[ -f "$cf" ]] || die "no $cf — every slot is composed from the main checkout's .devcontainer/, and this checkout has none."
+  [[ -f "$cf" ]] || die "no $cf — every slot is composed from the main checkout's $COMPOSE_DIR/, and this checkout has none."
   compose_running "$dir" "$sid" || die "'$sid' has no running containers — '$CALLER restart $name' brings them back."
 
   local -a exec_flags=()
@@ -1021,7 +1021,7 @@ cmd_db_target() {
   fi
 
   local cf; cf=$(compose_file_of)
-  [[ -f "$cf" ]] || die "no $cf — every slot is composed from the main checkout's .devcontainer/, and this checkout has none."
+  [[ -f "$cf" ]] || die "no $cf — every slot is composed from the main checkout's $COMPOSE_DIR/, and this checkout has none."
   compose_running "$dir" "$sid" || die "'$sid' has no running containers — '$CALLER restart $name' brings them back."
 
   compose_args_of "$sid"
@@ -1082,7 +1082,7 @@ cmd_up() {
     fi
     [[ "$(sed -n 's/^holder=//p' <<<"$hcontent")" == "$holder" ]] \
       || die "refusing 'up $name --secrets' — the slot's .slot-holder does not name '$holder'."
-    [[ -f "$(secrets_overlay_of)" ]] || die "$(secrets_overlay_of) does not exist — the overlay comes from the main checkout's .devcontainer/."
+    [[ -f "$(secrets_overlay_of)" ]] || die "$(secrets_overlay_of) does not exist — the overlay comes from the main checkout's $COMPOSE_DIR/."
     local spec; spec=$(spec_of "$sid")
     if [[ -f "$repo_root/.env.test.local" ]]; then
       if [[ "$spec" == dir:* ]]; then

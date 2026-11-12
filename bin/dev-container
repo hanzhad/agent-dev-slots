@@ -168,7 +168,7 @@ common_dir=$(git -C "$caller_pwd" rev-parse --path-format=absolute --git-common-
 repo_root=$(dirname "$common_dir")
 outside_root "$repo_root" strict
 DOCS_PIN_FILE=${DOCS_PIN_FILE:-.github/docs-pin}
-COMPOSE_DIR=${COMPOSE_DIR:-.devcontainer}
+COMPOSE_DIR=${COMPOSE_DIR:-$DEFAULT_COMPOSE_DIR}
 COMPOSE_FILES=${COMPOSE_FILES:-docker-compose.yml}
 SECRETS_OVERLAY=${SECRETS_OVERLAY:-docker-compose.secrets.yml}
 SLOT_ENV_SET=${SLOT_ENV_SET:-}

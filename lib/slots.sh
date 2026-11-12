@@ -101,7 +101,7 @@ slot_looks_complete() {
   local dir="$1"
   local sid="${2:-$(slot_id_of "$dir")}"
   [[ -s "$(slot_ports_file "$sid")" ]] || return 1
-  [[ -f "$(slot_env_file_of "$sid")" || ( -n "$dir" && -f "$dir/.devcontainer/.env" ) ]] || return 1
+  [[ -f "$(slot_env_file_of "$sid")" || ( -n "$dir" && -f "$dir/$COMPOSE_DIR/.env" ) ]] || return 1
   if [[ -n "$dir" && -d "$dir" ]]; then
     [[ -e "$dir/docs/repo/.git" ]] || return 1
   fi
@@ -117,7 +117,7 @@ slot_unbuilt_reason() {
     missing="${missing:+$missing, }docs/repo (the docs clone is missing)"
   fi
   [[ -s "$(slot_ports_file "$sid")" ]] || missing="${missing:+$missing, }recorded ports"
-  [[ -f "$(slot_env_file_of "$sid")" || ( -n "$dir" && -f "$dir/.devcontainer/.env" ) ]] \
+  [[ -f "$(slot_env_file_of "$sid")" || ( -n "$dir" && -f "$dir/$COMPOSE_DIR/.env" ) ]] \
     || missing="${missing:+$missing, }its env file ($(slot_env_file_of "$sid"))"
   echo "its creation never finished — missing $missing. Remove it with 'down $(slot_name_of "$sid") --force' and acquire again."
 }
@@ -352,7 +352,7 @@ create_slot() {
   echo "▸ cloning the main checkout into $vol"
   slot_compose "$proj" run --rm --no-deps -T -u root \
       -v "$repo_root:/src:ro" --entrypoint sh "$svc" -c \
-      'set -e; ws=$1; origin=$2; user=$3; git config --global --add safe.directory "*"; git clone --quiet --no-hardlinks --no-checkout /src "$ws/.dev-container-clone"; mv "$ws/.dev-container-clone/.git" "$ws/.git"; rmdir "$ws/.dev-container-clone"; git -C "$ws" remote set-url origin "$origin"; git -C "$ws" reset --quiet --hard; git -C "$ws" config --local core.checkStat minimal; [ ! -d /src/.devcontainer ] || [ -d "$ws/.devcontainer" ] || { set -f; tar -C /src -cf - $4 .devcontainer | tar -C "$ws" -xpf -; set +f; }; [ ! -f /src/project.env ] || [ -f "$ws/project.env" ] || cp /src/project.env "$ws/project.env"; [ ! -f /src/bin/dev-container ] || [ -f "$ws/bin/dev-container" ] || { mkdir -p "$ws/bin"; cp /src/bin/dev-container "$ws/bin/dev-container"; }; exclude=$(git -C "$ws" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || git -C "$ws" rev-parse --git-path info/exclude 2>/dev/null || echo "$ws/.git/info/exclude"); case "$exclude" in /*) ;; *) exclude="$ws/$exclude" ;; esac; mkdir -p "$(dirname "$exclude")"; for p in "/.devcontainer/" "/project.env" "/bin/dev-container"; do grep -Fxq "$p" "$exclude" 2>/dev/null || echo "$p" >>"$exclude"; done; mounts=$(awk -v ws="$ws/" "index(\$5, ws) == 1 { print \$5 }" /proc/self/mountinfo); set --; for m in $mounts; do set -- "$@" -path "$m" -prune -o; done; find "$ws" "$@" -exec chown -h "$user:$user" {} +' sh "/workspace" "$origin_url" "${CONTAINER_USER:-node}" "$(devcontainer_exclude_words "$repo_root")" \
+      'set -e; ws=$1; origin=$2; user=$3; git config --global --add safe.directory "*"; git clone --quiet --no-hardlinks --no-checkout /src "$ws/.dev-container-clone"; mv "$ws/.dev-container-clone/.git" "$ws/.git"; rmdir "$ws/.dev-container-clone"; git -C "$ws" remote set-url origin "$origin"; git -C "$ws" reset --quiet --hard; git -C "$ws" config --local core.checkStat minimal; [ ! -d "/src/$5" ] || [ -d "$ws/$5" ] || { set -f; tar -C /src -cf - $4 "$5" | tar -C "$ws" -xpf -; set +f; }; [ ! -f /src/project.env ] || [ -f "$ws/project.env" ] || cp /src/project.env "$ws/project.env"; [ ! -f /src/bin/dev-container ] || [ -f "$ws/bin/dev-container" ] || { mkdir -p "$ws/bin"; cp /src/bin/dev-container "$ws/bin/dev-container"; }; exclude=$(git -C "$ws" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || git -C "$ws" rev-parse --git-path info/exclude 2>/dev/null || echo "$ws/.git/info/exclude"); case "$exclude" in /*) ;; *) exclude="$ws/$exclude" ;; esac; mkdir -p "$(dirname "$exclude")"; for p in "/$5/" "/project.env" "/bin/dev-container"; do grep -Fxq "$p" "$exclude" 2>/dev/null || echo "$p" >>"$exclude"; done; mounts=$(awk -v ws="$ws/" "index(\$5, ws) == 1 { print \$5 }" /proc/self/mountinfo); set --; for m in $mounts; do set -- "$@" -path "$m" -prune -o; done; find "$ws" "$@" -exec chown -h "$user:$user" {} +' sh "/workspace" "$origin_url" "${CONTAINER_USER:-node}" "$(devcontainer_exclude_words "$repo_root")" "$COMPOSE_DIR" \
     || die "cloning into '$proj' failed — the reason is above this line."
 
   apply_checkout_git_identity "$proj"
@@ -363,7 +363,7 @@ create_slot() {
   fi
   local target_dir="${dir:-$vol_dir}"
   if [[ -n "$target_dir" && -d "$target_dir" ]]; then
-    if [[ -d "$repo_root/.devcontainer" && ! -d "$target_dir/.devcontainer" ]]; then
+    if [[ -d "$repo_root/$COMPOSE_DIR" && ! -d "$target_dir/$COMPOSE_DIR" ]]; then
       copy_devcontainer_dir "$repo_root" "$target_dir"
     fi
     if [[ -f "$repo_root/project.env" && ! -f "$target_dir/project.env" ]]; then

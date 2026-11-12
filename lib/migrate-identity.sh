@@ -12,7 +12,8 @@
 # anything moves. A live lease for the label stops it too, because a running
 # slot still reads the old names.
 
-# Prints the plan as "<kind> <source> <destination>" lines for LABEL and KEY.
+# Prints the plan for LABEL and KEY as NUL-terminated fields, three per entry:
+# kind, source, destination. NUL, because a path may hold any other character.
 migrate_identity_plan() {
   local state="$1" label="$2" key="$3" f suffix kind
   for f in "$state/tokens/$label"*; do
@@ -20,11 +21,11 @@ migrate_identity_plan() {
     suffix=${f#"$state/tokens/$label"}
     # tokens/<label>.lock is this project's; tokens/<label>_<key> is another one's.
     [[ -z "$suffix" || "$suffix" == .* ]] || continue
-    printf 'tokens %s %s\n' "$f" "$state/tokens/$key$suffix"
+    printf 'tokens\0%s\0%s\0' "$f" "$state/tokens/$key$suffix"
   done
   for kind in signing rescue; do
     [[ -e "$state/$kind/$label" || -L "$state/$kind/$label" ]] || continue
-    printf '%s %s %s\n' "$kind" "$state/$kind/$label" "$state/$kind/$key"
+    printf '%s\0%s\0%s\0' "$kind" "$state/$kind/$label" "$state/$kind/$key"
   done
 }
 
@@ -38,7 +39,7 @@ migrate_identity_leases() {
 }
 
 cmd_migrate_identity() {
-  local dry=0 arg kind src dst leases clash=""
+  local dry=0 arg kind src dst leases clash="" i
   local -a plan=()
   for arg in "$@"; do
     case "$arg" in
@@ -55,14 +56,14 @@ cmd_migrate_identity() {
     exit 1
   fi
 
-  mapfile -t plan < <(migrate_identity_plan "$STATE" "$PROJECT_LABEL" "$PROJECT_KEY")
+  mapfile -d '' -t plan < <(migrate_identity_plan "$STATE" "$PROJECT_LABEL" "$PROJECT_KEY")
   if (( ${#plan[@]} == 0 )) || [[ "$PROJECT_LABEL" == "$PROJECT_KEY" ]]; then
     echo "nothing to migrate for $PROJECT_LABEL ($PROJECT_KEY)"
     exit 0
   fi
 
-  for arg in "${plan[@]}"; do
-    read -r kind src dst <<<"$arg"
+  for (( i = 0; i < ${#plan[@]}; i += 3 )); do
+    kind=${plan[i]} src=${plan[i+1]} dst=${plan[i+2]}
     if [[ -e "$dst" || -L "$dst" ]]; then
       clash+="  $kind: $dst exists while $src exists"$'\n'
     fi
@@ -72,8 +73,8 @@ cmd_migrate_identity() {
     exit 1
   fi
 
-  for arg in "${plan[@]}"; do
-    read -r kind src dst <<<"$arg"
+  for (( i = 0; i < ${#plan[@]}; i += 3 )); do
+    kind=${plan[i]} src=${plan[i+1]} dst=${plan[i+2]}
     if (( dry )); then
       echo "would move ($kind, key $PROJECT_KEY): $src -> $dst"
     else

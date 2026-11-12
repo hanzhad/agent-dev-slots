@@ -187,6 +187,53 @@ class MigrateGuardTest(MigrateCase):
         self.assertEqual(self.snapshot(), before)
 
 
+class MigrateSpacedStateTest(MigrateCase):
+    """A state directory whose path holds spaces must not cut the plan's paths."""
+
+    def setUp(self):
+        super().setUp()
+        self.state = os.path.join(self.harness.tmp, "state dir with space", "dev-container-state")
+        os.makedirs(self.state)
+        self.harness.state_dir = self.state
+
+    def test_moves_everything_under_a_path_with_a_space(self):
+        self.legacy()
+
+        result, text = self.migrate()
+
+        self.assertEqual(result.returncode, 0, text)
+        self.assertEqual(self.read(f"tokens/{self.key}"), f"token-of-{self.label}")
+        self.assertEqual(self.read(f"tokens/{self.key}.extra"), f"extra-of-{self.label}")
+        self.assertEqual(self.read(f"signing/{self.key}/container_signing"), f"private-of-{self.label}")
+        self.assertEqual(self.read(f"rescue/{self.key}/note.txt"), f"rescue-of-{self.label}")
+        self.assertFalse(os.path.exists(self.path("tokens", self.label)))
+        self.assertFalse(os.path.exists(self.path("signing", self.label)))
+        self.assertFalse(os.path.exists(self.path("rescue", self.label)))
+
+    def test_dry_run_prints_the_full_paths_and_changes_nothing(self):
+        self.legacy()
+        before = self.snapshot()
+
+        result, text = self.migrate("--dry-run")
+
+        self.assertEqual(result.returncode, 0, text)
+        self.assertEqual(self.snapshot(), before)
+        self.assertIn(f"{self.path('tokens', self.label)} -> {self.path('tokens', self.key)}", text)
+        self.assertIn(f"{self.path('signing', self.label)} -> {self.path('signing', self.key)}", text)
+        self.assertIn(f"{self.path('rescue', self.label)} -> {self.path('rescue', self.key)}", text)
+
+    def test_still_refuses_an_existing_destination_under_such_a_path(self):
+        self.legacy()
+        self.write(f"signing/{self.key}/keep", "already-here")
+        before = self.snapshot()
+
+        result, text = self.migrate()
+
+        self.assertRefused(result, text, "exist")
+        self.assertIn(self.path("signing", self.key), text)
+        self.assertEqual(self.snapshot(), before)
+
+
 class EnsureSigningKeyGuardTest(unittest.TestCase):
     def setUp(self):
         self.state = tempfile.mkdtemp(prefix="migrate-signing-state-")

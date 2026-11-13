@@ -155,13 +155,16 @@ sync_docs_repo_to_pin() {
 DOCS_REPO_PUSHURL="read-only://docs-repo-is-read-only--clone-docs-fix"
 DOCS_REPO_REFUSAL="docs/repo is read-only; clone $docs_gh_repo into docs/fix and make the change there, on a branch off its default branch"
 DOCS_REPO_HOOKS=".git/slot-readonly-hooks"
+docs_repo_hook_script() {
+  printf '#!/bin/sh\ncat >&2 <<'\''MSG'\''\n%s\nMSG\nexit 1\n' "$DOCS_REPO_REFUSAL"
+}
 guard_docs_repo_readonly() {
   local dir="$1" docs="$1/docs/repo" hooks h
   [[ -f "$docs/.git/HEAD" ]] || return 0
   hooks="$docs/$DOCS_REPO_HOOKS"
   mkdir -p "$hooks"
   for h in pre-commit pre-push; do
-    printf '#!/bin/sh\ncat >&2 <<'\''MSG'\''\n%s\nMSG\nexit 1\n' "$DOCS_REPO_REFUSAL" > "$hooks/$h"
+    docs_repo_hook_script > "$hooks/$h"
     chmod +x "$hooks/$h"
   done
   git -C "$docs" config --local core.hooksPath "$DOCS_REPO_HOOKS"

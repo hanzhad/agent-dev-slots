@@ -395,14 +395,18 @@ create_slot() {
       ln -s "$handoff" "$target_dir/.local/$(basename "$handoff")"
     done
 
-    echo "▸ cloning the docs repository into docs/repo"
-    forge_git clone --depth 1 --quiet -- "$DOCS_REPO_URL" "$target_dir/docs/repo"
-    exclude_docs_clones "$target_dir"
-    forge_git -C "$target_dir" fetch --quiet origin "refs/heads/$(default_branch "$target_dir")" 2>/dev/null \
-      || echo "  ! could not fetch origin — docs/repo follows the pin on $repo_root's own $(default_branch "$target_dir"), which may be behind" >&2
-    sync_docs_repo_to_pin "$target_dir" \
-      || echo "  ! could not fetch the docs pin into docs/repo — $DOCS_PIN_REASON, and anything that reads docs/repo will say so" >&2
-    guard_docs_repo_readonly "$target_dir"
+    if [[ -n "${dir:-}" ]]; then
+      echo "▸ cloning the docs repository into docs/repo"
+      forge_git clone --depth 1 --quiet -- "$DOCS_REPO_URL" "$target_dir/docs/repo"
+      exclude_docs_clones "$target_dir"
+      forge_git -C "$target_dir" fetch --quiet origin "refs/heads/$(default_branch "$target_dir")" 2>/dev/null \
+        || echo "  ! could not fetch origin — docs/repo follows the pin on $repo_root's own $(default_branch "$target_dir"), which may be behind" >&2
+      sync_docs_repo_to_pin "$target_dir" \
+        || echo "  ! could not fetch the docs pin into docs/repo — $DOCS_PIN_REASON, and anything that reads docs/repo will say so" >&2
+      guard_docs_repo_readonly "$target_dir"
+    else
+      clone_docs_repo_in_volume "$proj"
+    fi
     apply_checkout_check_stat "$target_dir"
   else
     local copy_file
@@ -413,6 +417,7 @@ create_slot() {
       echo "▸ copying $copy_file"
       slot_helper_run "$proj" sh -c 'mkdir -p "$(dirname "$1")" && cat >"$1"' sh "$copy_file" <"$repo_root/$copy_file"
     done
+    clone_docs_repo_in_volume "$proj"
   fi
 
   lock_acquire

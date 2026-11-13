@@ -13,8 +13,28 @@ slot_is_abandoned() {
   return 0
 }
 
+# What this project's rescue directory is called under $STATE/rescue: its key,
+# which is its own, where the label only is while no other root claims it. A
+# caller with no identity resolved falls back to the label.
+rescue_name() {
+  printf '%s' "${PROJECT_KEY:-$SLOT_PROJECT_PREFIX}"
+}
+
+# A rescue directory still named by the label belongs to the old layout. Refused,
+# as the token cache and the signing key are, so an archive is not written or
+# looked for in a second place.
+rescue_legacy_guard() {
+  local name; name=$(rescue_name)
+  [[ -n "${PROJECT_KEY:-}" && "$name" != "$SLOT_PROJECT_PREFIX" ]] || return 0
+  if [[ -e "$STATE/rescue/$SLOT_PROJECT_PREFIX" && ! -e "$STATE/rescue/$name" ]]; then
+    die "rescue: $STATE/rescue/$SLOT_PROJECT_PREFIX is kept under the project's old name. Run \`${CALLER:-dev-container} migrate-identity\` first."
+  fi
+}
+
 archive_exists_for_slot() {
-  local project="$1" lease="$2"
+  local lease="$2" project
+  rescue_legacy_guard
+  project=$(rescue_name)
   local direct="$STATE/rescue/$project/$lease"
   [[ -d "$direct" ]] && return 0
   local f
@@ -29,7 +49,9 @@ archive_exists_for_slot() {
 archive_and_clean_slot() {
   local dir="$1" sid="$2" name="$3"
   local project="$SLOT_PROJECT_PREFIX"
-  local target_dir="$STATE/rescue/$project/$name"
+  rescue_legacy_guard
+  local rescue_dir="$STATE/rescue/$(rescue_name)"
+  local target_dir="$rescue_dir/$name"
 
   local is_vol=0
   if [[ "$(spec_of "$sid")" == vol:* || ( -n "${slots_dir:-}" && ! -d "$slots_dir/$name" ) ]]; then
@@ -219,7 +241,7 @@ archive_and_clean_slot() {
     return 1
   fi
 
-  mkdir -p "$STATE/rescue/$project" 2>/dev/null || true
+  mkdir -p "$rescue_dir" 2>/dev/null || true
   if ! mv "$tmp_dir" "$target_dir"; then
     rm -rf "$tmp_dir"
     write_parked "$(parked_file_of "$sid")" "$project" "archive-failed" "$(now_epoch)" "mv archive failed"

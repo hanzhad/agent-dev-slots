@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import subprocess
@@ -215,7 +216,7 @@ class TestLocalGitOnly(DevContainerTestCase):
         res_reap = self.engine_run("reap", caller_pwd=repo)
         self.assertEqual(res_reap.returncode, 0, output_of(res_reap))
 
-        archive_dir = os.path.join(self.harness.state_dir, "rescue", PROJECT_PREFIX, slot_name)
+        archive_dir = os.path.join(self.harness.state_dir, "rescue", hashlib.sha256(os.path.realpath(repo).encode()).hexdigest()[:8], slot_name)
         self.assertTrue(os.path.isdir(archive_dir), f"archive dir missing: {archive_dir}")
 
         bundle_path = os.path.join(archive_dir, "commits.bundle")

@@ -24,7 +24,9 @@ JSON
 
 find_archive_dir() {
   local project="$1" target="$2"
-  local candidate="$STATE/rescue/$project/$target"
+  rescue_legacy_guard
+  local rescue_dir="$STATE/rescue/$(rescue_name)"
+  local candidate="$rescue_dir/$target"
   if [[ -d "$candidate" && ! "$target" == .* ]]; then
     echo "$candidate"
     return 0
@@ -32,7 +34,7 @@ find_archive_dir() {
 
   if [[ "$target" == "${project}-"* ]]; then
     local stripped="${target#"${project}-"}"
-    candidate="$STATE/rescue/$project/$stripped"
+    candidate="$rescue_dir/$stripped"
     if [[ -d "$candidate" && ! "$stripped" == .* ]]; then
       echo "$candidate"
       return 0
@@ -40,7 +42,7 @@ find_archive_dir() {
   fi
 
   local f adir recorded branches match
-  for f in "$STATE/rescue/$project"/*/meta.json; do
+  for f in "$rescue_dir"/*/meta.json; do
     [[ -f "$f" ]] || continue
     adir=$(dirname "$f")
     [[ "$(basename "$adir")" == .* ]] && continue
@@ -103,7 +105,7 @@ cmd_resume() {
     [[ -f "$meta" ]] && lease_name=$(jq -r '.lease // empty' "$meta" 2>/dev/null) || lease_name=""
     [[ -n "$lease_name" ]] || lease_name=$(basename "$archive_dir")
 
-    local restoring_dir="$STATE/rescue/$SLOT_PROJECT_PREFIX/.restoring-$lease_name"
+    local restoring_dir="$STATE/rescue/$(rescue_name)/.restoring-$lease_name"
     rm -rf "$restoring_dir" 2>/dev/null || true
     mv "$archive_dir" "$restoring_dir" || die "failed to mark archive for restoration"
 

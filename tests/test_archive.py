@@ -91,7 +91,7 @@ class TestArchive(DevContainerTestCase):
 
         self.assertFalse(os.path.exists(slot_dir), f"slot dir was not deleted: {slot_dir}")
 
-        archive_dir = os.path.join(self.rescue_dir, PROJECT_PREFIX, name)
+        archive_dir = os.path.join(self.rescue_dir, self.harness.project_key, name)
         self.assertTrue(os.path.isdir(archive_dir), f"archive dir missing: {archive_dir}")
 
         bundle_path = os.path.join(archive_dir, "commits.bundle")
@@ -150,7 +150,7 @@ class TestArchive(DevContainerTestCase):
         clean_res = self.harness.run("clean")
         self.assertEqual(clean_res.returncode, 0, clean_res.stderr.decode())
 
-        archive_dir = os.path.join(self.rescue_dir, PROJECT_PREFIX, name)
+        archive_dir = os.path.join(self.rescue_dir, self.harness.project_key, name)
         thin_bundle = os.path.join(archive_dir, "commits.bundle")
         self.assertTrue(os.path.isfile(thin_bundle))
         self.assertLess(os.path.getsize(thin_bundle), os.path.getsize(full_bundle))
@@ -174,7 +174,7 @@ class TestArchive(DevContainerTestCase):
         clean_res = self.harness.run("clean", port_overrides={"DEV_CONTAINER_ARCHIVE_SIZE_LIMIT": "500"})
         self.assertEqual(clean_res.returncode, 0, clean_res.stderr.decode())
 
-        archive_dir = os.path.join(self.rescue_dir, PROJECT_PREFIX, name)
+        archive_dir = os.path.join(self.rescue_dir, self.harness.project_key, name)
         tar_path = os.path.join(archive_dir, "new-files.tar")
         self.assertTrue(os.path.isfile(tar_path))
         tar_list = subprocess.run(
@@ -204,7 +204,7 @@ class TestArchive(DevContainerTestCase):
         self.assertEqual(clean_res.returncode, 0, clean_res.stderr.decode())
 
         self.assertFalse(os.path.exists(slot_dir))
-        archive_dir = os.path.join(self.rescue_dir, PROJECT_PREFIX, name)
+        archive_dir = os.path.join(self.rescue_dir, self.harness.project_key, name)
         self.assertFalse(os.path.exists(archive_dir), f"archive created for clean slot: {archive_dir}")
 
     def test_crash_with_target_in_place_only_deletes_slot(self):
@@ -213,7 +213,7 @@ class TestArchive(DevContainerTestCase):
         name = self.harness.acquired_slot_name(result)
         slot_dir = self.harness.slot_dir(name)
 
-        archive_dir = os.path.join(self.rescue_dir, PROJECT_PREFIX, name)
+        archive_dir = os.path.join(self.rescue_dir, self.harness.project_key, name)
         os.makedirs(archive_dir, exist_ok=True)
         sentinel_path = os.path.join(archive_dir, "sentinel.txt")
         with open(sentinel_path, "w", encoding="utf-8") as handle:
@@ -314,7 +314,7 @@ class TestArchive(DevContainerTestCase):
         self._expire_lease(name)
 
         os.makedirs(self.rescue_dir, exist_ok=True)
-        block_file = os.path.join(self.rescue_dir, "demo")
+        block_file = os.path.join(self.rescue_dir, self.harness.project_key)
         with open(block_file, "w", encoding="utf-8") as handle:
             handle.write("block\n")
 
@@ -357,7 +357,7 @@ class TestArchive(DevContainerTestCase):
         clean_res = self.harness.run("clean")
         self.assertEqual(clean_res.returncode, 0, clean_res.stderr.decode())
 
-        archive_dir = os.path.join(self.rescue_dir, PROJECT_PREFIX, name)
+        archive_dir = os.path.join(self.rescue_dir, self.harness.project_key, name)
         meta_path = os.path.join(archive_dir, "meta.json")
         self.assertTrue(os.path.isfile(meta_path))
         bundle_path = os.path.join(archive_dir, "commits.bundle")

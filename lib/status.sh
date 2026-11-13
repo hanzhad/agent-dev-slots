@@ -27,8 +27,11 @@ status_slots_json() {
       ports_json=$(echo "$ports_json" | jq --argjson p "$ssh_p" '. + (if has("SSH_PORT") then {} else {"SSH_PORT": $p} end) + {"ssh_port": $p}')
     fi
 
+    local allowed_json slot_hosts_json
+    allowed_json=$(slot_allowed_hosts "$sid" | allow_hosts_json_array)
+    slot_hosts_json=$(slot_extra_hosts "$sid" | allow_hosts_json_array)
     local obj
-    obj=$(jq -n       --arg slot "$sid"       --arg project "$project"       --arg holder "$holder"       --argjson last_activity "$last_activity"       --argjson ports "$ports_json"       '{slot: $slot, project: $project, holder: $holder, last_activity: $last_activity, last_activity_timestamp: $last_activity, ports: $ports}')
+    obj=$(jq -n       --arg slot "$sid"       --arg project "$project"       --arg holder "$holder"       --argjson last_activity "$last_activity"       --argjson ports "$ports_json"       --argjson allowed "$allowed_json"       --argjson slot_hosts "$slot_hosts_json"       '{slot: $slot, project: $project, holder: $holder, last_activity: $last_activity, last_activity_timestamp: $last_activity, ports: $ports, allowed_hosts: $allowed, slot_hosts: $slot_hosts}')
     slot_objs+=("$obj")
   done
 
@@ -231,6 +234,9 @@ cmd_status() {
       s_act=$(echo "$slots" | jq -r ".[$i].last_activity")
       s_ports=$(echo "$slots" | jq -r --argjson idx "$i" '.[$idx].ports | to_entries | map("\(.key) \(.value)") | join(", ")')
       echo "  $s_sid ($s_proj): held by $s_hold, active $(fmt_duration "$(( $(now_epoch) - s_act ))") ago, ports: $s_ports"
+      local s_hosts
+      s_hosts=$(echo "$slots" | jq -r --argjson idx "$i" '.[$idx].allowed_hosts | join(", ")')
+      [[ -z "$s_hosts" ]] || echo "    extra firewall hosts: $s_hosts"
     done
   fi
   echo ""

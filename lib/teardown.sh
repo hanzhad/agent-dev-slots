@@ -103,6 +103,7 @@ teardown_dir() {
   esac
 
   rm -f "$(slot_env_file_of "$proj")" "$STATE/ports/$proj.ports" "$(slot_overlay_of "$proj")"
+  rm -f "$(allow_hosts_file_of "$proj")" "$(allow_hosts_base_file_of "$proj")"
   spec_reset "$proj"
   facts_reset "$proj"
   activity_clear "$proj"

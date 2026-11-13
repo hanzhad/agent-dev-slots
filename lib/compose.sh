@@ -460,10 +460,12 @@ ensure_slot_env() {
   if [[ ! -f "$env_file" ]]; then
     mkdir -p "$(dirname "$env_file")"
     seed_slot_env "$main_compose_dir/.env" "$env_file"
+    rm -f "$(allow_hosts_base_file_of "$proj")"
     upsert_env_var "$env_file" SSH_PUBLIC_KEY ""
   fi
   sync_agent_auth_env "$proj"
   sync_slot_git_identity "$proj"
+  sync_slot_allow_hosts "$proj"
   if [[ -n "$check_dir" && -f "$check_dir/$COMPOSE_DIR/.env" ]]; then
     rm -f "$check_dir/$COMPOSE_DIR/.env" "$(slot_ports_file "$proj")"
     local sname; sname=$(slot_name_of "${dir:-$check_dir}")

@@ -714,7 +714,17 @@ LIVE_GATEWAY_DIR=""
 LIVE_GATEWAY_SID=""
 LIVE_RUN_PID=""
 
-live_lock_file_of() { echo "$STATE/live/$SLOT_PROJECT_PREFIX.lock"; }
+# The lock is named by the project's key, as its token cache is; one still named
+# by the label belongs to the old layout and is refused until migrate-identity.
+live_lock_file_of() { echo "$STATE/live/${PROJECT_KEY:-$SLOT_PROJECT_PREFIX}.lock"; }
+
+live_lock_legacy_guard() {
+  local name=${PROJECT_KEY:-$SLOT_PROJECT_PREFIX}
+  [[ -n "${PROJECT_KEY:-}" && "$name" != "$SLOT_PROJECT_PREFIX" ]] || return 0
+  if [[ -e "$STATE/live/$SLOT_PROJECT_PREFIX.lock" && ! -e "$STATE/live/$name.lock" ]]; then
+    die "live lock: $STATE/live/$SLOT_PROJECT_PREFIX.lock is kept under the project's old name. Run \`${CALLER:-dev-container} migrate-identity\` first."
+  fi
+}
 
 live_lock_held_by_live_pid() {
   local file="$1" pid
@@ -725,6 +735,7 @@ live_lock_held_by_live_pid() {
 
 live_lock_acquire() {
   local file pid waited=0
+  live_lock_legacy_guard
   mkdir -p "$STATE/live"
   file=$(live_lock_file_of)
   until ( set -C; printf '%s\n' "$$" >"$file" ) 2>/dev/null; do

@@ -110,7 +110,7 @@ class TestResume(DevContainerTestCase):
         self.assertEqual(clean_res.returncode, 0, clean_res.stderr.decode())
         self.assertFalse(os.path.exists(slot_dir))
 
-        archive_dir = os.path.join(self.rescue_dir, PROJECT_PREFIX, name)
+        archive_dir = os.path.join(self.rescue_dir, self.harness.project_key, name)
         self.assertTrue(os.path.isdir(archive_dir))
 
         resume_res = self.harness.run("resume", "feat-resume")

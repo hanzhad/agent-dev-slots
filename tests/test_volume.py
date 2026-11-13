@@ -469,7 +469,7 @@ class RescueArchiveTarContents(DevContainerTestCase):
         self.assertFalse(self.harness.volume_exists(name))
 
         # Rescue archive check
-        archive_dir = os.path.join(self.harness.state_dir, "rescue", PROJECT_PREFIX, name)
+        archive_dir = os.path.join(self.harness.state_dir, "rescue", self.harness.project_key, name)
         self.assertTrue(os.path.isdir(archive_dir), f"archive dir missing: {archive_dir}")
 
         tar_path = os.path.join(archive_dir, "new-files.tar")
@@ -528,7 +528,7 @@ class VolumeSlotEvict(DevContainerTestCase):
         self.assertFalse(os.path.exists(self.harness.lease_path(name)), "slot lease was not removed by evict")
 
         # Archive created with work
-        archive_dir = os.path.join(self.harness.state_dir, "rescue", PROJECT_PREFIX, name)
+        archive_dir = os.path.join(self.harness.state_dir, "rescue", self.harness.project_key, name)
         self.assertTrue(os.path.isdir(archive_dir), f"archive dir missing: {archive_dir}")
         tar_path = os.path.join(archive_dir, "new-files.tar")
         self.assertTrue(os.path.isfile(tar_path), "new-files.tar missing from archive")

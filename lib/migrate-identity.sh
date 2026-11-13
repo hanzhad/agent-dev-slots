@@ -2,11 +2,12 @@
 
 # `migrate-identity`: moves a project's per-machine state from the names it was
 # kept under (the label) to the names a project is known by now (the key, see
-# identity.sh). Three kinds move, each to the same name with the key in place of
+# identity.sh). Four kinds move, each to the same name with the key in place of
 # the label:
 #   tokens/<label>*   ->  tokens/<key>*     (same suffix: .lock, .XXXXXX)
 #   signing/<label>/  ->  signing/<key>/
 #   rescue/<label>/   ->  rescue/<key>/
+#   live/<label>.lock ->  live/<key>.lock
 # It runs once per project, after an upgrade and before any acquire. It never
 # overwrites: a destination that exists while its source exists stops it before
 # anything moves. A live lease for the label stops it too, because a running
@@ -23,6 +24,9 @@ migrate_identity_plan() {
     [[ -z "$suffix" || "$suffix" == .* ]] || continue
     printf 'tokens\0%s\0%s\0' "$f" "$state/tokens/$key$suffix"
   done
+  if [[ -e "$state/live/$label.lock" || -L "$state/live/$label.lock" ]]; then
+    printf 'live\0%s\0%s\0' "$state/live/$label.lock" "$state/live/$key.lock"
+  fi
   for kind in signing rescue; do
     [[ -e "$state/$kind/$label" || -L "$state/$kind/$label" ]] || continue
     printf '%s\0%s\0%s\0' "$kind" "$state/$kind/$label" "$state/$kind/$key"

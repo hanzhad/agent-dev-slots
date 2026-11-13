@@ -126,7 +126,8 @@ status_archives_json() {
     for proj_dir in "$rescue_base"/*/; do
       [[ -d "$proj_dir" ]] || continue
       proj_dir=${proj_dir%/}
-      local project; project=$(basename "$proj_dir")
+      local key; key=$(basename "$proj_dir")
+      local project="$key"
       for lease_dir in "$proj_dir"/*/; do
         [[ -d "$lease_dir" ]] || continue
         lease_dir=${lease_dir%/}
@@ -142,6 +143,7 @@ status_archives_json() {
         [[ -f "$lease_dir/verdict.md" ]] && verdict=true
 
         local meta_file="$lease_dir/meta.json"
+        project=$(archive_project_label "$key" "$meta_file")
         local branches="[]"
         local age=0
         local dir_mtime
@@ -169,8 +171,9 @@ status_archives_json() {
         fi
 
         local obj
-        obj=$(jq -n           --arg project "$project"           --arg lease "$lease"           --argjson size "$size_bytes"           --argjson size_bytes "$size_bytes"           --argjson age "$age"           --argjson branches "$branches"           --argjson verdict "$verdict"           --argjson has_verdict "$verdict"           '{
+        obj=$(jq -n           --arg project "$project"           --arg key "$key"           --arg lease "$lease"           --argjson size "$size_bytes"           --argjson size_bytes "$size_bytes"           --argjson age "$age"           --argjson branches "$branches"           --argjson verdict "$verdict"           --argjson has_verdict "$verdict"           '{
             project: $project,
+            key: $key,
             lease: $lease,
             size: $size,
             size_bytes: $size_bytes,

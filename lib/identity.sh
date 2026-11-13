@@ -18,6 +18,29 @@
 
 PROJECT_LABEL_RE='^[a-z0-9][a-z0-9_-]*$'
 
+# The label to show for a directory under $STATE/rescue: the label the archive's
+# meta.json recorded, else the one the registry gives the directory's key, else
+# the directory's own name (a legacy label-named directory is its own label).
+# Args: directory name, meta.json path (may not exist).
+archive_project_label() {
+  local name="$1" meta="${2:-}" label=""
+  [[ -f "$meta" ]] && label=$(jq -r '.project // empty' "$meta" 2>/dev/null) || label=""
+  if [[ -z "$label" && -f "$STATE/projects/$name.json" ]]; then
+    label=$(jq -r '.label // empty' "$STATE/projects/$name.json" 2>/dev/null) || label=""
+  fi
+  printf '%s' "${label:-$name}"
+}
+
+# The key that owns LABEL in the registry; fails when nobody does.
+archive_key_of_label() {
+  local label="$1" key
+  [[ "$label" =~ $PROJECT_LABEL_RE ]] || return 1
+  [[ -f "$STATE/projects/labels/$label" ]] || return 1
+  key=$(<"$STATE/projects/labels/$label") || return 1
+  [[ "$key" =~ ^[A-Za-z0-9_]+$ ]] || return 1
+  printf '%s' "$key"
+}
+
 project_canonical_root() {
   local canon
   canon=$(CDPATH= cd -P "$1" 2>/dev/null && pwd -P) || canon=$1

@@ -70,7 +70,7 @@ class BranchDeliveryUsesMergeTree(DevContainerTestCase):
             )
 
     def _cache_key(self, branch, tip):
-        return f"{PROJECT_PREFIX}-{branch.replace('/', '_')}-{tip}"
+        return f"{self.harness.project_key}-{branch.replace('/', '_')}-{tip}"
 
     def test_1_a_squash_merged_multi_commit_branch_is_delivered(self):
         self.git("checkout", "-q", "-b", "squash-work")

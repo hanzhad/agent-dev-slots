@@ -633,11 +633,14 @@ cmd_verdict() {
   shift || true
   [[ $# -eq 0 ]] || die "Usage: $CALLER verdict <archive-dir or project/lease>"
 
-  local adir=""
+  local adir="" lkey=""
   if [[ -d "$target" && ( -f "$target/meta.json" || -f "$target/commits.bundle" || -f "$target/changes.patch" || -f "$target/new-files.tar" ) ]]; then
     adir="$target"
   elif [[ -d "$STATE/rescue/$target" ]]; then
     adir="$STATE/rescue/$target"
+  elif [[ "$target" == */* ]] && lkey=$(archive_key_of_label "${target%%/*}")       && [[ -d "$STATE/rescue/$lkey/${target#*/}" ]]; then
+    # <label>/<lease>: the rescue directory is named by the project's key
+    adir="$STATE/rescue/$lkey/${target#*/}"
   else
     local found=""
     if [[ -d "$STATE/rescue" ]]; then

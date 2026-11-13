@@ -68,7 +68,9 @@ branch_delivery_status() {
 
   local cache_key
   if [[ "$repo_slug" == "$gh_repo" ]]; then
-    cache_key="${SLOT_PROJECT_PREFIX}-${branch//\//_}-${tip}"
+    # Named by the key, as rescue and the token cache are. An entry still named by
+    # the label is not read: it is a cache miss, and the verdict is derived again.
+    cache_key="${PROJECT_KEY:-$SLOT_PROJECT_PREFIX}-${branch//\//_}-${tip}"
   else
     cache_key="${repo_slug//\//_}-${branch//\//_}-${tip}"
   fi

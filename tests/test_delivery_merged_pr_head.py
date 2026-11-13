@@ -117,11 +117,11 @@ class BranchDeliveryMergedPrHead(DevContainerTestCase):
         )
 
     def _delivered_marker(self, branch, tip):
-        key = f"{PROJECT_PREFIX}-{branch.replace('/', '_')}-{tip}"
+        key = f"{self.harness.project_key}-{branch.replace('/', '_')}-{tip}"
         return os.path.join(self.harness.state_dir, "delivered", key)
 
     def _closed_cache(self, branch, tip):
-        key = f"{PROJECT_PREFIX}-{branch.replace('/', '_')}-{tip}"
+        key = f"{self.harness.project_key}-{branch.replace('/', '_')}-{tip}"
         path = os.path.join(self.harness.state_dir, "closed", key)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         return path

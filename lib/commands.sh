@@ -462,7 +462,7 @@ cmd_list() {
 
   local proj
   for proj in $(slot_compose_projects); do
-    case "$proj" in "${SLOT_PROJECT_PREFIX}-"*) ;; *) continue ;; esac
+    sid_is_this_projects "$proj" || continue
     slot_exists "$proj" && continue
     local odir; odir=$(workspace_of_project "$proj")
     if [[ -z "$odir" || ! -d "$odir" ]]; then
@@ -485,7 +485,7 @@ cmd_reap() {
   for f in "$STATE"/leases/*.json; do
     [[ -f "$f" ]] || continue
     local sid; sid=$(basename "$f" .json)
-    case "$sid" in "${SLOT_PROJECT_PREFIX}-"*) ;; *) continue ;; esac
+    sid_is_this_projects "$sid" || continue
     local name=${sid#"${SLOT_PROJECT_PREFIX}"-}
     local dir="$slots_dir/$name"
     slot_exists "$sid" || continue
@@ -509,7 +509,7 @@ cmd_reap() {
 
   local proj
   for proj in $(slot_compose_projects); do
-    case "$proj" in "${SLOT_PROJECT_PREFIX}-"*) ;; *) continue ;; esac
+    sid_is_this_projects "$proj" || continue
     [[ -f "$(lease_file_of "$proj")" ]] && continue
     local odir; odir=$(workspace_of_project "$proj")
     local owned=0

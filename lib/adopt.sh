@@ -44,7 +44,7 @@ adopt_write_starter_compose() {
 
 adopt_stack_compose() {
   local root="$1" stack="$2"
-  if [[ -f "$root/.devcontainer/docker-compose.yml" || -f "$root/.devcontainer/compose.yaml" ]]; then
+  if [[ -f "$root/$DEFAULT_COMPOSE_DIR/docker-compose.yml" || -f "$root/$DEFAULT_COMPOSE_DIR/compose.yaml" ]]; then
     return 0
   fi
   case "$stack" in
@@ -80,10 +80,10 @@ adopt_has_compose() {
 adopt_discover_compose() {
   local root="$1" template_mode="$2" f rel dir base dots search="$1"
   if [[ "$template_mode" == yes ]]; then
-    if [[ ! -f "$root/.devcontainer/docker-compose.yml" ]]; then
+    if [[ ! -f "$root/$DEFAULT_COMPOSE_DIR/docker-compose.yml" ]]; then
       adopt_write_starter_compose "$root"
     fi
-    search="$root/.devcontainer"
+    search="$root/$DEFAULT_COMPOSE_DIR"
   fi
   local -a found=() dirs=()
   local seen_dirs=" "
@@ -109,7 +109,7 @@ adopt_discover_compose() {
   if (( ${#dirs[@]} == 0 )); then
     [[ "$template_mode" != no ]] || die "adopt: no compose file found in $root and --no-template was given"
     adopt_write_starter_compose "$root"
-    ADOPT_COMPOSE_DIR=".devcontainer"
+    ADOPT_COMPOSE_DIR="$DEFAULT_COMPOSE_DIR"
     ADOPT_COMPOSE_FILES="docker-compose.yml"
     return 0
   fi
@@ -151,8 +151,9 @@ adopt_infer_ports() {
 
 adopt_exclude_dotenv() {
   local root="$1" common_dir="$2" compose_dir="$3" exclude="$common_dir/info/exclude" rel pattern
-  local -a rels=(".env" ".devcontainer/.env")
-  if [[ -n "$compose_dir" && "$compose_dir" != ".devcontainer" && "$compose_dir" != "." ]]; then
+  local -a rels=(".env")
+  compose_dir=${compose_dir:-$DEFAULT_COMPOSE_DIR}
+  if [[ "$compose_dir" != "." ]]; then
     rels+=("${compose_dir%/}/.env")
   fi
   mkdir -p "$common_dir/info"
@@ -181,7 +182,7 @@ adopt_exclude_project_files() {
 }
 
 adopt_write_dotenv() {
-  local root="$1" compose_dir="${2:-.devcontainer}"
+  local root="$1" compose_dir="${2:-$DEFAULT_COMPOSE_DIR}"
   local target_env
   if [[ "$compose_dir" == "." || -z "$compose_dir" ]]; then
     target_env="$root/.env"
@@ -206,7 +207,7 @@ adopt_write_dotenv() {
 # and the files that exist: "ok" (all there), "starter" (the starter stack is
 # what it asks for and none of it exists), or "missing <dir>/<file>".
 adopt_compose_plan() {
-  local root="$1" dir="${2:-.devcontainer}" files="${3:-docker-compose.yml}" f base first=""
+  local root="$1" dir="${2:-$DEFAULT_COMPOSE_DIR}" files="${3:-docker-compose.yml}" f base first=""
   local -a names=()
   dir=${dir%/}
   [[ -n "$dir" ]] || dir="."
@@ -222,7 +223,7 @@ adopt_compose_plan() {
   done
   if [[ -z "$first" ]]; then
     echo ok
-  elif [[ "$dir" == ".devcontainer" && "${names[*]}" == "docker-compose.yml" ]]; then
+  elif [[ "$dir" == "$DEFAULT_COMPOSE_DIR" && "${names[*]}" == "docker-compose.yml" ]]; then
     echo starter
   else
     echo "missing $first"
@@ -245,10 +246,10 @@ adopt_ensure_compose() {
 }
 
 adopt_auto_connect() {
-  local root="$1" compose_dir=".devcontainer"
+  local root="$1" compose_dir="$DEFAULT_COMPOSE_DIR"
   if [[ -f "$root/project.env" ]]; then
     read_project_env "$root"
-    compose_dir=${PE_COMPOSE_DIR:-.devcontainer}
+    compose_dir=${PE_COMPOSE_DIR:-$DEFAULT_COMPOSE_DIR}
     adopt_ensure_compose "$root" "$compose_dir" "${PE_COMPOSE_FILES:-docker-compose.yml}"
   elif ! adopt_has_compose "$root"; then
     local stack
@@ -283,7 +284,7 @@ adopt_auto_connect() {
   adopt_launcher_notes "$root" "$compose_dir"
   adopt_exclude_dotenv "$root" "$common_dir" "$compose_dir"
   adopt_exclude_project_files "$root"
-  adopt_write_docs "$root"
+  adopt_write_docs "$root" "$compose_dir"
   AUTO_ADOPTED=1
 }
 
@@ -323,11 +324,11 @@ cmd_adopt() {
   root=$(dirname "$common_dir")
   outside_root "$root" strict
 
-  local compose_dir=".devcontainer"
+  local compose_dir="$DEFAULT_COMPOSE_DIR"
   if [[ -f "$root/project.env" ]]; then
     read_project_env "$root"
     check_project_env "$root/project.env" "$PE_DEFAULT_BRANCH" "$PE_SLOT_PORTS" "${PE_SLOT_MOUNT_DIRS:-}" "${PE_SLOT_OVERLAYS:-}" "${PE_SLOT_ENV_KEYS:-}" "${PE_SLOT_MEMORY_LIMIT:-}"
-    compose_dir=${PE_COMPOSE_DIR:-.devcontainer}
+    compose_dir=${PE_COMPOSE_DIR:-$DEFAULT_COMPOSE_DIR}
     adopt_ensure_compose "$root" "$compose_dir" "${PE_COMPOSE_FILES:-docker-compose.yml}"
   else
     local stack
@@ -360,13 +361,14 @@ cmd_adopt() {
   adopt_launcher_notes "$root" "$compose_dir"
   adopt_exclude_dotenv "$root" "$common_dir" "$compose_dir"
   adopt_exclude_project_files "$root"
-  adopt_write_docs "$root"
+  adopt_write_docs "$root" "$compose_dir"
   echo "adopted $root ($PE_PROJECT)"
   local volume_warning
   volume_warning=$(workspace_volume_warning "$root" "$compose_dir" "${PE_COMPOSE_FILES:-${ADOPT_COMPOSE_FILES:-docker-compose.yml}}" "$PE_PROJECT")
   [[ -z "$volume_warning" ]] || printf 'warn  %s
 ' "$volume_warning"
   # The credential file is the owner's to fill: it is checked last, after everything else is written.
+  COMPOSE_DIR="$compose_dir"
   preflight_reset
   credential_problems "$root" "${PE_FORGE_AUTH:-}" "${PE_FORGE_AUTH_FILE:-}"
   if (( ${#PF_WHAT[@]} )); then

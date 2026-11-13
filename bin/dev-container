@@ -168,7 +168,7 @@ common_dir=$(git -C "$caller_pwd" rev-parse --path-format=absolute --git-common-
 repo_root=$(dirname "$common_dir")
 outside_root "$repo_root" strict
 DOCS_PIN_FILE=${DOCS_PIN_FILE:-.github/docs-pin}
-COMPOSE_DIR=${COMPOSE_DIR:-.devcontainer}
+COMPOSE_DIR=${COMPOSE_DIR:-$DEFAULT_COMPOSE_DIR}
 COMPOSE_FILES=${COMPOSE_FILES:-docker-compose.yml}
 SECRETS_OVERLAY=${SECRETS_OVERLAY:-docker-compose.secrets.yml}
 SLOT_ENV_SET=${SLOT_ENV_SET:-}
@@ -278,6 +278,8 @@ source "$lib_dir/commands.sh"
 source "$lib_dir/archive.sh"
 # shellcheck source=../lib/resume.sh
 source "$lib_dir/resume.sh"
+# shellcheck source=../lib/migrate-identity.sh
+source "$lib_dir/migrate-identity.sh"
 
 trap '(( LOCK_HELD )) && lock_release; (( AGENT_TOKEN_LOCK_HELD )) && rm -f "$AGENT_TOKEN_LOCK"; (( LIVE_LOCK_HELD )) && live_gateway_cleanup; [[ -n "$RESERVED_LEASE" ]] && rm -f "$RESERVED_LEASE"' EXIT
 
@@ -301,6 +303,7 @@ case "$verb" in
   clean) cmd_clean "$@" ;;
   verdict) cmd_verdict "$@" ;;
   resume) cmd_resume "$@" ;;
+  migrate-identity) cmd_migrate_identity "$@" ;;
   *) usage ;;
 esac
 fi

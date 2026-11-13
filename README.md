@@ -18,6 +18,20 @@ Coding agents made a second need obvious. Several agents working on one checkout
 - `install <slot>` runs the project's install script and builds the image, from a clean checkout of the default branch only; the image carries `org.opencontainers.image.revision`.
   The install script runs plain `docker compose -f` without the engine's slot-volume overlay, so it must work without it: a compose file that mounts `${WORKSPACE_DIR}` declares the external `slot-workspace` volume itself (`dev-container doctor` and `adopt` warn when it does not).
 
+## The install hook
+
+- The hook is `install.sh` in the compose directory, run as `bash <COMPOSE_DIR>/install.sh` on the host, not in a container.
+- It runs on create/acquire, on `dev-container install <slot>`, and on restart when the image is stale; it runs before the image build, except on restart, where the build runs first.
+- When `PNPM_STORE_VOLUME` is set, acquire also re-runs it after the slot is up if `node_modules` has drifted from `pnpm-lock.yaml`; if that re-run fails, acquire warns and the lease stays valid.
+- It sees `WORKSPACE_DIR` (the host path for a directory slot, the literal `slot-workspace` volume name for a volume slot), `COMPOSE_PROJECT_NAME` (`<project>-<slot>`), and `PNPM_STORE_VOLUME` only when the project sets it.
+- It does not see a forge token (`GH_TOKEN` and `GITHUB_TOKEN` are removed from its environment), a credential helper, a signing key, a `/workspace` mount or the engine overlay files; `SLOT_WORKSPACE_VOLUME`, `SLOT_ENV_FILE` and `SLOT_GH_TOKEN` are unset.
+- So plain `docker compose -f` fails in a volume slot unless the compose file declares the `slot-workspace` volume itself.
+- Its working directory is the caller's, so the script must not rely on it.
+- A nonzero exit aborts with "installing dependencies into '<slot>' failed" before any build.
+- An absent script is skipped on create/acquire and restart, unless `PNPM_STORE_VOLUME` is set, which refuses the command (so the `node_modules` re-run never meets an absent script).
+- `dev-container install <slot>` is stricter: with no script it always fails with "this project has no install script", whether or not `PNPM_STORE_VOLUME` is set.
+- A project that needs dependencies inside a volume slot runs `dev-container run <slot> -- <install command>` after acquire.
+
 ## Project requirements
 
 Projects connected to the engine need a compose file (typically under `.devcontainer/`) satisfying three requirements:
@@ -45,6 +59,10 @@ The slot's env file only fills the compose file's `${VAR}s`; the engine adds `GH
 The first names of these settings (`AGENT_AUTH`, `AGENT_AUTH_ENV_FILE`, `AGENT_APP_*`, and the modes `container-env` and `github-app`) are no longer read: one in `project.env` or in the credential file is refused by name, with `renamed to FORGE_*; run dev-container migrate-names`.
 
 `dev-container migrate-names [--dry-run] [<dir>]` rewrites a project's old names. It works on the `project.env` of `<dir>` (the current directory by default) and the credential file that `FORGE_AUTH_FILE` names. It prints the key names it changes and never a value, keeps each file's mode, changes nothing on a second run, and refuses, before writing anything, a setting that is given under both names. `--dry-run` prints the same and writes nothing.
+
+### Moving a project's state to its key: `migrate-identity`
+
+A project is known by a key derived from its repository path, no longer by its name. `dev-container migrate-identity [--dry-run]` moves the current project's state from the old names to the key's: `tokens/<label>*` to `tokens/<key>*`, `signing/<label>/` to `signing/<key>/` and `rescue/<label>/` to `rescue/<key>/`, all under the state directory. Run it once per project after an upgrade, before any `acquire`, and then rebuild the engine container. It refuses, and moves nothing, while a lease for the project exists (release its slots first; parked slots do not block) and when a destination already exists; it never overwrites. A second run prints `nothing to migrate`. `--dry-run` prints each planned move and changes nothing. Until a project is migrated, creating its signing key is refused with a pointer to this command, so a second key is never generated beside the first.
 
 
 ### What a slot is provisioned with
@@ -83,7 +101,7 @@ The registry is in the state directory (`~/.dev-containers`, or `DEV_CONTAINER_H
 
 Every command that acts on one repository reads and, if needed, writes the registry: `acquire`, `run`, `list`, `release`, `doctor` and the other verbs that act on a checkout. The commands that name no repository (`status`, `schedule`, `unlock`, `check`, `verdict`, `clean`, `reap --all`, `adopt`, `migrate-names`) do not. If the state directory cannot be written, the label is simply the name, with no registry entry.
 
-Nothing yet moves existing per-project state from the label to the key; state already named by label stays where it is.
+`migrate-identity` (above) moves existing per-project state (tokens, signing keys, rescue) from the label to the key; state already named by label stays where it is until it is run.
 
 ## What it does not do
 

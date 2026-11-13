@@ -85,8 +85,28 @@ sync_agent_auth_env() {
 
 b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
 
+# What this project's token files are called under $STATE/tokens: its key, which
+# is its own, where the label only is while no other root claims it. A caller
+# with no identity resolved falls back to the label.
+agent_token_name() {
+  printf '%s' "${PROJECT_KEY:-$SLOT_PROJECT_PREFIX}"
+}
+
+# A cache or lock still named by the label belongs to the old layout. Refused,
+# as the signing key is, so the same token is not minted into a second file.
+agent_token_legacy_guard() {
+  local name suffix
+  name=$(agent_token_name)
+  [[ -n "${PROJECT_KEY:-}" && "$name" != "$SLOT_PROJECT_PREFIX" ]] || return 0
+  for suffix in "" .lock; do
+    if [[ -e "$STATE/tokens/$SLOT_PROJECT_PREFIX$suffix" && ! -e "$STATE/tokens/$name$suffix" ]]; then
+      die "token cache: $STATE/tokens/$SLOT_PROJECT_PREFIX$suffix is kept under the project's old name. Run \`${CALLER:-dev-container} migrate-identity\` first."
+    fi
+  done
+}
+
 agent_token_cached() {
-  local exp="" tok="" file="$STATE/tokens/$SLOT_PROJECT_PREFIX"
+  local exp="" tok="" file="$STATE/tokens/$(agent_token_name)"
   [[ -f "$file" ]] || return 1
   { IFS= read -r exp && IFS= read -r tok; } <"$file" 2>/dev/null || return 1
   [[ "$exp" =~ ^[0-9]{1,12}$ && -n "$tok" ]] || return 1
@@ -109,7 +129,7 @@ agent_token_unlock() {
   AGENT_TOKEN_LOCK_HELD=0
 }
 
-# Mints a token and caches it under this project's own name. Returns 1 with
+# Mints a token and caches it under this project's key. Returns 1 with
 # AGENT_TOKEN_ERROR set (never a value) on any failure, leaving the cache as it
 # was. The JWT goes to curl in a config on stdin, never in an argument.
 agent_mint_token() {
@@ -146,8 +166,8 @@ agent_mint_token() {
   [[ -n "$tok" && -n "$exp_iso" ]] || { AGENT_TOKEN_ERROR="GitHub's answer carried no token or no expiry"; return 1; }
   exp_epoch=$(date -u -d "$exp_iso" +%s 2>/dev/null || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$exp_iso" +%s 2>/dev/null || true)
   [[ "$exp_epoch" =~ ^[0-9]{1,12}$ ]] && (( exp_epoch > now )) || { AGENT_TOKEN_ERROR="GitHub's answer carried an expiry this host cannot read"; return 1; }
-  tmp=$(umask 077; mktemp "$STATE/tokens/$SLOT_PROJECT_PREFIX.XXXXXX") || { AGENT_TOKEN_ERROR="could not create a file in $STATE/tokens"; return 1; }
-  if ! { printf '%s\n%s\n' "$exp_epoch" "$tok" >"$tmp" && mv "$tmp" "$STATE/tokens/$SLOT_PROJECT_PREFIX"; }; then
+  tmp=$(umask 077; mktemp "$STATE/tokens/$(agent_token_name).XXXXXX") || { AGENT_TOKEN_ERROR="could not create a file in $STATE/tokens"; return 1; }
+  if ! { printf '%s\n%s\n' "$exp_epoch" "$tok" >"$tmp" && mv "$tmp" "$STATE/tokens/$(agent_token_name)"; }; then
     rm -f "$tmp"
     AGENT_TOKEN_ERROR="could not write the token cache under $STATE/tokens"
     return 1
@@ -165,9 +185,10 @@ agent_installation_token() {
   require_agent_auth
   key=$(agent_key_file)
   [[ -f "$key" && -r "$key" ]] || die "FORGE_APP_KEY_FILE in $(agent_auth_file) does not name a readable file — the App cannot sign its token request."
+  agent_token_legacy_guard
   agent_token_cached && return 0
   mkdir -p -m 700 "$STATE/tokens"
-  AGENT_TOKEN_LOCK="$STATE/tokens/$SLOT_PROJECT_PREFIX.lock"
+  AGENT_TOKEN_LOCK="$STATE/tokens/$(agent_token_name).lock"
   agent_token_lock
   agent_token_cached || agent_mint_token || rc=1
   agent_token_unlock

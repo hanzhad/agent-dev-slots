@@ -364,21 +364,21 @@ class AuthTestCase(DevContainerTestCase):
     def token_dir(self):
         return os.path.join(self.harness.state_dir, "tokens")
 
-    def cache_file(self, project=PROJECT_PREFIX):
-        return os.path.join(self.token_dir(), project)
+    def cache_file(self, key=None):
+        return os.path.join(self.token_dir(), key or self.harness.project_key)
 
-    def lock_path(self, project=PROJECT_PREFIX):
-        return os.path.join(self.token_dir(), project + ".lock")
+    def lock_path(self, key=None):
+        return os.path.join(self.token_dir(), (key or self.harness.project_key) + ".lock")
 
     def token_entries(self):
         directory = self.token_dir()
         return sorted(os.listdir(directory)) if os.path.isdir(directory) else []
 
-    def write_cache(self, expires_in, token, project=PROJECT_PREFIX):
-        write(self.cache_file(project), f"{int(time.time()) + expires_in}\n{token}\n", 0o600)
+    def write_cache(self, expires_in, token, key=None):
+        write(self.cache_file(key), f"{int(time.time()) + expires_in}\n{token}\n", 0o600)
 
-    def read_cache(self, project=PROJECT_PREFIX):
-        lines = read_if(self.cache_file(project)).split("\n")
+    def read_cache(self, key=None):
+        lines = read_if(self.cache_file(key)).split("\n")
         self.assertGreaterEqual(len(lines), 2, "no expiry and token lines in the cache")
         return int(lines[0]), lines[1]
 
@@ -461,7 +461,7 @@ class TheInstallationTokenCache(GithubAppRun):
         self.assertEqual(token, TOK)
         self.assertGreater(expires, time.time() + 3500)
         self.assertLessEqual(expires, time.time() + 3600)
-        self.assertEqual(self.token_entries(), ["demo"])
+        self.assertEqual(self.token_entries(), [self.harness.project_key])
 
     def test_mints_once_more_and_replaces_the_cache_when_under_30_minutes_are_left(self):
         self.write_cache(20 * 60, OLD)
@@ -533,7 +533,7 @@ class TheInstallationTokenCache(GithubAppRun):
         self.assertEqual(code_b, 0, log_b)
         self.assertEqual(len(self.curl_argv()), 1)
         self.assertEqual(self.exec_tokens(), [TOK, TOK])
-        self.assertEqual(self.token_entries(), ["demo"])
+        self.assertEqual(self.token_entries(), [self.harness.project_key])
 
 
 def parse_request(body):
@@ -681,7 +681,7 @@ class AFailedMintChangesNothing(GithubAppRun):
                 self.assertNotEqual(res.returncode, 0)
                 self.assertEqual(read_if(self.cache_file()), before)
                 self.assertEqual(stat.S_IMODE(os.stat(self.cache_file()).st_mode), 0o600)
-                self.assertEqual(self.token_entries(), ["demo"])
+                self.assertEqual(self.token_entries(), [self.harness.project_key])
                 self.assertEqual(self.execs(), [])
                 self.assertRegex(res.stderr.decode(), "(?i)installation token|App")
                 self.expect_no_leak(res, OLD)
@@ -900,7 +900,7 @@ class TheInstallationTokenLock(GithubAppRun):
         self.assertEqual(code_b, 0, log_b)
         self.assertEqual(len(self.curl_argv()), 1)
         self.assertEqual(self.exec_tokens(), [TOK, TOK])
-        self.assertEqual(self.token_entries(), ["demo"])
+        self.assertEqual(self.token_entries(), [self.harness.project_key])
 
     def test_a_held_lock_blocks_a_second_run_which_uses_the_first_token_once_released(self):
         holder = self.hold_mint()
@@ -916,7 +916,7 @@ class TheInstallationTokenLock(GithubAppRun):
         self.assertEqual(code_b, 0, log_b)
         self.assertEqual(len(self.curl_argv()), 1)
         self.assertEqual(self.exec_tokens(), [TOK, TOK])
-        self.assertEqual(self.token_entries(), ["demo"])
+        self.assertEqual(self.token_entries(), [self.harness.project_key])
 
     def test_a_run_that_cannot_get_the_lock_in_150_attempts_refuses_busy_and_never_mints(self):
         self.use_quick_sleep()
@@ -927,7 +927,7 @@ class TheInstallationTokenLock(GithubAppRun):
         self.assertEqual(res.returncode, 1, text(res))
         self.assertRegex(
             res.stderr.decode(),
-            r"the installation-token lock at .*tokens/demo\.lock was busy for 30s",
+            r"the installation-token lock at .*tokens/" + self.harness.project_key + r"\.lock was busy for 30s",
         )
         self.assertEqual(len(self.curl_argv()), 1)
         self.assertTrue(os.path.exists(self.lock_path()), "the holder's lock is gone")
@@ -935,7 +935,7 @@ class TheInstallationTokenLock(GithubAppRun):
         code, log = self.finish(holder)
         self.assertEqual(code, 0, log)
         self.assertEqual(self.exec_tokens(), [TOK])
-        self.assertEqual(self.token_entries(), ["demo"])
+        self.assertEqual(self.token_entries(), [self.harness.project_key])
 
 
 class SlotIdentityCase(AuthTestCase):
@@ -1808,10 +1808,10 @@ class TheTokenCacheBelongsToTheProject(AuthTestCase):
         self.assertEqual(res.returncode, 0, text(res))
         self.assertEqual(len(self.curl_argv()), 1)
         self.assertEqual(self.exec_tokens(), [OTHER_TOK])
-        self.assertEqual(self.read_cache("other")[1], OTHER_TOK)
+        self.assertEqual(self.read_cache(self.other.project_key)[1], OTHER_TOK)
         self.assertEqual(read_if(self.cache_file()), before)
-        self.assertEqual(stat.S_IMODE(os.stat(self.cache_file("other")).st_mode), 0o600)
-        self.assertEqual(self.token_entries(), ["demo", "other"])
+        self.assertEqual(stat.S_IMODE(os.stat(self.cache_file(self.other.project_key)).st_mode), 0o600)
+        self.assertEqual(self.token_entries(), sorted([self.harness.project_key, self.other.project_key]))
 
     def test_a_failed_mint_refuses_and_never_falls_back_to_the_first_projects_cache(self):
         self.write_cache(3000, OLD)
@@ -1823,7 +1823,7 @@ class TheTokenCacheBelongsToTheProject(AuthTestCase):
         self.assertNotEqual(res.returncode, 0)
         self.assertEqual(self.execs(), [])
         self.assertEqual(read_if(self.cache_file()), before)
-        self.assertFalse(os.path.exists(self.cache_file("other")))
+        self.assertFalse(os.path.exists(self.cache_file(self.other.project_key)))
         self.assertNotIn(OLD, text(res) + self.docker_argv())
 
     def test_each_project_keeps_using_its_own_cache(self):

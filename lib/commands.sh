@@ -9,6 +9,7 @@ no_term_refusal() {
 
 cmd_acquire() {
   local holder="" wait=0 owner="-" timeout_seconds="" deadline=0 refresh=0
+  ALLOW_HOSTS_REQUESTED=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --for) shift; [[ $# -gt 0 ]] || die "--for needs a value"; holder="$1"; reject_duration_as_holder "$holder" ;;
@@ -16,6 +17,7 @@ cmd_acquire() {
       --refresh) refresh=1 ;;
       --ttl|--ttl=*) no_term_refusal "--ttl" ;;
       --as) shift; [[ $# -gt 0 ]] || die "--as needs a value"; owner="$1" ;;
+      --allow-host) shift; [[ $# -gt 0 ]] || die "--allow-host needs a value"; allow_hosts_collect "$1" ;;
       --timeout) shift; [[ $# -gt 0 ]] || die "--timeout needs a value"; WAIT_TIMEOUT="$1"; timeout_seconds=$(parse_duration "$1") ;;
       *) die "unknown flag to acquire: $1" ;;
     esac
@@ -50,12 +52,13 @@ cmd_acquire() {
     try_acquire_once && ok=1
     if (( ok )); then
       write_reservation "$(lease_file_of "$ACQUIRED_ID")" "$ACQUIRE_SETUP" "$holder" "$owner"
+      allow_hosts_store "$ACQUIRED_ID"
       WAIT_DEADLINE=0
     fi
     lock_release
     if (( ok )); then
       local slot_name="${ACQUIRED_NAME:-$(basename "$ACQUIRED_DIR")}"
-      create_slot "$slot_name" "$refresh" || die "creating '$slot_name' failed — the reason is above this line."
+      create_slot "$slot_name" "$refresh" || { clear_slot_allow_hosts "$ACQUIRED_ID"; die "creating '$slot_name' failed — the reason is above this line."; }
       finish_acquire "$ACQUIRED_DIR" "$ACQUIRED_ID" "$holder" "$owner"
       resync_node_modules "$slot_name" "$ACQUIRED_DIR" "$ACQUIRED_ID" || true
       return 0
@@ -168,6 +171,7 @@ cmd_release() {
 
   sweep_leftover_gateway "$dir" "$sid"
   clear_lease_key "$dir" "$sid"
+  clear_slot_allow_hosts "$sid"
 
   if (( ! force )); then
     teardown_dir "$dir" "$sid" || true
@@ -256,6 +260,7 @@ cmd_park() {
 
   if [[ -n "$check_dir" && -d "$check_dir" ]] && slot_is_clean_for_reuse "$check_dir"; then
     clear_lease_key "$dir" "$sid"
+    clear_slot_allow_hosts "$sid"
     sync_slot_ssh_key "${sid:-$dir}" ""
     local key; key=$(lease_field "$lease" key 2>/dev/null || true)
     [[ -n "$key" ]] && rm -f "$key" "$key.pub"
@@ -269,6 +274,7 @@ cmd_park() {
   [[ -n "$check_dir" && -d "$check_dir" ]] && reason=$(slot_dirty_column "$check_dir")
 
   clear_lease_key "$dir" "$sid"
+  clear_slot_allow_hosts "$sid"
   sync_slot_ssh_key "${sid:-$dir}" ""
   local key; key=$(lease_field "$lease" key 2>/dev/null || true)
   [[ -n "$key" ]] && rm -f "$key" "$key.pub"

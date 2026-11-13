@@ -10,7 +10,7 @@ die() {
 
 usage_text() {
   cat <<USAGE
-Usage: $CALLER acquire --for <holder> [--as '<name> [<ref>]'] [--wait [--timeout <duration>]] [--refresh]
+Usage: $CALLER acquire --for <holder> [--as '<name> [<ref>]'] [--allow-host <host>[,<host>]]... [--wait [--timeout <duration>]] [--refresh]
        $CALLER release <slot> --for <holder> — <holder> must match the lease's own holder; 'evict' takes a slot that isn't yours; wipes the slot (containers, volumes, directory) once everything in it is delivered
        $CALLER park <slot>            — give back the lease on a slot that is NOT reuse-clean, without pretending it's free
        $CALLER park <slot> --clear    — remove that mark; does not touch the slot itself

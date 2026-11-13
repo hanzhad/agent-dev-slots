@@ -52,6 +52,8 @@ source "$lib_dir/contract.sh"
 source "$lib_dir/adopt-launcher.sh"
 # shellcheck source=../lib/status.sh
 source "$lib_dir/status.sh"
+# shellcheck source=../lib/allow-hosts.sh
+source "$lib_dir/allow-hosts.sh"
 # shellcheck source=../lib/migrate-names.sh
 source "$lib_dir/migrate-names.sh"
 

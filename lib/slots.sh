@@ -487,6 +487,8 @@ finish_acquire() {
   }
 JSON
 
+  allow_hosts_report "$slot_id"
+
   provision_slot "$dir" "$slot_id" \
     || die "'$slot_id' is leased to $holder but was not provisioned — the reason and the fix are above."
 }

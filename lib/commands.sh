@@ -8,11 +8,12 @@ no_term_refusal() {
 }
 
 cmd_acquire() {
-  local holder="" wait=0 owner="-" timeout_seconds="" deadline=0
+  local holder="" wait=0 owner="-" timeout_seconds="" deadline=0 refresh=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --for) shift; [[ $# -gt 0 ]] || die "--for needs a value"; holder="$1"; reject_duration_as_holder "$holder" ;;
       --wait) wait=1; LOCK_WAIT=1 ;;
+      --refresh) refresh=1 ;;
       --ttl|--ttl=*) no_term_refusal "--ttl" ;;
       --as) shift; [[ $# -gt 0 ]] || die "--as needs a value"; owner="$1" ;;
       --timeout) shift; [[ $# -gt 0 ]] || die "--timeout needs a value"; WAIT_TIMEOUT="$1"; timeout_seconds=$(parse_duration "$1") ;;
@@ -54,7 +55,7 @@ cmd_acquire() {
     lock_release
     if (( ok )); then
       local slot_name="${ACQUIRED_NAME:-$(basename "$ACQUIRED_DIR")}"
-      create_slot "$slot_name" || die "creating '$slot_name' failed — the reason is above this line."
+      create_slot "$slot_name" "$refresh" || die "creating '$slot_name' failed — the reason is above this line."
       finish_acquire "$ACQUIRED_DIR" "$ACQUIRED_ID" "$holder" "$owner"
       resync_node_modules "$slot_name" "$ACQUIRED_DIR" "$ACQUIRED_ID" || true
       return 0
@@ -634,7 +635,14 @@ cmd_restart() {
   local name="$1"; shift || true
   [[ -n "$name" ]] || usage
   valid_name "$name"
-  [[ $# -eq 0 ]] || die "unknown flag to restart: $1"
+  local refresh=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --refresh) refresh=1 ;;
+      *) die "unknown flag to restart: $1" ;;
+    esac
+    shift
+  done
   require_agent_auth
 
   local dir="$slots_dir/$name"
@@ -668,8 +676,8 @@ cmd_restart() {
 
   ensure_shared_volumes
 
-  if slot_image_is_stale "$proj" "$(slot_build_hash)"; then
-    build_slot_image "$dir" "$proj"
+  if (( refresh )) || slot_image_is_stale "$proj" "$(slot_build_hash)"; then
+    build_slot_image "$dir" "$proj" "$refresh"
     run_slot_install "$name" "$dir" "$proj"
   fi
 
@@ -1149,7 +1157,15 @@ cmd_install() {
   local name="${1:-}"
   [[ -n "$name" ]] || usage
   valid_name "$name"
-  [[ $# -eq 1 ]] || die "install takes a slot name and nothing else — the install's flags are fixed."
+  shift
+  local refresh=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --refresh) refresh=1 ;;
+      *) die "install takes a slot name and --refresh, nothing else — the install's flags are fixed." ;;
+    esac
+    shift
+  done
 
   local sid; sid=$(slot_id_of "$name")
   local dir="$slots_dir/$name"
@@ -1162,7 +1178,7 @@ cmd_install() {
 
   ensure_shared_volumes
   install_slot "$dir" "$sid"
-  build_slot_image "$dir" "$sid"
+  build_slot_image "$dir" "$sid" "$refresh"
 }
 
 

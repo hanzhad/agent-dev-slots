@@ -41,7 +41,7 @@ do_build() {
   local h
   h=$(printf '%s' "$*" | grep -oE 'build-hash=[^ ]+' | head -1 | cut -d= -f2)
   [[ -n "$h" ]] || h=$(env | grep -iE 'build_hash=' | head -1 | cut -d= -f2)
-  if [[ -f "$state/$p.build-noop" && -f "$img/$p.present" ]]; then return 0; fi
+  if [[ -f "$state/$p.build-noop" ]]; then [[ -f "$img/$p.present" ]] || : > "$img/$p.present"; return 0; fi
   : > "$img/$p.present"
   if [[ -n "$h" ]]; then printf '%s' "$h" > "$img/$p.label"; else drop "$p.label"; fi
 }
@@ -52,6 +52,7 @@ case "$first" in
   inspect) sub=inspect ;;
   rmi) sub=rm ;;
   images) sub=ls ;;
+  ps) sub="" ;;
 esac
 case "$first:$sub" in
   compose:*)
@@ -92,9 +93,10 @@ case "$first:$sub" in
     exit 0
     ;;
   *:rm)
+    echo "rm-arg ${@: -1}" >> "$events"
     for a in "$@"; do
       p=$(proj_of "$a")
-      [[ -n "$p" ]] && { drop "$p.present"; drop "$p.label"; echo "rm $p" >> "$events"; }
+      [[ -n "$p" ]] && { drop "$p.present"; drop "$p.label"; rm -f "$state/$p.untagged"; echo "rm $p" >> "$events"; }
     done
     exit 0
     ;;
@@ -106,7 +108,20 @@ case "$first:$sub" in
     for f in "$img"/*.present; do
       [[ -f "$f" ]] || continue
       name=$(basename "$f" .present)
-      [[ -z "$want" || "$name" == "$want" ]] && echo "$name-app:latest"
+      [[ -z "$want" || "$name" == "$want" ]] || continue
+      if [[ " $* " == *"{{.ID}}"* ]]; then echo "id-$name"
+      elif [[ -f "$state/$name.untagged" ]]; then echo "<none>:<none>"
+      else echo "$name-app:latest"; fi
+    done
+    exit 0
+    ;;
+  ps:*)
+    for a in "$@"; do
+      case "$a" in ancestor=*) echo "ps-ancestor ${a#ancestor=}" >> "$events" ;; esac
+    done
+    for a in "$@"; do
+      p=$(proj_of "${a#ancestor=}")
+      case "$a" in ancestor=*) [[ -n "$p" && -f "$state/$p.in-use" ]] && echo abc123 ;; esac
     done
     exit 0
     ;;
@@ -355,6 +370,27 @@ class SlotImages(ImageHarnessMixin, DevContainerTestCase):
         self.assertTrue(builds, events)
         fresh = any(" no-cache" in events[i] for i in builds) or (removed and removed[0] < builds[0])
         self.assertTrue(fresh, "the old image fed the build: " + str(events))
+
+    def test_a_leftover_image_that_lost_its_tag_is_checked_and_removed_by_id(self):
+        self.plant_image(self.project, label="old")
+        self.mark(self.project, "untagged")
+        result = self.engine("acquire", "--for", "test")
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        events = self.events()
+        image_id = "id-" + self.project
+        self.assertIn("ps-ancestor " + image_id, events)
+        self.assertIn("rm-arg " + image_id, events)
+        self.assertNotIn("<none>", " ".join(events))
+        self.assertNotIn("could not remove", result.stderr.decode())
+
+    def test_a_leftover_image_a_container_uses_is_not_removed_by_id(self):
+        self.plant_image(self.project, label="old")
+        self.mark(self.project, "untagged")
+        self.mark(self.project, "in-use")
+        self.engine("acquire", "--for", "test")
+        events = self.events()
+        self.assertIn("ps-ancestor id-" + self.project, events)
+        self.assertNotIn("rm-arg id-" + self.project, events)
 
     def test_release_leaves_no_image_of_the_slot(self):
         result = self.engine("acquire", "--for", "test")

@@ -10,7 +10,7 @@ die() {
 
 usage_text() {
   cat <<USAGE
-Usage: $CALLER acquire --for <holder> [--as '<name> [<ref>]'] [--wait [--timeout <duration>]]
+Usage: $CALLER acquire --for <holder> [--as '<name> [<ref>]'] [--wait [--timeout <duration>]] [--refresh]
        $CALLER release <slot> --for <holder> — <holder> must match the lease's own holder; 'evict' takes a slot that isn't yours; wipes the slot (containers, volumes, directory) once everything in it is delivered
        $CALLER park <slot>            — give back the lease on a slot that is NOT reuse-clean, without pretending it's free
        $CALLER park <slot> --clear    — remove that mark; does not touch the slot itself
@@ -33,10 +33,10 @@ Usage: $CALLER acquire --for <holder> [--as '<name> [<ref>]'] [--wait [--timeout
        $CALLER up [name]     — acquire --for manual, same as above (no --as: a person at a terminal has no session address)
        $CALLER up <slot> [--secrets --for <holder>] — recompose that slot's stack; --secrets adds docker-compose.secrets.yml, plain 'up <slot>' is the way back. --secrets is for the session's main loop only; this script cannot tell a main loop from a subagent and does not enforce it. It needs --for naming the slot's lease holder, and never reads the overlay's env file
        $CALLER down <name> [--force]
-       $CALLER restart <name> — bring a slot's containers back; clones/removes nothing
+       $CALLER restart <name> [--refresh] — bring a slot's containers back; clones/removes nothing; --refresh rebuilds the image from scratch (no layer cache) even when it is not stale
        $CALLER run <slot> -- <cmd> [args...] — exec <cmd> inside a leased, running slot's container as node
        $CALLER put <slot> <src> <dst> | $CALLER put <slot> --stdin <dst> — copy a file or directory into a leased slot's workspace
-       $CALLER install <slot> — run the project's install script (install.sh in its compose directory) for a leased slot, then build its image labelled with the commit; refuses a checkout that is dirty or not on the default branch
+       $CALLER install <slot> [--refresh] — run the project's install script (install.sh in its compose directory) for a leased slot, then build its image labelled with the commit (--refresh: without the layer cache); refuses a checkout that is dirty or not on the default branch
        $CALLER doctor [--live] — check Docker, the state directory, the slot ports, the project file, its compose file and the credential file (--live also asks GitHub whether the token is valid), print the memory ceiling in force and the commit of the running image; exits non-zero naming each failed prerequisite
        $CALLER db-target <slot> — print that slot's compose project (scalar) and files (bash array), %q-quoted, for 'eval' under bash by a HOST caller that has to drive one of the slot's compose services directly
 

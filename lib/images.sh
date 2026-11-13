@@ -149,11 +149,47 @@ drop_leftover_slot_images() {
   done < <(slot_image_ids "$proj")
 }
 
+# "<tag> <image id>" for each image of a compose project, read before a build so
+# the build's own result can be compared with it.
+image_ids_for_tags() {
+  local img id
+  while IFS= read -r img; do
+    [[ -n "$img" ]] || continue
+    id=$(docker image inspect --format '{{.Id}}' "$img" 2>/dev/null) || continue
+    [[ -z "$id" ]] || printf '%s %s\n' "$img" "$id"
+  done < <(slot_image_names "$1")
+}
+
+# A build moves its tag to the new image and leaves the one it replaced
+# untagged. Given the listing image_ids_for_tags made before the build, remove
+# each id a tag no longer points to, unless a container (running or stopped) or
+# another tag still uses it. Only the project's own earlier images are ever
+# named; a failed removal is logged and ignored, never fatal.
+remove_superseded_images() {
+  local proj="$1" before="$2" tag old now current seen=" "
+  current=$(image_ids_for_tags "$proj")
+  while read -r tag old; do
+    [[ -n "$tag" && -n "$old" ]] || continue
+    [[ "$seen" != *" $old "* ]] || continue
+    now=$(printf '%s\n' "$current" | awk -v t="$tag" '$1 == t { print $2 }')
+    [[ -n "$now" && "$now" != "$old" ]] || continue
+    seen="$seen$old "
+    printf '%s\n' "$current" | awk -v i="$old" '$2 == i { f = 1 } END { exit !f }' && continue
+    [[ -z "$(docker ps -aq --filter "ancestor=$old" 2>/dev/null)" ]] || continue
+    if docker rmi "$old" >/dev/null 2>&1; then
+      echo "  removed the superseded image $old"
+    else
+      echo "  ! could not remove the superseded image $old of '$proj' — left in place" >&2
+    fi
+  done <<<"$before"
+}
+
 build_slot_image() {
-  local dir="$1" proj="$2" refresh="${3:-0}" hash
+  local dir="$1" proj="$2" refresh="${3:-0}" hash before
   local -a cache_flag=()
   (( ! refresh )) || cache_flag=(--no-cache)
   hash=$(slot_build_hash) || die "cannot read the build hash of $repo_root."
+  before=$(image_ids_for_tags "$proj")
   echo "▸ building a fresh image for '$proj'"
   if ! DEV_CONTAINER_BUILD_HASH="$hash" slot_compose "$dir" "$proj" build ${cache_flag[@]+"${cache_flag[@]}"}; then
     die "building the image for '$proj' failed — nothing was started."
@@ -165,6 +201,7 @@ build_slot_image() {
   if ! slot_images_current "$proj" "$hash"; then
     die "an image of '$proj' does not carry the label dev-container.build-hash=$hash — the build did not apply the engine's overlay labels; nothing was started."
   fi
+  remove_superseded_images "$proj" "$before"
 }
 
 remove_slot_images() {

@@ -248,6 +248,8 @@ source "$lib_dir/facts.sh"
 source "$lib_dir/git.sh"
 # shellcheck source=../lib/docs.sh
 source "$lib_dir/docs.sh"
+# shellcheck source=../lib/docs-volume.sh
+source "$lib_dir/docs-volume.sh"
 # shellcheck source=../lib/delivery.sh
 source "$lib_dir/delivery.sh"
 # shellcheck source=../lib/agent-auth.sh
@@ -276,6 +278,8 @@ source "$lib_dir/commands.sh"
 source "$lib_dir/archive.sh"
 # shellcheck source=../lib/resume.sh
 source "$lib_dir/resume.sh"
+# shellcheck source=../lib/migrate-identity.sh
+source "$lib_dir/migrate-identity.sh"
 
 trap '(( LOCK_HELD )) && lock_release; (( AGENT_TOKEN_LOCK_HELD )) && rm -f "$AGENT_TOKEN_LOCK"; (( LIVE_LOCK_HELD )) && live_gateway_cleanup; [[ -n "$RESERVED_LEASE" ]] && rm -f "$RESERVED_LEASE"' EXIT
 
@@ -299,6 +303,7 @@ case "$verb" in
   clean) cmd_clean "$@" ;;
   verdict) cmd_verdict "$@" ;;
   resume) cmd_resume "$@" ;;
+  migrate-identity) cmd_migrate_identity "$@" ;;
   *) usage ;;
 esac
 fi

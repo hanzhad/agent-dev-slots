@@ -78,9 +78,12 @@ ensure_holder_file_excluded() { ensure_excluded "$1" '.slot-holder'; }
 
 # docs/repo and docs/fix are nested clones: without an entry here the slot reads
 # as dirty for a reason that is not work, whatever the project's .gitignore says.
+DOCS_CLONE_EXCLUDES="docs/repo docs/fix"
 exclude_docs_clones() {
-  ensure_excluded "$1" docs/repo
-  ensure_excluded "$1" docs/fix
+  local path
+  for path in $DOCS_CLONE_EXCLUDES; do
+    ensure_excluded "$1" "$path"
+  done
 }
 
 write_holder_file() {

@@ -12,7 +12,7 @@
 #   3. a check that 'gh' is on the container user's PATH.
 # It runs after every compose up (acquire, restart, and 'up', which restarts),
 # so a recreated container gets it all again; the key itself lives on the host
-# under $STATE/signing/<project>/ and is streamed in, never copied by hand.
+# under $STATE/signing/<key>/ and is streamed in, never copied by hand.
 # Safe to run again: every step replaces what an earlier run wrote. A project
 # with no FORGE_AUTH has no forge identity to provision and is left alone.
 # SLOT_GIT_NAME and SLOT_GIT_EMAIL, when project.env gives them, become the system

@@ -53,7 +53,7 @@ Projects connected to the engine need a compose file (typically under `.devconta
 | `FORGE_AUTH` | what `FORGE_AUTH_FILE` holds | what a slot gets |
 |---|---|---|
 | `token` | `GH_TOKEN` | acquire and restart write it into the slot's env file on the host (mode 0600, outside the checkout); release removes it |
-| `app` | `FORGE_APP_ID`, `FORGE_APP_INSTALLATION_ID`, `FORGE_APP_SLUG`, `FORGE_APP_BOT_ID`, `FORGE_APP_KEY_FILE`, `FORGE_APP_REPOS` | no token at rest: each `run` mints a one-hour installation token on the host, caches it in `tokens/<PROJECT>` under the state directory, and hands it to that one exec by name |
+| `app` | `FORGE_APP_ID`, `FORGE_APP_INSTALLATION_ID`, `FORGE_APP_SLUG`, `FORGE_APP_BOT_ID`, `FORGE_APP_KEY_FILE`, `FORGE_APP_REPOS` | no token at rest: each `run` mints a one-hour installation token on the host, caches it in `tokens/<key>` under the state directory (the project key, see below; a cache still named by the label is refused until `migrate-identity` has moved it), and hands it to that one exec by name |
 
 The slot's env file only fills the compose file's `${VAR}s`; the engine adds `GH_TOKEN` to the environment of the service that mounts `/workspace` itself (a last overlay, from the slot's env file, so the shell you ran the engine from cannot change it), so `docker exec` and `docker run` see it with `token`. With `app` the container starts with none, and each `run` hands it the minted token. `sshd` does not pass the container's environment on to an ssh session. A project's token is never read for another. A missing setting is refused by name, never by value. The image needs `gh`; `app` also needs `openssl`, `curl` and `jq` on the host.
 

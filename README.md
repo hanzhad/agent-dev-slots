@@ -16,6 +16,7 @@ Coding agents made a second need obvious. Several agents working on one checkout
 - Every slot's compose stack gets one more file from the engine, last: a memory ceiling on the slot's app service (`4g`, or `SLOT_MEMORY_LIMIT` in `project.env`) and the commit labels on each service that builds an image. It lives in the state directory; the project's own files are never written.
 - `doctor` checks Docker (and the socket, inside a container), the state directory, the slot ports and the project file, says whether the `dev-container` command is on `PATH` and which engine clone it runs from, and prints the ceiling in force and the commit of the running image.
 - `install <slot>` runs the project's install script and builds the image, from a clean checkout of the default branch only; the image carries `org.opencontainers.image.revision`.
+- Image builds reuse docker's layer cache; a changed Dockerfile line already rebuilds its own layer. `--refresh` on `acquire`, `install` or `restart` rebuilds that one image from scratch (`--no-cache`), for example to pick up new apt or npm package versions. The flag applies to that command only and is not remembered. `restart --refresh` rebuilds even when the image is not stale.
   The install script runs plain `docker compose -f` without the engine's slot-volume overlay, so it must work without it: a compose file that mounts `${WORKSPACE_DIR}` declares the external `slot-workspace` volume itself (`dev-container doctor` and `adopt` warn when it does not).
 
 ## The install hook

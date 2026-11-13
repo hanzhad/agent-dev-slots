@@ -85,6 +85,12 @@ slot_image_names() {
   docker image ls --filter "label=dev-container.compose-project=$1" --format '{{.Repository}}:{{.Tag}}' 2>/dev/null || true
 }
 
+# The same images as slot_image_names, by id and without repeats: an image
+# with several tags is listed once per tag.
+slot_image_ids() {
+  docker image ls --filter "label=dev-container.compose-project=$1" --format '{{.ID}}' 2>/dev/null | sort -u || true
+}
+
 slot_image_label() {
   docker image inspect --format '{{ index .Config.Labels "dev-container.build-hash" }}' "$1" 2>/dev/null || true
 }
@@ -127,6 +133,22 @@ drop_unused_stale_images() {
   done < <(slot_image_names "$proj")
 }
 
+# A fresh slot has no image of its own yet, so any image carrying its compose
+# project label is a leftover of an earlier slot of the same name. The build
+# must not start from it; the layer cache of other images still applies. Only
+# this project's images are touched (found by label, never by name prefix), an
+# image a container uses stays, and a removal that fails is logged and ignored.
+# Each image is identified by its id: one that lost its tag reads <none>:<none>
+# by name, which names no image for the in-use check or the removal.
+drop_leftover_slot_images() {
+  local proj="$1" img
+  while IFS= read -r img; do
+    [[ -n "$img" ]] || continue
+    [[ -z "$(docker ps -aq --filter "ancestor=$img" 2>/dev/null)" ]] || continue
+    docker image rm "$img" >/dev/null 2>&1 || echo "  ! could not remove the leftover image $img of '$proj'" >&2
+  done < <(slot_image_ids "$proj")
+}
+
 # "<tag> <image id>" for each image of a compose project, read before a build so
 # the build's own result can be compared with it.
 image_ids_for_tags() {
@@ -134,8 +156,7 @@ image_ids_for_tags() {
   while IFS= read -r img; do
     [[ -n "$img" ]] || continue
     id=$(docker image inspect --format '{{.Id}}' "$img" 2>/dev/null) || continue
-    [[ -z "$id" ]] || printf '%s %s
-' "$img" "$id"
+    [[ -z "$id" ]] || printf '%s %s\n' "$img" "$id"
   done < <(slot_image_names "$1")
 }
 
@@ -150,12 +171,10 @@ remove_superseded_images() {
   while read -r tag old; do
     [[ -n "$tag" && -n "$old" ]] || continue
     [[ "$seen" != *" $old "* ]] || continue
-    now=$(printf '%s
-' "$current" | awk -v t="$tag" '$1 == t { print $2 }')
+    now=$(printf '%s\n' "$current" | awk -v t="$tag" '$1 == t { print $2 }')
     [[ -n "$now" && "$now" != "$old" ]] || continue
     seen="$seen$old "
-    printf '%s
-' "$current" | awk -v i="$old" '$2 == i { f = 1 } END { exit !f }' && continue
+    printf '%s\n' "$current" | awk -v i="$old" '$2 == i { f = 1 } END { exit !f }' && continue
     [[ -z "$(docker ps -aq --filter "ancestor=$old" 2>/dev/null)" ]] || continue
     if docker rmi "$old" >/dev/null 2>&1; then
       echo "  removed the superseded image $old"
@@ -166,11 +185,13 @@ remove_superseded_images() {
 }
 
 build_slot_image() {
-  local dir="$1" proj="$2" hash before
+  local dir="$1" proj="$2" refresh="${3:-0}" hash before
+  local -a cache_flag=()
+  (( ! refresh )) || cache_flag=(--no-cache)
   hash=$(slot_build_hash) || die "cannot read the build hash of $repo_root."
   before=$(image_ids_for_tags "$proj")
   echo "▸ building a fresh image for '$proj'"
-  if ! DEV_CONTAINER_BUILD_HASH="$hash" slot_compose "$dir" "$proj" build --no-cache; then
+  if ! DEV_CONTAINER_BUILD_HASH="$hash" slot_compose "$dir" "$proj" build ${cache_flag[@]+"${cache_flag[@]}"}; then
     die "building the image for '$proj' failed — nothing was started."
   fi
   if [[ -z "$(slot_image_names "$proj")" ]]; then

@@ -56,6 +56,31 @@ slot_is_ours() {
   esac
 }
 
+# Whether SID is one of this project's own slots. The label prefix alone cannot
+# say: a project "demo" matches "demo-*", and so does the slot "demo-bar-slot-1"
+# of another project labelled "demo-bar". So after the prefix, the root decides:
+#   1. the lease records repo_root: it must be this project's root;
+#   2. no lease or none recorded: the slot volume's repo-root label, if any;
+#   3. neither (a lease from before repo_root, a reservation, a compose project
+#      with nothing left): the name must have the shape this engine gives its own
+#      slots, "<label>-slot-*". That never claims "demo-bar-slot-1" for "demo", at
+#      the price of skipping a hand-named legacy slot - skipped, never touched.
+sid_is_this_projects() {
+  local sid="$1" root="" mine theirs
+  case "$sid" in "${SLOT_PROJECT_PREFIX}-"*) ;; *) return 1 ;; esac
+  root=$(lease_field "$(lease_file_of "$sid")" repo_root 2>/dev/null) || root=""
+  if [[ -z "$root" ]]; then
+    root=$(docker volume inspect "$(slot_volume_of "$sid")" --format '{{index .Labels "dev-container.repo-root"}}' 2>/dev/null || true)
+  fi
+  if [[ -n "$root" ]]; then
+    mine=$(project_canonical_root "$repo_root")
+    theirs=$(project_canonical_root "$root")
+    [[ "$mine" == "$theirs" ]]
+    return
+  fi
+  [[ "${sid#"${SLOT_PROJECT_PREFIX}"-}" == slot-* ]]
+}
+
 foreign_slot_exists() {
   local name="$1" v proj_lbl
   while IFS= read -r v; do

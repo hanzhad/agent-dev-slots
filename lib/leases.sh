@@ -175,12 +175,19 @@ check_session_slot_limit() {
     return 1
   fi
   local limit
-  limit=$(jq -r --arg ref "$ref" '(.sessions[$ref] // .default) // empty' "$limits")
+  # A harness may spell the same session with or without a leading local_, so
+  # the lookup compares ids with that prefix stripped on both sides. A key that
+  # equals the caller's id exactly wins; otherwise the key in the other spelling.
+  limit=$(jq -r --arg ref "$ref" --arg bare "${ref#local_}" '
+    (.sessions // {}) as $s
+    | ($s[$ref] // ([$s | to_entries[] | select((.key | sub("^local_"; "")) == $bare) | .value] | first) // .default) // empty' "$limits")
   [[ -n "$limit" ]] || return 0
-  local f held=0 held_ids=""
+  local f lease_ref held=0 held_ids=""
   for f in "$STATE"/leases/*.json; do
     [[ -f "$f" ]] || continue
-    [[ "$(lease_owner_field "$f")" == *"[$ref]" ]] || continue
+    lease_ref=""
+    [[ "$(lease_owner_field "$f")" =~ [[]([^][]+)[]]$ ]] && lease_ref="${BASH_REMATCH[1]}"
+    [[ -n "$lease_ref" && "${lease_ref#local_}" == "${ref#local_}" ]] || continue
     held=$((held + 1))
     held_ids+="${held_ids:+, }$(basename "$f" .json)"
   done

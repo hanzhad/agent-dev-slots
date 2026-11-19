@@ -69,7 +69,8 @@ cap; a directory left behind is skipped, never reused, and a slot cannot be
 named.
 --wait waits for a slot instead of exiting 2 when none is free — as long as
 it takes, or until --timeout, which exits 3. Exit 4: the session is at its
-slot limit (keyed by CLAUDE_CODE_HOST_SESSION_ID when set, else the --as ref; or
+slot limit (keyed by CLAUDE_CODE_HOST_SESSION_ID when set, else the --as ref, with or
+without a leading local_; or
 $STATE/limits.json needs --as) — --wait does not help.
 
 'list' without --brief answers "is this slot safe to take back", which costs a

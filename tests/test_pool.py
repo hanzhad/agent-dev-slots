@@ -4,7 +4,6 @@ import shutil
 import stat
 import subprocess
 import tempfile
-import time
 import unittest
 
 from harness import (
@@ -14,6 +13,7 @@ from harness import (
     DevContainerHarness,
     project_env_text,
     slot_port,
+    wait_until,
 )
 
 IDENTITY = "GIT_USER_NAME=pool-agent\nGIT_USER_EMAIL=pool-agent@example.com\n"
@@ -181,7 +181,7 @@ class PoolTestCase(unittest.TestCase):
         path = os.path.join(self.harness.state_dir, "leases", f"{slot_id}.json")
         with open(path, encoding="utf-8") as handle:
             lease = json.load(handle)
-        lease["since"] = int(time.time()) - seconds
+        lease["since"] = self.harness.now_epoch() - seconds
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(lease, handle)
 
@@ -252,9 +252,14 @@ class SharedBehaviour:
     def test_a_lease_idle_past_the_limit_frees_its_number(self):
         self.harness.build()
         self.harness.write_limits(machine_max=1, idle_limit=3)
+        self.harness.set_now(1700000000)
         self.harness.slot_id(self.harness.acquire("first"))
 
-        time.sleep(4)
+        self.harness.advance_now(2)
+        still_live = self.harness.acquire("still-live")
+        self.assertNotEqual(still_live.returncode, 0, self.output(still_live))
+
+        self.harness.advance_now(1)
         second = self.harness.acquire("second")
 
         self.assertEqual(second.returncode, 0, self.output(second))
@@ -262,8 +267,10 @@ class SharedBehaviour:
     def test_a_lease_inside_the_limit_still_counts(self):
         self.harness.build()
         self.harness.write_limits(machine_max=1, idle_limit=600)
+        self.harness.set_now(1700000000)
         self.harness.slot_id(self.harness.acquire("first"))
 
+        self.harness.advance_now(599)
         second = self.harness.acquire("second")
 
         self.assertNotEqual(second.returncode, 0, self.output(second))
@@ -368,8 +375,9 @@ class IdleLimitDefault(PoolTestCase):
     def test_a_lease_idle_for_just_under_two_hours_still_counts(self):
         self.harness.build()
         self.harness.write_limits(machine_max=1)
-        slot_id = self.harness.slot_id(self.harness.acquire("first"))
-        self.backdate(slot_id, 2 * 3600 - 300)
+        self.harness.set_now(1700000000)
+        self.harness.slot_id(self.harness.acquire("first"))
+        self.harness.advance_now(2 * 3600 - 1)
 
         second = self.harness.acquire("second")
 
@@ -379,8 +387,9 @@ class IdleLimitDefault(PoolTestCase):
     def test_a_lease_idle_for_just_over_two_hours_frees_its_number(self):
         self.harness.build()
         self.harness.write_limits(machine_max=1)
-        slot_id = self.harness.slot_id(self.harness.acquire("first"))
-        self.backdate(slot_id, 2 * 3600 + 300)
+        self.harness.set_now(1700000000)
+        self.harness.slot_id(self.harness.acquire("first"))
+        self.harness.advance_now(2 * 3600)
 
         second = self.harness.acquire("second")
 
@@ -389,8 +398,9 @@ class IdleLimitDefault(PoolTestCase):
     def test_the_limit_is_one_value_for_the_machine_in_the_limits_file(self):
         self.harness.build()
         self.harness.write_limits(machine_max=1, idle_limit=60)
-        slot_id = self.harness.slot_id(self.harness.acquire("first"))
-        self.backdate(slot_id, 120)
+        self.harness.set_now(1700000000)
+        self.harness.slot_id(self.harness.acquire("first"))
+        self.harness.advance_now(60)
 
         second = self.harness.acquire("second")
 
@@ -402,6 +412,7 @@ class ActivityKeepsASlotLive(PoolTestCase):
     def fill_two(self):
         self.harness.build()
         self.harness.write_limits(machine_max=2, idle_limit=8)
+        self.harness.set_now(1700000000)
         first = self.harness.slot_id(self.harness.acquire("first"))
         second = self.harness.slot_id(self.harness.acquire("second"))
         return first, second
@@ -414,16 +425,15 @@ class ActivityKeepsASlotLive(PoolTestCase):
         self.assertIn("2/2", fourth.stderr.decode())
 
     def test_a_run_counts_as_activity_and_the_idle_slot_is_freed(self):
-        # Both leases are backdated well past the limit instead of sleeping, so
-        # the outcome does not depend on how fast the runner is.
         self.harness.build()
         self.harness.write_limits(machine_max=2, idle_limit=60)
+        self.harness.set_now(1700000000)
         first = self.harness.slot_id(self.harness.acquire("first"))
         second = self.harness.slot_id(self.harness.acquire("second"))
-        self.backdate(first, 600)
-        self.backdate(second, 600)
+        self.harness.advance_now(50)
         ran = self.harness.run("run", self.harness.slot_name(first), "--", "true")
         self.assertEqual(ran.returncode, 0, self.output(ran))
+        self.harness.advance_now(20)
 
         self.assert_pool_holds()
 
@@ -433,7 +443,7 @@ class ActivityKeepsASlotLive(PoolTestCase):
         first, second = self.fill_two()
         self.harness.set_cpu(first, "95.00")
         self.harness.set_cpu(second, "0.00")
-        time.sleep(10)
+        self.harness.advance_now(10)
 
         self.assert_pool_holds()
 
@@ -443,7 +453,7 @@ class ActivityKeepsASlotLive(PoolTestCase):
         first, second = self.fill_two()
         self.harness.set_container_procs(self.harness.slot_name(first), ["node", "vite", "claude"])
         self.harness.set_container_procs(self.harness.slot_name(second), ["node", "vite", "claude"])
-        time.sleep(10)
+        self.harness.advance_now(10)
 
         third = self.harness.acquire("third")
         fourth = self.harness.acquire("fourth")
@@ -526,12 +536,18 @@ class MemoryFloor(PoolTestCase):
             "acquire", "--for", "worker", "--as", "worker [worker]", "--wait", "--timeout", "60", log=log
         )
         self.addCleanup(proc.kill)
-        deadline = time.monotonic() + 30
-        said = ""
-        while time.monotonic() < deadline and "memory" not in said.lower():
-            time.sleep(0.5)
+        def read_log():
+            if not os.path.isfile(log):
+                return ""
             with open(log, encoding="utf-8") as handle:
-                said = handle.read()
+                return handle.read()
+
+        said = wait_until(
+            lambda: read_log() if "memory" in read_log().lower() else "",
+            timeout=30.0,
+            interval=0.02,
+            message=lambda: f"acquire --wait never logged memory wait:\n{read_log()}",
+        )
         self.assertIn("memory", said.lower())
 
         self.harness.set_floor("1024\n")

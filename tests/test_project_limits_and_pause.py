@@ -4,7 +4,6 @@ import re
 import shutil
 import subprocess
 import sys
-import time
 import unittest
 
 if os.path.dirname(__file__) not in sys.path:
@@ -15,6 +14,7 @@ from harness import (
     DevContainerTestCase,
     PROJECT_PREFIX,
     project_env_text,
+    wait_until,
 )
 
 
@@ -32,15 +32,13 @@ class ProjectLimitsTestCase(DevContainerTestCase):
         super().setUp()
         self.harness.build_fixture_repo(with_parent_env=self.ENV_WITH_IDENTITY)
 
-    def write_limits(self, limits):
+    def write_limits(self, limits, mtime=None):
         path = os.path.join(self.harness.state_dir, "limits.json")
-        prev_mtime = os.stat(path).st_mtime if os.path.exists(path) else None
         tmp_path = path + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as handle:
             json.dump(limits, handle)
-        if prev_mtime is not None:
-            bumped = max(time.time(), prev_mtime + 2.0)
-            os.utime(tmp_path, (bumped, bumped))
+        if mtime is not None:
+            os.utime(tmp_path, (mtime, mtime))
         os.replace(tmp_path, path)
 
     def make_second_project(self, label="other"):
@@ -247,18 +245,20 @@ class ReservationAndWaitWakeup(ProjectLimitsTestCase):
         return proc, log
 
     def _wait_until_waiting_logged(self, proc, log, needle="limits.json", timeout=15):
-        deadline = time.monotonic() + timeout
-        while needle not in self._read_text(log):
-            if proc.poll() is not None:
+        def ready():
+            if proc.poll() is not None and needle not in self._read_text(log):
                 raise AssertionError(
                     f"waiter exited early (rc={proc.returncode}) before logging {needle!r}:\n"
                     f"{self._read_text(log)}"
                 )
-            if time.monotonic() > deadline:
-                raise AssertionError(
-                    f"waiter never logged {needle!r}:\n{self._read_text(log)}"
-                )
-            time.sleep(0.1)
+            return needle in self._read_text(log)
+
+        wait_until(
+            ready,
+            timeout=timeout,
+            interval=0.02,
+            message=lambda: f"waiter never logged {needle!r}:\n{self._read_text(log)}",
+        )
 
     def test_live_reservation_file_with_repo_root_counts_against_project_limit(self):
         self.write_limits({"machine_max": 20, "projects": {"demo": 1}})
@@ -271,7 +271,7 @@ class ReservationAndWaitWakeup(ProjectLimitsTestCase):
                     "holder": "inflight-holder",
                     "owner": "Agent [u1]",
                     "project": f"{PROJECT_PREFIX}-slot-1",
-                    "since": int(time.time()),
+                    "since": self.harness.now_epoch(),
                     "key": "",
                     "ssh_port": 0,
                     "setup": "creating",
@@ -353,6 +353,20 @@ class ReservationAndWaitWakeup(ProjectLimitsTestCase):
         self.assertIsNone(proc.poll(), self._read_text(log))
 
         self.write_limits({"machine_max": 20, "projects": {"demo": 1}})
+
+        rc = proc.wait(timeout=20)
+        self.assertEqual(rc, 0, self._read_text(log))
+        self.assertTrue(os.path.isfile(self.harness.lease_path("slot-1")))
+
+    def test_wait_wakes_when_limits_json_content_changes_with_identical_mtime(self):
+        pinned_mtime = 1700000000.0
+        self.write_limits({"machine_max": 0}, mtime=pinned_mtime)
+        proc, log = self._spawn_waiter(holder="wait-same-mtime", timeout="15s")
+
+        self._wait_until_waiting_logged(proc, log, needle="limits.json")
+        self.assertIsNone(proc.poll(), self._read_text(log))
+
+        self.write_limits({"machine_max": 1}, mtime=pinned_mtime)
 
         rc = proc.wait(timeout=20)
         self.assertEqual(rc, 0, self._read_text(log))

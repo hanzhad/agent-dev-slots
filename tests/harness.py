@@ -25,6 +25,18 @@ DOCS_REPO_URL = "https://github.com/example/demo.docs.git"
 PROJECT_PREFIX = "demo"
 
 
+def wait_until(predicate, *, timeout=5.0, interval=0.02, message="condition not met"):
+    deadline = time.monotonic() + timeout
+    while True:
+        value = predicate()
+        if value:
+            return value
+        if time.monotonic() >= deadline:
+            detail = message() if callable(message) else message
+            raise AssertionError(detail)
+        time.sleep(interval)
+
+
 def engine_source_lines(root=REPO_ROOT):
     paths = [os.path.join(root, SCRIPT_REL)]
     lib_dir = os.path.join(root, LIB_REL)
@@ -736,6 +748,7 @@ class DevContainerHarness:
         os.makedirs(self.home)
         os.makedirs(self.state_dir)
         os.makedirs(self.docker_state)
+        self.now = None
         self.real_git_bin = shutil.which("git")
         assert self.real_git_bin, "no real git on PATH — cannot build the stub"
         self._build_stub_bin()
@@ -941,26 +954,45 @@ class DevContainerHarness:
         )
         return result.stdout.decode().strip()
 
-    def run(self, *args, port_overrides=None, input=None):
+    def set_now(self, epoch):
+        self.now = int(epoch)
+        return self.now
+
+    def advance_now(self, seconds):
+        if self.now is None:
+            self.now = int(time.time())
+        self.now += int(seconds)
+        return self.now
+
+    def now_epoch(self):
+        return self.now if self.now is not None else int(time.time())
+
+    def run(self, *args, port_overrides=None, input=None, now=None):
+        env = self._env(port_overrides)
+        if now is not None:
+            env["DEV_CONTAINER_NOW"] = str(now)
         return subprocess.run(
             ["bash", self.script, *args],
             cwd=self.tmp,
-            env=self._env(port_overrides),
+            env=env,
             input=input,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=120,
         )
 
-    def spawn(self, *args, port_overrides=None, log=None):
+    def spawn(self, *args, port_overrides=None, log=None, now=None):
         out = err = subprocess.PIPE
         if log is not None:
             out = open(log, "w", encoding="utf-8")
             err = subprocess.STDOUT
+        env = self._env(port_overrides)
+        if now is not None:
+            env["DEV_CONTAINER_NOW"] = str(now)
         proc = subprocess.Popen(
             ["bash", self.script, *args],
             cwd=self.tmp,
-            env=self._env(port_overrides),
+            env=env,
             stdout=out,
             stderr=err,
         )
@@ -979,11 +1011,12 @@ class DevContainerHarness:
     def wait_until_compose_up_held(self, name, timeout=60):
         project = f"{PROJECT_PREFIX}-{name}"
         marker = os.path.join(self.docker_state, f"{project}.up-held")
-        deadline = time.monotonic() + timeout
-        while not os.path.isfile(marker):
-            if time.monotonic() > deadline:
-                raise AssertionError(f"compose up for {project} never started")
-            time.sleep(0.1)
+        wait_until(
+            lambda: os.path.isfile(marker),
+            timeout=timeout,
+            interval=0.02,
+            message=f"compose up for {project} never started",
+        )
 
     def let_compose_up_go(self, name):
         project = f"{PROJECT_PREFIX}-{name}"
@@ -996,6 +1029,9 @@ class DevContainerHarness:
         env.pop("CLAUDE_CODE_HOST_SESSION_ID", None)
         if getattr(self, "session_id", None):
             env["CLAUDE_CODE_HOST_SESSION_ID"] = self.session_id
+        env.pop("DEV_CONTAINER_NOW", None)
+        if getattr(self, "now", None) is not None:
+            env["DEV_CONTAINER_NOW"] = str(self.now)
         env["PATH"] = self.stub_bin + os.pathsep + env.get("PATH", "")
         env["DOCKER_STUB_LOG"] = self.docker_log
         env["DOCKER_STUB_STATE"] = self.docker_state
@@ -1279,7 +1315,7 @@ class ListVerdictTestCase(DevContainerTestCase):
                     "holder": holder,
                     "owner": "-",
                     "project": PROJECT_PREFIX + "-" + name,
-                    "since": int(time.time()) - age_seconds,
+                    "since": self.harness.now_epoch() - age_seconds,
                     "key": "/dev/null",
                     "ssh_port": TEST_SSH_PORT,
                 },
@@ -1295,7 +1331,7 @@ class ListVerdictTestCase(DevContainerTestCase):
                 {
                     "holder": holder,
                     "project": PROJECT_PREFIX + "-" + name,
-                    "since": int(time.time()),
+                    "since": self.harness.now_epoch(),
                     "reason": reason,
                 },
                 handle,

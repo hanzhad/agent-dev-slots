@@ -8,7 +8,7 @@ no_term_refusal() {
 }
 
 cmd_acquire() {
-  local holder="" wait=0 owner="-" timeout_seconds="" deadline=0 refresh=0 ephemeral=0 eph_idle_limit=""
+  local holder="" wait=0 owner="-" timeout_seconds="" deadline=0 refresh=0 ephemeral=0 eph_idle_limit="" toolbox=0
   ALLOW_HOSTS_REQUESTED=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -16,6 +16,7 @@ cmd_acquire() {
       --wait) wait=1; LOCK_WAIT=1 ;;
       --refresh) refresh=1 ;;
       --ephemeral) ephemeral=1 ;;
+      --toolbox) toolbox=1 ;;
       --ttl|--ttl=*) no_term_refusal "--ttl" ;;
       --as) shift; [[ $# -gt 0 ]] || die "--as needs a value"; owner="$1" ;;
       --allow-host) shift; [[ $# -gt 0 ]] || die "--allow-host needs a value"; allow_hosts_collect "$1" ;;
@@ -40,6 +41,9 @@ cmd_acquire() {
     (( wait )) || die "--timeout only applies to --wait"
     deadline=$(( $(now_epoch) + timeout_seconds ))
   fi
+  if (( toolbox )); then
+    ensure_toolbox_image || die "building the toolbox image failed — nothing was acquired."
+  fi
 
   local last_leased=""
   while :; do
@@ -61,7 +65,12 @@ cmd_acquire() {
     lock_release
     if (( ok )); then
       local slot_name="${ACQUIRED_NAME:-$(basename "$ACQUIRED_DIR")}"
-      create_slot "$slot_name" "$refresh" || { clear_slot_allow_hosts "$ACQUIRED_ID"; die "creating '$slot_name' failed — the reason is above this line."; }
+      if (( toolbox )); then
+        toolbox_enable "$ACQUIRED_ID"
+      else
+        toolbox_clear "$ACQUIRED_ID"
+      fi
+      create_slot "$slot_name" "$refresh" || { clear_slot_allow_hosts "$ACQUIRED_ID"; toolbox_clear "$ACQUIRED_ID"; die "creating '$slot_name' failed — the reason is above this line."; }
       finish_acquire "$ACQUIRED_DIR" "$ACQUIRED_ID" "$holder" "$owner" "$ephemeral" "$eph_idle_limit"
       resync_node_modules "$slot_name" "$ACQUIRED_DIR" "$ACQUIRED_ID" || true
       return 0
@@ -876,22 +885,40 @@ run_live() {
 }
 
 cmd_run() {
-  local name="$1"; shift || true
+  local name="${1:-}"; shift || true
   [[ -n "$name" ]] || usage
   valid_name "$name"
   local -a live_names=()
-  local live_seen=" " live_n
-  while [[ "${1:-}" == "--live" ]]; do
-    live_n="${2:-}"
-    [[ "$live_n" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "--live needs a variable name (letters, digits, underscore), got '$live_n'."
-    shift 2
-    [[ "$live_seen" == *" $live_n "* ]] && continue
-    live_seen+="$live_n "
-    live_names+=("$live_n")
+  local live_seen=" " live_n toolbox=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --toolbox)
+        toolbox=1
+        shift
+        ;;
+      --live)
+        live_n="${2:-}"
+        [[ "$live_n" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "--live needs a variable name (letters, digits, underscore), got '$live_n'."
+        shift 2
+        case "$live_seen" in *" $live_n "*) ;; *) live_seen+="$live_n "; live_names+=("$live_n") ;; esac
+        ;;
+      --)
+        break
+        ;;
+      -*)
+        die "unknown flag to run: $1"
+        ;;
+      *)
+        break
+        ;;
+    esac
   done
-  [[ "${1:-}" == "--" ]] || die "run needs '--' before the command: $CALLER run $name [--live NAME]... -- <cmd> [args...]"
+  [[ "${1:-}" == "--" ]] || die "run needs '--' before the command: $CALLER run $name [--toolbox] [--live NAME]... -- <cmd> [args...]"
   shift
-  [[ $# -ge 1 ]] || die "run needs a command after '--': $CALLER run $name -- <cmd> [args...]"
+  [[ $# -ge 1 ]] || die "run needs a command after '--': $CALLER run $name [--toolbox] -- <cmd> [args...]"
+  if (( toolbox && ${#live_names[@]} > 0 )); then
+    die "run: --toolbox cannot be combined with --live."
+  fi
   if (( ${#live_names[@]} )); then
     [[ -n "$LIVE_SERVICE" ]] || die "--live needs LIVE_SERVICE in project.env — the compose service that runs the command."
     [[ -n "$LIVE_ENV_FILE" ]] || die "--live needs LIVE_ENV_FILE in project.env — the file, relative to the checkout, that holds the keys."
@@ -921,6 +948,7 @@ cmd_run() {
     fi
     die "'$sid' is not leased — 'run' must not touch a slot nobody holds. '$CALLER acquire --for <holder>' first."
   fi
+  idle_limit_load
   if ! lease_is_live "$lease"; then
     die "slot '$name' is abandoned — restore it with: $CALLER resume $name"
   fi
@@ -931,8 +959,21 @@ cmd_run() {
 
   local -a exec_flags=()
   [[ -t 0 ]] || exec_flags+=(-T)
-  exec_flags+=(-u node)
   local rc=0
+  if (( toolbox )); then
+    toolbox_enabled "$sid" \
+      || die "'$sid' does not have --toolbox enabled — acquire with '--toolbox' or run '$CALLER up $name --toolbox' first."
+    sweep_leftover_gateway "$dir" "$sid"
+    exec_flags+=(-u "${CONTAINER_UID:-1000}:${CONTAINER_GID:-1000}" -w /workspace)
+    activity_stamp "$sid" run
+    (
+      unset GH_TOKEN
+      slot_compose "$dir" "$sid" exec "${exec_flags[@]}" toolbox "$@"
+    ) || rc=$?
+    activity_stamp "$sid" run
+    return "$rc"
+  fi
+  exec_flags+=(-u node)
   if (( ${#live_names[@]} )); then
     run_live "$dir" "$sid" "${live_names[@]}" -- "$@" || rc=$?
     return "$rc"
@@ -1089,10 +1130,11 @@ cmd_up_compat() {
 cmd_up() {
   [[ $# -gt 0 ]] || { cmd_up_compat; return; }
   local name="$1"; shift
-  local secrets=0 for_holder="" have_for=0
+  local secrets=0 toolbox=0 for_holder="" have_for=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --secrets) secrets=1 ;;
+      --toolbox) toolbox=1 ;;
       --for)
         [[ $# -ge 2 ]] || die "up: --for needs a value"
         for_holder="$2"; have_for=1; shift ;;
@@ -1103,11 +1145,18 @@ cmd_up() {
   valid_name "$name"
   (( secrets )) || (( ! have_for )) || die "up: --for only goes with --secrets"
 
-  if (( secrets )); then
-    local sid; sid=$(slot_id_of "$name")
-    local dir="$slots_dir/$name"
+  local sid; sid=$(slot_id_of "$name")
+  local dir="$slots_dir/$name"
+  if (( secrets || toolbox )); then
     slot_exists "$sid" || die "no slot directory at $dir"
     [[ -d "$dir" ]] || dir=""
+  fi
+  if (( toolbox )); then
+    slot_is_ours "$sid" || die "'$name': not this project's own slot."
+    [[ -f "$(compose_file_of)" ]] || die "no $(compose_file_of) — every slot is composed from the main checkout's $COMPOSE_DIR/, and this checkout has none."
+  fi
+
+  if (( secrets )); then
     local lease; lease=$(lease_file_of "$sid")
     [[ -f "$lease" ]] || die "'$sid' has no lease — 'up $name --secrets' needs a slot you hold."
     local holder; holder=$(lease_field "$lease" holder)
@@ -1156,6 +1205,10 @@ cmd_up() {
       fi
     fi
     COMPOSE_WITH_SECRETS=1
+  fi
+  if (( toolbox )); then
+    ensure_toolbox_image || die "building the toolbox image failed — '$name' was not restarted."
+    toolbox_enable "$sid"
   fi
   cmd_restart "$name"
 }

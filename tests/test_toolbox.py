@@ -1120,6 +1120,7 @@ class TestToolboxCliAndLifecycle(DevContainerTestCase):
         missing_slot = self._engine("run", "slot-99", "--toolbox", "--", "true")
         self.assertNotEqual(missing_slot.returncode, 0)
 
+        write_text(os.path.join(self.harness.slot_dir(name), "dirty.txt"), "dirty\n")
         parked = self._engine("park", name)
         self.assertEqual(parked.returncode, 0, output_of(parked))
         parked_run = self._engine("run", name, "--toolbox", "--", "true")

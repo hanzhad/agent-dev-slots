@@ -260,6 +260,8 @@ source "$lib_dir/delivery.sh"
 source "$lib_dir/agent-auth.sh"
 # shellcheck source=../lib/forge-credential.sh
 source "$lib_dir/forge-credential.sh"
+# shellcheck source=../lib/toolbox.sh
+source "$lib_dir/toolbox.sh"
 # shellcheck source=../lib/overlay.sh
 source "$lib_dir/overlay.sh"
 # shellcheck source=../lib/signing.sh

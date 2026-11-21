@@ -10,7 +10,7 @@ die() {
 
 usage_text() {
   cat <<USAGE
-Usage: $CALLER acquire --for <holder> [--as '<name> [<ref>]'] [--ephemeral] [--allow-host <host>[,<host>]]... [--wait [--timeout <duration>]] [--refresh]
+Usage: $CALLER acquire --for <holder> [--as '<name> [<ref>]'] [--ephemeral] [--toolbox] [--allow-host <host>[,<host>]]... [--wait [--timeout <duration>]] [--refresh]
        $CALLER release <slot> --for <holder> [--discard] — <holder> must match the lease's own holder; --discard tears down dirty slots without rescue; 'evict' takes a slot that isn't yours; wipes the slot (containers, volumes, directory) once everything in it is delivered
        $CALLER park <slot>            — give back the lease on a slot that is NOT reuse-clean, without pretending it's free
        $CALLER park <slot> --clear    — remove that mark; does not touch the slot itself
@@ -31,10 +31,10 @@ Usage: $CALLER acquire --for <holder> [--as '<name> [<ref>]'] [--ephemeral] [--a
        $CALLER schedule run [--once] — run the jobs in \\$STATE/schedule/jobs when they are due; --once goes through them once and exits
        $CALLER evict <slot> [--yes] [--force] | evict --stale [<days>, default 7]
        $CALLER up [name]     — acquire --for manual, same as above (no --as: a person at a terminal has no session address)
-       $CALLER up <slot> [--secrets --for <holder>] — recompose that slot's stack; --secrets adds docker-compose.secrets.yml, plain 'up <slot>' is the way back. --secrets is for the session's main loop only; this script cannot tell a main loop from a subagent and does not enforce it. It needs --for naming the slot's lease holder, and never reads the overlay's env file
+       $CALLER up <slot> [--toolbox] [--secrets --for <holder>] — recompose that slot's stack; --secrets adds docker-compose.secrets.yml, plain 'up <slot>' is the way back. --secrets is for the session's main loop only; this script cannot tell a main loop from a subagent and does not enforce it. It needs --for naming the slot's lease holder, and never reads the overlay's env file
        $CALLER down <name> [--force]
        $CALLER restart <name> [--refresh] — bring a slot's containers back; clones/removes nothing; --refresh rebuilds the image from scratch (no layer cache) even when it is not stale
-       $CALLER run <slot> -- <cmd> [args...] — exec <cmd> inside a leased, running slot's container as node
+       $CALLER run <slot> -- <cmd> [args...] | $CALLER run <slot> --toolbox -- <cmd> [args...] — exec <cmd> inside a leased, running slot's container as node (or inside the toolbox sidecar with --toolbox as uid 1000)
        $CALLER put <slot> <src> <dst> | $CALLER put <slot> --stdin <dst> — copy a file or directory into a leased slot's workspace
        $CALLER get <slot> <rel-src> <host-dst> [--max-bytes <N>] | $CALLER get <slot> --stdout <rel-src> [--max-bytes <N>] — copy a regular file out of a leased slot (O_NOFOLLOW, binary-safe)
        $CALLER expose <slot> <[svc:]port> [--for <holder>] — tunnel a slot port or compose service port to host 127.0.0.1 over SSH

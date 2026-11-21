@@ -104,6 +104,7 @@ teardown_dir() {
 
   rm -f "$(slot_env_file_of "$proj")" "$STATE/ports/$proj.ports" "$(slot_overlay_of "$proj")" "$(lease_token_file_of "$proj")"
   rm -f "$(allow_hosts_file_of "$proj")" "$(allow_hosts_base_file_of "$proj")"
+  toolbox_clear "$proj"
   spec_reset "$proj"
   facts_reset "$proj"
   activity_clear "$proj"

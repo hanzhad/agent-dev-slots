@@ -47,7 +47,7 @@ project_root() {
 # an unknown verb is left for the engine to refuse with its usage.
 needs_project() {
   case ${1:-} in
-    release | park | list | resume | evict | up | down | restart | run | put | install | db-target) return 0 ;;
+    release | park | list | resume | evict | up | down | restart | run | put | fs | install | db-target) return 0 ;;
     reap) [ "${2:-}" != --all ] ;;
     *) return 1 ;;
   esac

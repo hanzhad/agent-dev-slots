@@ -86,6 +86,7 @@ SLOT_PROJECT_GLOB=${SLOT_PROJECT_GLOB:-*-slot-*}
 SLOT_INDEX_CEILING=20
 MACHINE_CAP=$SLOT_INDEX_CEILING
 MACHINE_CAP_WARNED=0
+PROJECT_CAP=""
 
 DEFAULT_BRANCH=${DEFAULT_BRANCH:-master}
 
@@ -94,8 +95,9 @@ BASE_PROCS=${BASE_PROCS:-"docker-init sleep sshd ps sh bash entrypoint.sh"}
 STATE=${DEV_CONTAINER_HOME:-$HOME/.dev-containers}
 state_error=""
 if [[ "${1:-}" != adopt && "${1:-}" != unlock && "${1:-}" != status ]]; then
-  mkdir -p "$STATE/leases" "$STATE/keys" "$STATE/rescue" "$STATE/seen" "$STATE/delivered" "$STATE/closed" "$STATE/parked" "$STATE/env" "$STATE/ports" "$STATE/activity" "$STATE/overlays" 2>/dev/null \
+  mkdir -p "$STATE/leases" "$STATE/lease-tokens" "$STATE/keys" "$STATE/rescue" "$STATE/seen" "$STATE/delivered" "$STATE/closed" "$STATE/parked" "$STATE/env" "$STATE/ports" "$STATE/activity" "$STATE/overlays" 2>/dev/null \
     || state_error="cannot create the state directory $STATE"
+  [[ -n "$state_error" ]] || chmod 700 "$STATE/lease-tokens" 2>/dev/null || true
 fi
 LOCK_DIR="$STATE/lock"
 
@@ -282,6 +284,8 @@ source "$lib_dir/archive.sh"
 source "$lib_dir/resume.sh"
 # shellcheck source=../lib/migrate-identity.sh
 source "$lib_dir/migrate-identity.sh"
+# shellcheck source=../lib/slot-fs.sh
+source "$lib_dir/slot-fs.sh"
 
 trap '(( LOCK_HELD )) && lock_release; (( AGENT_TOKEN_LOCK_HELD )) && rm -f "$AGENT_TOKEN_LOCK"; (( LIVE_LOCK_HELD )) && live_gateway_cleanup; [[ -n "$RESERVED_LEASE" ]] && rm -f "$RESERVED_LEASE"' EXIT
 
@@ -299,6 +303,7 @@ case "$verb" in
   restart) cmd_restart "$@" ;;
   run) cmd_run "$@" ;;
   put) cmd_put "$@" ;;
+  fs) cmd_fs "$@" ;;
   db-target) cmd_db_target "$@" ;;
   install) cmd_install "$@" ;;
   doctor) cmd_doctor "$@" ;;

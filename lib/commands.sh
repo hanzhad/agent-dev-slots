@@ -44,14 +44,15 @@ cmd_acquire() {
     WAIT_DEADLINE=$deadline
     activity_refresh
     lock_acquire
-    local ok=0
+    local ok=0 seen=""
     if ! check_session_slot_limit "$owner"; then
       lock_release
       exit 4
     fi
+    seen=$(lease_state_signature)
     try_acquire_once && ok=1
     if (( ok )); then
-      write_reservation "$(lease_file_of "$ACQUIRED_ID")" "$ACQUIRE_SETUP" "$holder" "$owner"
+      write_reservation "$(lease_file_of "$ACQUIRED_ID")" "$ACQUIRE_SETUP" "$holder" "$owner" "$repo_root"
       allow_hosts_store "$ACQUIRED_ID"
       WAIT_DEADLINE=0
     fi
@@ -67,6 +68,8 @@ cmd_acquire() {
       local cap_report
       if [[ "$ACQUIRE_BLOCKED" == memory ]]; then
         echo "acquire refuses: $MEMORY_REASON." >&2
+      elif [[ "$ACQUIRE_BLOCKED" == project_cap ]] && cap_report=$(project_cap_report); then
+        echo "$cap_report" >&2
       elif cap_report=$(machine_cap_report); then
         echo "$cap_report" >&2
       else
@@ -76,13 +79,22 @@ cmd_acquire() {
       echo "run 'acquire --wait --for $holder' (e.g. in the background) to wait for one" >&2
       exit 2
     fi
-    local leased wait_key wait_limit=30
+    local leased p_used wait_key wait_limit=30
     if [[ "$ACQUIRE_BLOCKED" == memory ]]; then
       wait_key="memory/$MEMORY_FLOOR"
       wait_limit=3
       WAIT_NOTE=" — still waiting on memory: $MEMORY_REASON"
       if [[ "$wait_key" != "$last_leased" ]]; then
         echo "▸ waiting for memory: $MEMORY_REASON" >&2
+        last_leased="$wait_key"
+      fi
+    elif [[ "$ACQUIRE_BLOCKED" == project_cap ]]; then
+      WAIT_NOTE=""
+      project_cap_load
+      p_used=$(project_in_use)
+      wait_key="project:$SLOT_PROJECT_PREFIX:$p_used/$PROJECT_CAP"
+      if [[ "$wait_key" != "$last_leased" ]]; then
+        echo "▸ waiting for a free slot for project '$SLOT_PROJECT_PREFIX' ($p_used/$PROJECT_CAP live; cap in $STATE/limits.json)"
         last_leased="$wait_key"
       fi
     else
@@ -95,13 +107,12 @@ cmd_acquire() {
         last_leased="$wait_key"
       fi
     fi
-    local seen slept=0
-    seen=$(lease_state_signature)
+    local slept=0
     while (( slept < wait_limit )); do
-      sleep 3
-      slept=$((slept + 3))
-      wait_deadline_check
       [[ "$(lease_state_signature)" == "$seen" ]] || break
+      sleep 1
+      slept=$((slept + 1))
+      wait_deadline_check
     done
   done
 }
@@ -185,7 +196,7 @@ cmd_release() {
     local wiped_key
     wiped_key=$(lease_field "$lease" key 2>/dev/null || true)
     [[ -n "$wiped_key" ]] && rm -f "$wiped_key" "$wiped_key.pub"
-    rm -f "$lease"
+    rm -f "$lease" "$(lease_token_file_of "$sid")"
     echo "slot '$sid' released and removed — nobody holds it, and its directory and containers are gone."
     return
   fi
@@ -200,7 +211,7 @@ cmd_release() {
   local key
   key=$(lease_field "$lease" key 2>/dev/null || true)
   [[ -n "$key" ]] && rm -f "$key" "$key.pub"
-  rm -f "$lease"
+  rm -f "$lease" "$(lease_token_file_of "$sid")"
   clear_holder_file "$dir"
 
   if ! compose_running "$dir" "$sid"; then
@@ -264,7 +275,7 @@ cmd_park() {
     sync_slot_ssh_key "${sid:-$dir}" ""
     local key; key=$(lease_field "$lease" key 2>/dev/null || true)
     [[ -n "$key" ]] && rm -f "$key" "$key.pub"
-    rm -f "$lease"
+    rm -f "$lease" "$(lease_token_file_of "$sid")"
     clear_holder_file "$dir"
     echo "'$sid' was reuse-clean — released, not parked. A plain 'release $name --for $holder' would have done the same thing."
     return
@@ -278,7 +289,7 @@ cmd_park() {
   sync_slot_ssh_key "${sid:-$dir}" ""
   local key; key=$(lease_field "$lease" key 2>/dev/null || true)
   [[ -n "$key" ]] && rm -f "$key" "$key.pub"
-  rm -f "$lease"
+  rm -f "$lease" "$(lease_token_file_of "$sid")"
   clear_holder_file "$dir"
 
   write_parked "$parked_file" "$sid" "$holder" "$(now_epoch)" "$reason"
@@ -566,6 +577,7 @@ cmd_evict() {
         else
           archive_and_clean_slot "" "$sid" "$sname"
         fi
+        rm -f "$(lease_token_file_of "$sid")"
       fi
     done
     return
@@ -635,6 +647,7 @@ cmd_evict() {
   else
     rescue_and_reset "$dir" "$sid"
   fi
+  rm -f "$(lease_token_file_of "$sid")"
 }
 
 cmd_restart() {
@@ -1166,7 +1179,7 @@ cmd_down() {
     exit 1
   fi
   teardown_dir "$dir" "$sid" || exit 1
-  [[ -f "$lease" ]] && rm -f "$lease"
+  rm -f "$lease" "$(lease_token_file_of "$sid")"
   echo "slot '$name' down"
 }
 

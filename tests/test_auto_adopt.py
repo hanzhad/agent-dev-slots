@@ -208,6 +208,7 @@ class AutoAdoptTestCase(DevContainerTestCase):
             "schedule",
             "limits.json",
             "tokens",
+            "lease-tokens",
             "projects",
         }
         for entry in os.listdir(self.harness.state_dir):

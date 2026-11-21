@@ -2,8 +2,12 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 import unittest
+
+if os.path.dirname(__file__) not in sys.path:
+    sys.path.insert(0, os.path.dirname(__file__))
 
 import test_schedule
 import test_unlock
@@ -312,6 +316,134 @@ class TestOnDemandCommands(StatusCase):
         self.assertEqual(result.returncode, 0, self.output(result))
         self.assertTrue(os.path.isfile(self.stamp_path("slow")))
         self.assertTrue(os.path.isfile(self.log_path("slow")))
+
+
+class TestStatusJsonProjectFilter(StatusCase):
+
+    def _acquire_two_projects(self):
+        second = self.another(test_schedule.SecondScheduleHarness)
+        second.build()
+        subprocess.run(
+            [
+                second.real_git_bin,
+                "-C",
+                second.fixture_repo,
+                "remote",
+                "set-url",
+                "origin",
+                "https://example.invalid/second.git",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        acq_demo = self.harness.acquire("holder-demo")
+        self.assertEqual(acq_demo.returncode, 0, self.output(acq_demo))
+        acq_second = second.acquire("holder-second")
+        self.assertEqual(acq_second.returncode, 0, self.output(acq_second))
+        return (
+            os.path.realpath(self.harness.fixture_repo),
+            os.path.realpath(second.fixture_repo),
+        )
+
+    def test_slots_include_repo_root_matching_resolved_checkout(self):
+        acq = self.harness.acquire("holder-demo")
+        self.assertEqual(acq.returncode, 0, self.output(acq))
+
+        result = self.engine("status", "--json")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        data = json.loads(result.stdout.decode())
+        slots = data.get("slots", [])
+        self.assertEqual(len(slots), 1)
+        self.assertEqual(
+            slots[0].get("repo_root"),
+            os.path.realpath(self.harness.fixture_repo),
+        )
+
+    def test_status_json_project_filter_by_repo_root_isolates_matching_project(self):
+        demo_root, second_root = self._acquire_two_projects()
+
+        unfiltered = self.engine("status", "--json")
+        self.assertEqual(unfiltered.returncode, 0, self.output(unfiltered))
+        all_slots = json.loads(unfiltered.stdout.decode()).get("slots", [])
+        self.assertEqual(len(all_slots), 2)
+        self.assertEqual(
+            {s.get("repo_root") for s in all_slots},
+            {demo_root, second_root},
+        )
+
+        demo_res = self.engine("status", "--json", "--project", demo_root)
+        self.assertEqual(demo_res.returncode, 0, self.output(demo_res))
+        demo_slots = json.loads(demo_res.stdout.decode()).get("slots", [])
+        self.assertEqual(len(demo_slots), 1)
+        self.assertEqual(demo_slots[0].get("repo_root"), demo_root)
+        self.assertEqual(demo_slots[0].get("holder"), "holder-demo")
+
+        second_res = self.engine("status", "--json", "--project", second_root)
+        self.assertEqual(second_res.returncode, 0, self.output(second_res))
+        second_slots = json.loads(second_res.stdout.decode()).get("slots", [])
+        self.assertEqual(len(second_slots), 1)
+        self.assertEqual(second_slots[0].get("repo_root"), second_root)
+        self.assertEqual(second_slots[0].get("holder"), "holder-second")
+
+    def test_status_json_project_filter_by_label_isolates_matching_project(self):
+        demo_root, second_root = self._acquire_two_projects()
+
+        demo_res = self.engine("status", "--json", "--project", "demo")
+        self.assertEqual(demo_res.returncode, 0, self.output(demo_res))
+        demo_slots = json.loads(demo_res.stdout.decode()).get("slots", [])
+        self.assertEqual(len(demo_slots), 1)
+        self.assertEqual(demo_slots[0].get("repo_root"), demo_root)
+        self.assertEqual(demo_slots[0].get("holder"), "holder-demo")
+
+        second_res = self.engine("status", "--json", "--project", "second")
+        self.assertEqual(second_res.returncode, 0, self.output(second_res))
+        second_slots = json.loads(second_res.stdout.decode()).get("slots", [])
+        self.assertEqual(len(second_slots), 1)
+        self.assertEqual(second_slots[0].get("repo_root"), second_root)
+        self.assertEqual(second_slots[0].get("holder"), "holder-second")
+
+        none_res = self.engine("status", "--json", "--project", "nonexistent-project")
+        self.assertEqual(none_res.returncode, 0, self.output(none_res))
+        self.assertEqual(json.loads(none_res.stdout.decode()).get("slots"), [])
+
+    def test_status_json_project_filter_bare_label_ignores_same_named_cwd_dir(self):
+        demo_root, _second_root = self._acquire_two_projects()
+        unrelated_demo = os.path.join(self.harness.tmp, "demo")
+        os.makedirs(unrelated_demo, exist_ok=True)
+
+        label_res = self.engine("status", "--json", "--project", "demo")
+        self.assertEqual(label_res.returncode, 0, self.output(label_res))
+        label_slots = json.loads(label_res.stdout.decode()).get("slots", [])
+        self.assertEqual(len(label_slots), 1)
+        self.assertEqual(label_slots[0].get("repo_root"), demo_root)
+        self.assertEqual(label_slots[0].get("holder"), "holder-demo")
+
+        dot_demo_res = self.engine("status", "--json", "--project", "./demo")
+        self.assertEqual(dot_demo_res.returncode, 0, self.output(dot_demo_res))
+        self.assertEqual(json.loads(dot_demo_res.stdout.decode()).get("slots"), [])
+
+        rel_fixture = "./" + os.path.relpath(demo_root, self.harness.tmp)
+        rel_res = self.engine("status", "--json", "--project", rel_fixture)
+        self.assertEqual(rel_res.returncode, 0, self.output(rel_res))
+        rel_slots = json.loads(rel_res.stdout.decode()).get("slots", [])
+        self.assertEqual(len(rel_slots), 1)
+        self.assertEqual(rel_slots[0].get("repo_root"), demo_root)
+        self.assertEqual(rel_slots[0].get("holder"), "holder-demo")
+
+        caller_rel = "../" + os.path.basename(demo_root)
+        caller_res = self.engine(
+            "status",
+            "--json",
+            "--project",
+            caller_rel,
+            DEV_CONTAINER_CALLER_PWD=unrelated_demo,
+        )
+        self.assertEqual(caller_res.returncode, 0, self.output(caller_res))
+        caller_slots = json.loads(caller_res.stdout.decode()).get("slots", [])
+        self.assertEqual(len(caller_slots), 1)
+        self.assertEqual(caller_slots[0].get("repo_root"), demo_root)
+        self.assertEqual(caller_slots[0].get("holder"), "holder-demo")
 
 
 if __name__ == "__main__":

@@ -20,6 +20,7 @@ from harness import (
     SCRIPT_REL,
     project_env_text,
     slot_port,
+    wait_until,
 )
 
 TOK = "ghs_SENTINEL_9f3a_new"
@@ -235,6 +236,8 @@ class AuthTestCase(DevContainerTestCase):
         os.makedirs(self.fake)
         os.environ["AUTH_FAKE"] = self.fake
         os.environ["AUTH_REAL_SLEEP"] = shutil.which("sleep")
+        self.now = 1700000000
+        self.harness.set_now(self.now)
         place_key(self.harness)
         self.install_stubs(self.harness)
         self.set_mint(TOK, 3600)
@@ -255,9 +258,10 @@ class AuthTestCase(DevContainerTestCase):
             '[ -d "$1" ]\n',
         )
 
-    def use_quick_sleep(self):
+    def use_quick_sleep(self, marker=None):
+        touch = f': > "{marker}"\n' if marker else ""
         self.harness._write_stub(
-            "sleep", f'#!/usr/bin/env bash\nexec "{shutil.which("sleep")}" 0.01\n'
+            "sleep", f'#!/usr/bin/env bash\n{touch}exec "{shutil.which("sleep")}" 0.01\n'
         )
 
     def default_env(self, mode):
@@ -356,7 +360,7 @@ class AuthTestCase(DevContainerTestCase):
         return snaps
 
     def set_mint(self, token, expires_in, mode="ok"):
-        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + expires_in))
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.harness.now_epoch() + expires_in))
         write(os.path.join(self.fake, "curl-token"), token)
         write(os.path.join(self.fake, "curl-expires"), stamp)
         write(os.path.join(self.fake, "curl-mode"), mode)
@@ -375,7 +379,7 @@ class AuthTestCase(DevContainerTestCase):
         return sorted(os.listdir(directory)) if os.path.isdir(directory) else []
 
     def write_cache(self, expires_in, token, key=None):
-        write(self.cache_file(key), f"{int(time.time()) + expires_in}\n{token}\n", 0o600)
+        write(self.cache_file(key), f"{self.harness.now_epoch() + expires_in}\n{token}\n", 0o600)
 
     def read_cache(self, key=None):
         lines = read_if(self.cache_file(key)).split("\n")
@@ -426,10 +430,12 @@ class GithubAppRun(AuthTestCase):
         write(os.path.join(self.fake, "curl-hold"), "")
         started = self.start_run("holder")
         inside = os.path.join(self.fake, "curl-inside")
-        deadline = time.monotonic() + 30
-        while not os.path.exists(inside):
-            self.assertLess(time.monotonic(), deadline, "the first run never reached curl")
-            time.sleep(0.02)
+        wait_until(
+            lambda: os.path.exists(inside),
+            timeout=30.0,
+            interval=0.02,
+            message="the first run never reached curl",
+        )
         return started
 
     def release_mint(self):
@@ -459,8 +465,7 @@ class TheInstallationTokenCache(GithubAppRun):
         self.assertEqual(stat.S_IMODE(os.stat(self.cache_file()).st_mode), 0o600)
         expires, token = self.read_cache()
         self.assertEqual(token, TOK)
-        self.assertGreater(expires, time.time() + 3500)
-        self.assertLessEqual(expires, time.time() + 3600)
+        self.assertEqual(expires, self.now + 3600)
         self.assertEqual(self.token_entries(), [self.harness.project_key])
 
     def test_mints_once_more_and_replaces_the_cache_when_under_30_minutes_are_left(self):
@@ -484,15 +489,21 @@ class TheInstallationTokenCache(GithubAppRun):
         self.assertEqual(self.exec_tokens(), [TOK])
 
     def test_the_line_is_at_30_minutes_29_mints_and_31_does_not(self):
-        self.write_cache(29 * 60, OLD)
-        self.assertEqual(self.run_slot().returncode, 0)
-        self.assertEqual(self.exec_tokens(), [TOK])
-
         self.write_cache(31 * 60, OLD)
         self.assertEqual(self.run_slot().returncode, 0)
+        self.assertEqual(self.exec_tokens(), [OLD])
+        self.assertEqual(self.curl_argv(), [])
 
-        self.assertEqual(self.exec_tokens()[-1:], [OLD])
+        self.harness.advance_now(60)  # exactly 30m left: not > 30m, must mint
+        self.assertEqual(self.run_slot().returncode, 0)
+        self.assertEqual(self.exec_tokens()[-1:], [TOK])
         self.assertEqual(len(self.curl_argv()), 1)
+
+        self.harness.set_now(self.now)
+        self.write_cache(29 * 60, OLD)
+        self.assertEqual(self.run_slot().returncode, 0)
+        self.assertEqual(self.exec_tokens()[-1:], [TOK])
+        self.assertEqual(len(self.curl_argv()), 2)
 
     def test_the_second_run_is_served_from_the_cache_the_first_one_wrote(self):
         self.assertEqual(self.run_slot().returncode, 0)
@@ -502,7 +513,7 @@ class TheInstallationTokenCache(GithubAppRun):
         self.assertEqual(self.exec_tokens(), [TOK, TOK])
 
     def test_a_damaged_cache_is_a_missing_cache(self):
-        now = int(time.time())
+        now = self.now
         cases = {
             "empty": "",
             "garbage": "not a cache\n",
@@ -606,8 +617,8 @@ class WhatIsSentAndNeverShown(GithubAppRun):
         self.assertTrue(ok, "the signature does not verify against the key")
         self.assertEqual(header, {"alg": "RS256", "typ": "JWT"})
         self.assertEqual(str(claims["iss"]), APP_ID)
-        self.assertLessEqual(claims["iat"], time.time() - 55)
-        self.assertGreaterEqual(claims["iat"], time.time() - 120)
+        self.assertEqual(claims["iat"], self.now - 60)
+        self.assertEqual(claims["exp"], self.now + 540)
         self.assertEqual(claims["exp"] - claims["iat"], 600)
         self.assertEqual(sorted(claims), ["exp", "iat", "iss"])
 
@@ -904,9 +915,15 @@ class TheInstallationTokenLock(GithubAppRun):
 
     def test_a_held_lock_blocks_a_second_run_which_uses_the_first_token_once_released(self):
         holder = self.hold_mint()
+        marker = os.path.join(self.fake, "token-lock-waiting")
+        self.use_quick_sleep(marker=marker)
         waiter = self.start_run("waiter")
 
-        time.sleep(1.5)
+        wait_until(
+            lambda: os.path.exists(marker),
+            timeout=15.0,
+            message="the second run never reached the token lock",
+        )
 
         self.assertIsNone(waiter[0].poll(), "the second run did not wait for the lock")
         self.assertEqual(len(self.curl_argv()), 1)
@@ -1774,6 +1791,7 @@ class TheTokenCacheBelongsToTheProject(AuthTestCase):
         self.acquire()
         self.other = DevContainerHarness()
         self.addCleanup(self.other.cleanup)
+        self.other.set_now(self.now)
         self.other.state_dir = self.harness.state_dir
         self.install_stubs(self.other)
         other_key = os.path.join(self.other.tmp, "keys", "app.pem")

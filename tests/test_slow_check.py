@@ -898,6 +898,27 @@ class TestSlowCheck(DevContainerTestCase):
             f"archive was not deleted when bundle contained HEAD ref: {archive_dir}",
         )
 
+    def test_archive_without_meta_uses_dev_container_now_for_age(self):
+        archive_dir = os.path.join(self.rescue_dir, PROJECT_PREFIX, "slot-no-meta")
+        os.makedirs(archive_dir, exist_ok=True)
+
+        for injected in (1700000000, 2000000000):
+            with self.subTest(injected=injected):
+                self.harness.set_now(injected)
+                res = self._run_check()
+                self.assertEqual(res.returncode, 0, res.stderr.decode())
+                out = res.stdout.decode() + res.stderr.decode()
+                self.assertIn("archive slot-no-meta (age 0s) unproven:", out)
+
+        with open(os.path.join(archive_dir, "meta.json"), "w", encoding="utf-8") as handle:
+            json.dump({"lease": "slot-no-meta", "created_at": 1700000000}, handle)
+
+        self.harness.set_now(1700000125)
+        res = self._run_check()
+        self.assertEqual(res.returncode, 0, res.stderr.decode())
+        out = res.stdout.decode() + res.stderr.decode()
+        self.assertIn("archive slot-no-meta (age 125s) unproven:", out)
+
 
 if __name__ == "__main__":
     unittest.main()

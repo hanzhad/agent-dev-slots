@@ -3,7 +3,6 @@ import re
 import shutil
 import signal
 import subprocess
-import time
 import unittest
 from unittest import mock
 
@@ -13,6 +12,7 @@ from harness import (
     DevContainerTestCase,
     PROJECT_PREFIX,
     project_env_text,
+    wait_until,
 )
 
 GATEWAY = "edge-gate"
@@ -126,11 +126,12 @@ def read_if(path):
 
 
 def wait_for(what, check, timeout=10.0):
-    deadline = time.monotonic() + timeout
-    while not check():
-        if time.monotonic() > deadline:
-            raise AssertionError(f"timed out waiting for {what}")
-        time.sleep(0.05)
+    return wait_until(
+        check,
+        timeout=timeout,
+        interval=0.02,
+        message=f"timed out waiting for {what}",
+    )
 
 
 class LiveGatewayTestCase(DevContainerTestCase):
@@ -213,13 +214,22 @@ class LiveGatewayTestCase(DevContainerTestCase):
     def gateways_up(self):
         return sorted(n for n in os.listdir(self.fake) if n.startswith("gw-") and n != "gw-fail")
 
-    def probe(self, seconds=0, code=0):
+    def probe(self, seconds=0, code=0, barrier=None):
         """A command that notes when it began, whether the gateway was up, and when it ended."""
         ev = '"$LG_FAKE/events.log"'
         up = '$([ -e "$LG_FAKE/gw-$LG_PROJ" ] && echo up || echo down)'
+        real_sleep = shutil.which("sleep")
+        hold = ""
+        if barrier:
+            hold = (
+                f': > "$LG_FAKE/{barrier}.ready"; '
+                f'while [ -f "$LG_FAKE/{barrier}" ]; do "{real_sleep}" 0.02; done; '
+            )
+        elif seconds:
+            hold = f'"{real_sleep}" {seconds}; '
         return [
             "sh", "-c",
-            f'echo "CB $LG_PROJ gw={up}" >> {ev}; sleep {seconds}; echo "CE $LG_PROJ" >> {ev}; exit {code}',
+            f'echo "CB $LG_PROJ gw={up}" >> {ev}; {hold}echo "CE $LG_PROJ" >> {ev}; exit {code}',
         ]
 
     def hang(self):
@@ -484,9 +494,35 @@ class AGatewayThatDoesNotStartStopsTheRun(LiveGatewayTestCase):
 
 class OneLiveRunAtATimePerProject(LiveGatewayTestCase):
     def two_runs(self, first_name=None, second_name=None):
-        first = self.spawn_live(cmd=self.probe(seconds=1), name=first_name)
-        wait_for("the first command to be running", lambda: self.of("CB"))
-        second = self.spawn_live(names=["LOOKUP_API_KEY"], cmd=self.probe(), name=second_name)
+        self.flag("hold-first")
+        self.unflag("hold-first.ready")
+        self.unflag("lock-waiting")
+        self.addCleanup(self.unflag, "hold-first")
+        first = self.spawn_live(cmd=self.probe(barrier="hold-first"), name=first_name)
+        wait_until(
+            lambda: os.path.exists(os.path.join(self.fake, "hold-first.ready")),
+            timeout=15.0,
+            message="the first command never started",
+        )
+        real_sleep = shutil.which("sleep")
+        sleep_stub = os.path.join(self.harness.stub_bin, "sleep")
+        self.harness._write_stub(
+            "sleep",
+            "#!/usr/bin/env bash\n"
+            f': > "{os.path.join(self.fake, "lock-waiting")}"\n'
+            f'exec "{real_sleep}" 0.01\n',
+        )
+        try:
+            second = self.spawn_live(names=["LOOKUP_API_KEY"], cmd=self.probe(), name=second_name)
+            wait_until(
+                lambda: second.poll() is not None or os.path.exists(os.path.join(self.fake, "lock-waiting")),
+                timeout=15.0,
+                message="the second live run never contended on lock or exited",
+            )
+        finally:
+            self.unflag("hold-first")
+            if os.path.exists(sleep_stub):
+                os.remove(sleep_stub)
         first.wait(timeout=60)
         second.wait(timeout=60)
         return first, second
@@ -515,11 +551,21 @@ class OneLiveRunAtATimePerProject(LiveGatewayTestCase):
         self.check_waited_or_refused(first, second)
 
     def test_an_ordinary_run_goes_through_and_its_sweep_leaves_the_live_gateway(self):
-        first = self.spawn_live(cmd=self.probe(seconds=2))
-        wait_for("the live command to be running", lambda: self.of("CB"))
+        self.flag("hold-first")
+        self.unflag("hold-first.ready")
+        self.addCleanup(self.unflag, "hold-first")
+        first = self.spawn_live(cmd=self.probe(barrier="hold-first"))
+        wait_until(
+            lambda: os.path.exists(os.path.join(self.fake, "hold-first.ready")),
+            timeout=15.0,
+            message="the live command never started",
+        )
         saw = os.path.join(self.fake, "ordinary-saw")
 
-        res = self.ordinary(("sh", "-c", f'ls "{self.fake}" | grep -c "^gw-" > "{saw}"'))
+        try:
+            res = self.ordinary(("sh", "-c", f'ls "{self.fake}" | grep -c "^gw-" > "{saw}"'))
+        finally:
+            self.unflag("hold-first")
 
         self.assertEqual(res.returncode, 0, text(res))
         self.assertEqual(read_if(saw).strip(), "1", "the ordinary run's sweep removed the live gateway")
@@ -532,13 +578,27 @@ class OneLiveRunAtATimePerProject(LiveGatewayTestCase):
         self.addCleanup(other.cleanup)
         other_name = self.start_project(other, OTHER_PROJECT)
         self.reset_events()
-        first = self.spawn_live(cmd=self.probe(seconds=3))
-        wait_for("the first command to be running", lambda: self.of("CB"))
+        self.flag("hold-first")
+        self.unflag("hold-first.ready")
+        self.addCleanup(self.unflag, "hold-first")
+        first = self.spawn_live(cmd=self.probe(barrier="hold-first"))
+        wait_until(
+            lambda: os.path.exists(os.path.join(self.fake, "hold-first.ready")),
+            timeout=15.0,
+            message="the first command never started",
+        )
 
-        second = self.spawn_live(cmd=self.probe(), name=other_name, harness=other)
-        wait_for("the other project's command to start while the first still runs", lambda: len(self.of("CB")) == 2, 2.5)
+        try:
+            second = self.spawn_live(cmd=self.probe(), name=other_name, harness=other)
+            wait_until(
+                lambda: len(self.of("CB")) == 2,
+                timeout=15.0,
+                message="the other project's command never ran while the first was held",
+            )
+            self.assertNotIn(f"CE {self.sid}", self.of("CE"), "the first run had already finished: nothing was held up")
+        finally:
+            self.unflag("hold-first")
 
-        self.assertNotIn(f"CE {self.sid}", self.of("CE"), "the first run had already finished: nothing was held up")
         first.wait(timeout=60)
         second.wait(timeout=60)
         self.assertEqual(first.returncode, 0, read_if(self.logs[0]))

@@ -2,9 +2,16 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 
 from dockerkit import ENGINE, REPO_ROOT, THIN, RealEngineCase, docker, needs_docker, write
+
+_TESTS_DIR = os.path.join(REPO_ROOT, "tests")
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
+
+from harness import wait_until
 
 SOCKET = "/var/run/docker.sock"
 ALLOW_LIST = os.path.join(REPO_ROOT, "image", "tools.txt")
@@ -234,12 +241,12 @@ class ScheduleInTheEngineContainer(RealEngineCase):
         return int(text) if text.isdigit() else 0
 
     def wait_for_stamp(self, job, at_least=1, timeout=20):
-        deadline = time.monotonic() + timeout
-        while self.read_stamp(job) < at_least:
-            if time.monotonic() > deadline:
-                raise AssertionError(f"{job}.last never reached {at_least}")
-            time.sleep(0.1)
-        return self.read_stamp(job)
+        return wait_until(
+            lambda: val if (val := self.read_stamp(job)) >= at_least else 0,
+            timeout=timeout,
+            interval=0.05,
+            message=f"{job}.last never reached {at_least}",
+        )
 
     def read_boot_id(self):
         path = os.path.join(self.state, "boot-id")
@@ -249,14 +256,12 @@ class ScheduleInTheEngineContainer(RealEngineCase):
             return handle.read().strip()
 
     def wait_for_boot_id(self, different_from="", timeout=20):
-        deadline = time.monotonic() + timeout
-        while True:
-            current = self.read_boot_id()
-            if current and current != different_from:
-                return current
-            if time.monotonic() > deadline:
-                raise AssertionError(f"boot-id stayed {current!r}")
-            time.sleep(0.1)
+        return wait_until(
+            lambda: cur if ((cur := self.read_boot_id()) and cur != different_from) else "",
+            timeout=timeout,
+            interval=0.05,
+            message=lambda: f"boot-id stayed {self.read_boot_id()!r}",
+        )
 
     def test_stopping_past_several_intervals_and_starting_again_runs_one_makeup_pass(self):
         self.wait_for_stamp("fast")
@@ -269,7 +274,25 @@ class ScheduleInTheEngineContainer(RealEngineCase):
         docker("start", self.name)
 
         makeup = self.wait_for_stamp("fast", at_least=before)
-        time.sleep(2.5)
+        seen_ticks = set()
+
+        def observed_ticks():
+            res = self.inside(
+                "sh",
+                "-c",
+                "for p in /proc/[0-9]*; do [ -r \"$p/comm\" ] && [ \"$(cat \"$p/comm\" 2>/dev/null)\" = sleep ] && echo \"${p##*/}\"; done; true",
+                check=False,
+            )
+            for pid in res.stdout.split():
+                seen_ticks.add(pid)
+            return len(seen_ticks) >= 3
+
+        wait_until(
+            observed_ticks,
+            timeout=10.0,
+            interval=0.05,
+            message="scheduler did not advance two ticks after makeup pass",
+        )
         self.assertEqual(self.read_stamp("fast"), makeup)
 
     def test_restarting_the_container_clears_a_stale_lock_and_drops_an_old_boot_reservation(self):

@@ -3,11 +3,10 @@ import os
 import shutil
 import signal
 import subprocess
-import time
 import unittest
 
 import test_pool
-from harness import LIB_REL, PROJECT_PREFIX, REPO_ROOT, SCRIPT_REL
+from harness import LIB_REL, PROJECT_PREFIX, REPO_ROOT, SCRIPT_REL, wait_until
 
 
 class BootEnv:
@@ -90,14 +89,15 @@ class ScheduleCase(test_pool.PoolTestCase):
             return handle.read()
 
     def slow_is_fresh(self):
-        self.write_stamp("slow", time.time())
+        self.write_stamp("slow", self.harness.now_epoch())
 
     def wait_for(self, path, timeout=20):
-        deadline = time.monotonic() + timeout
-        while not os.path.isfile(path):
-            if time.monotonic() > deadline:
-                raise AssertionError(f"{path} never appeared")
-            time.sleep(0.1)
+        wait_until(
+            lambda: os.path.isfile(path),
+            timeout=timeout,
+            interval=0.02,
+            message=f"{path} never appeared",
+        )
 
     def write_lease(self, name, repo_root, age_seconds=60):
         path = os.path.join(self.state, "leases", f"{PROJECT_PREFIX}-{name}.json")
@@ -108,7 +108,7 @@ class ScheduleCase(test_pool.PoolTestCase):
                     "holder": "task",
                     "owner": "-",
                     "project": f"{PROJECT_PREFIX}-{name}",
-                    "since": int(time.time()) - age_seconds,
+                    "since": self.harness.now_epoch() - age_seconds,
                     "key": "/dev/null",
                     "ssh_port": test_pool.slot_port(1, 0),
                     "repo_root": repo_root,
@@ -126,6 +126,11 @@ class ScheduleCase(test_pool.PoolTestCase):
 
 
 class ScheduleRuns(ScheduleCase):
+
+    def setUp(self):
+        super().setUp()
+        self.now = 1700000000
+        self.harness.set_now(self.now)
 
     def test_schedule_starts_with_no_repository_root(self):
         result = self.engine("schedule", "run", "--once")
@@ -168,17 +173,15 @@ class ScheduleRuns(ScheduleCase):
 
     def test_a_job_that_has_never_run_is_due_and_gets_a_stamp_in_epoch_seconds(self):
         self.slow_is_fresh()
-        before = int(time.time())
 
         result = self.engine("schedule", "run", "--once")
 
         self.assertEqual(result.returncode, 0, self.output(result))
-        self.assertGreaterEqual(self.read_stamp("fast"), before)
-        self.assertLessEqual(self.read_stamp("fast"), int(time.time()))
+        self.assertEqual(self.read_stamp("fast"), self.now)
 
     def test_a_job_whose_last_run_is_inside_the_interval_does_not_run(self):
         self.slow_is_fresh()
-        recent = int(time.time()) - 1
+        recent = self.now - 1
         self.write_stamp("fast", recent)
 
         result = self.engine("schedule", "run", "--once", fast=1000)
@@ -188,32 +191,38 @@ class ScheduleRuns(ScheduleCase):
 
     def test_a_job_is_due_exactly_when_the_interval_has_been_reached(self):
         self.slow_is_fresh()
-        old = int(time.time()) - 1000
-        self.write_stamp("fast", old)
+        just_under = self.now - 999
+        self.write_stamp("fast", just_under)
+        self.engine("schedule", "run", "--once", fast=1000)
+        self.assertEqual(self.read_stamp("fast"), just_under)
 
+        old = self.now - 1000
+        self.write_stamp("fast", old)
         self.engine("schedule", "run", "--once", fast=1000)
 
-        self.assertGreater(self.read_stamp("fast"), old)
+        self.assertEqual(self.read_stamp("fast"), self.now)
 
     def test_a_long_missed_run_happens_once(self):
         self.slow_is_fresh()
-        self.write_stamp("fast", int(time.time()) - 86400)
+        self.write_stamp("fast", self.now - 86400)
 
         self.engine("schedule", "run", "--once", fast=60)
         first = self.read_stamp("fast")
+        self.assertEqual(first, self.now)
+
+        self.harness.advance_now(30)
         self.engine("schedule", "run", "--once", fast=60)
 
-        self.assertGreater(first, int(time.time()) - 60)
         self.assertEqual(self.read_stamp("fast"), first)
 
     def test_the_interval_comes_from_the_environment_per_job(self):
-        old = int(time.time()) - 500
+        old = self.now - 500
         self.write_stamp("fast", old)
         self.write_stamp("slow", old)
 
         self.engine("schedule", "run", "--once", fast=100, slow=1000)
 
-        self.assertGreater(self.read_stamp("fast"), old)
+        self.assertEqual(self.read_stamp("fast"), self.now)
         self.assertEqual(self.read_stamp("slow"), old)
 
     def test_a_bad_interval_is_refused_and_names_the_variable(self):
@@ -224,7 +233,7 @@ class ScheduleRuns(ScheduleCase):
 
     def test_a_missing_job_is_reported_and_is_not_fatal(self):
         # `check` does not exist yet: the other job must still run.
-        self.write_stamp("slow", int(time.time()) - 5000)
+        self.write_stamp("slow", self.now - 5000)
 
         result = self.engine("schedule", "run", "--once", slow=10)
 
@@ -234,6 +243,11 @@ class ScheduleRuns(ScheduleCase):
 
 
 class ScheduleLoop(ScheduleCase):
+
+    def setUp(self):
+        super().setUp()
+        self.now = 1700000000
+        self.harness.set_now(self.now)
 
     def spawn_loop(self):
         proc = subprocess.Popen(
@@ -248,11 +262,31 @@ class ScheduleLoop(ScheduleCase):
 
     def test_the_loop_runs_a_due_job_once_across_many_ticks(self):
         self.slow_is_fresh()
+        ticks_log = os.path.join(self.harness.tmp, "schedule-ticks.log")
+        real_sleep = shutil.which("sleep")
+        self.harness._write_stub(
+            "sleep",
+            "#!/usr/bin/env bash\n"
+            f'printf "tick\\n" >> "{ticks_log}"\n'
+            f'exec "{real_sleep}" 0.01\n',
+        )
         proc = self.spawn_loop()
         self.wait_for(self.stamp_path("fast"))
         first = self.read_stamp("fast")
+        self.assertEqual(first, self.now)
 
-        time.sleep(4)
+        def tick_count():
+            if not os.path.isfile(ticks_log):
+                return 0
+            with open(ticks_log, encoding="utf-8") as handle:
+                return len(handle.read().splitlines())
+
+        wait_until(
+            lambda: tick_count() >= 5,
+            timeout=10.0,
+            interval=0.01,
+            message="schedule loop never completed 5 ticks",
+        )
 
         self.assertIsNone(proc.poll(), "the loop exited on its own")
         self.assertEqual(self.read_stamp("fast"), first)
@@ -358,7 +392,7 @@ class Boot(ScheduleCase):
                 {
                     "holder": "ghost",
                     "project": f"{prefix}-{name}",
-                    "since": int(time.time()),
+                    "since": self.harness.now_epoch(),
                     "key": "",
                     "ssh_port": 0,
                     "owner": "-",
@@ -482,9 +516,22 @@ class Boot(ScheduleCase):
         os.mkdir(guard)
         self.addCleanup(lambda: os.path.isdir(guard) and os.rmdir(guard))
 
+        barrier = os.path.join(self.state, "boot-lock-seen")
+        real_mkdir = shutil.which("mkdir")
+        self.harness._write_stub(
+            "mkdir",
+            "#!/usr/bin/env bash\n"
+            f'if [[ "$*" == *"/.boot-lock"* && -e "${{1:-}}" ]]; then : > "{barrier}"; fi\n'
+            f'exec "{real_mkdir}" "$@"\n',
+        )
         proc = self.harness.spawn("list")
         self.addCleanup(lambda: proc.poll() is None and proc.kill())
-        time.sleep(0.2)
+        wait_until(
+            lambda: os.path.exists(barrier),
+            timeout=10.0,
+            interval=0.01,
+            message="list never reached .boot-lock contention",
+        )
         self.record_boot("boot-new")
         self.take_lock()
         os.rmdir(guard)
@@ -500,6 +547,7 @@ class RescueBundlesStay(ScheduleCase):
     def setUp(self):
         super().setUp()
         self.harness.build()
+        self.harness.set_now(1700000000)
         self.rescue = os.path.join(self.state, "rescue")
         os.makedirs(self.rescue, exist_ok=True)
 
@@ -507,7 +555,7 @@ class RescueBundlesStay(ScheduleCase):
         path = os.path.join(self.rescue, name)
         with open(path, "w", encoding="utf-8") as handle:
             handle.write("kept\n")
-        stamp = time.time() - days * 86400
+        stamp = self.harness.now_epoch() - days * 86400
         os.utime(path, (stamp, stamp))
         return path
 

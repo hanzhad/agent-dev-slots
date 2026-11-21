@@ -23,6 +23,7 @@ from harness import (
     TEST_SSH_PORT,
     project_env_text,
     slot_port,
+    wait_until,
 )
 
 
@@ -1275,6 +1276,11 @@ class IdleLeaseIsListedAsIdle(DevContainerTestCase):
     ENV = "GIT_USER_NAME=demo-agent\nGIT_USER_EMAIL=demo-agent@example.com\n"
     PORTS = "NOVNC_PORT=39236\nSSH_PORT=39226\nVITE_DEV_PORT=39246\n"
 
+    def setUp(self):
+        super().setUp()
+        self.now = 1700000000
+        self.harness.set_now(self.now)
+
     def _write_lease(self, name, age_seconds):
         path = self.harness.lease_path(name)
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -1283,7 +1289,7 @@ class IdleLeaseIsListedAsIdle(DevContainerTestCase):
                 {
                     "holder": "task-12",
                     "project": PROJECT_PREFIX + "-" + name,
-                    "since": int(time.time()) - age_seconds,
+                    "since": self.harness.now_epoch() - age_seconds,
                     "key": "/dev/null",
                     "ssh_port": 39226,
                 },
@@ -1362,6 +1368,22 @@ class IdleLeaseIsListedAsIdle(DevContainerTestCase):
         row = self._row(result.stdout.decode(), "quiet")
         self.assertEqual(row[2], "leased")
         self.assertEqual(row[10], "-")
+
+    def test_acquired_slot_transitions_from_leased_to_idle_at_exact_limit_via_dev_container_now(self):
+        self.harness.build_fixture_repo(with_parent_env=self.ENV)
+        acquired = self.harness.run_acquire(holder="clock-test")
+        self.assertEqual(acquired.returncode, 0, acquired.stderr.decode())
+        name = self.harness.acquired_slot_name(acquired)
+
+        self.harness.set_now(self.now + 7199)
+        before = self.harness.run("list", "--brief")
+        self.assertEqual(before.returncode, 0, before.stderr.decode())
+        self.assertEqual(self._row(before.stdout.decode(), name)[2], "leased")
+
+        self.harness.set_now(self.now + 7200)
+        at_limit = self.harness.run("list", "--brief")
+        self.assertEqual(at_limit.returncode, 0, at_limit.stderr.decode())
+        self.assertEqual(self._row(at_limit.stdout.decode(), name)[2], "idle")
 
     @staticmethod
     def _row(stdout, slot_name):
@@ -3324,20 +3346,31 @@ class MachineCapFromLimitsFile(DevContainerTestCase):
             with open(log, encoding="utf-8") as handle:
                 return handle.read()
 
-        deadline = time.monotonic() + 60
-        while "1/1" not in read():
-            if time.monotonic() > deadline or proc.poll() is not None:
-                raise AssertionError("never reported waiting at 1/1:\n" + read())
-            time.sleep(0.2)
+        def read_safe():
+            return read() if os.path.isfile(log) else ""
+
+        def logged_waiting():
+            if proc.poll() is not None and "1/1" not in read_safe():
+                raise AssertionError("never reported waiting at 1/1:\n" + read_safe())
+            return "1/1" in read_safe()
+
+        wait_until(
+            logged_waiting,
+            timeout=60.0,
+            interval=0.02,
+            message=lambda: "never reported waiting at 1/1:\n" + read_safe(),
+        )
         self.assertIn("limits.json", read())
         self.assertIsNone(proc.poll(), "the waiter gave up instead of waiting:\n" + read())
 
         os.remove(lease)
 
-        deadline = time.monotonic() + 90
-        while proc.poll() is None:
-            self.assertLess(time.monotonic(), deadline, "the waiter never took the freed capacity:\n" + read())
-            time.sleep(0.2)
+        wait_until(
+            lambda: proc.poll() is not None,
+            timeout=90.0,
+            interval=0.02,
+            message=lambda: "the waiter never took the freed capacity:\n" + read_safe(),
+        )
         self.assertEqual(proc.returncode, 0, read())
         self.assertIn("leased to waiter", read())
 
@@ -3385,8 +3418,12 @@ class AcquireLockScope(DevContainerTestCase):
         lock = os.path.join(self.harness.state_dir, "lock")
         os.mkdir(lock)
         self.addCleanup(lambda: os.path.isdir(lock) and os.rmdir(lock))
+        self.harness._write_stub(
+            "sleep", f'#!/usr/bin/env bash\nexec "{shutil.which("sleep")}" 0.01\n'
+        )
 
-        waiting = self.harness.spawn("acquire", "--for", "waiter", "--wait")
+        wait_log = os.path.join(self.harness.tmp, "wait-lock.log")
+        waiting = self.harness.spawn("acquire", "--for", "waiter", "--wait", log=wait_log)
         self._reap_on_failure(waiting)
         plain = self.harness.spawn("acquire", "--for", "plain")
         self._reap_on_failure(plain)
@@ -3396,13 +3433,23 @@ class AcquireLockScope(DevContainerTestCase):
         self.assertIn(lock, plain_err.decode())
         self.assertIn("busy", plain_err.decode())
 
-        time.sleep(4)
+        def read_wait_log():
+            if not os.path.isfile(wait_log):
+                return ""
+            with open(wait_log, encoding="utf-8") as handle:
+                return handle.read()
+
+        wait_until(
+            lambda: "still waiting (--wait)" in read_wait_log(),
+            timeout=15.0,
+            interval=0.02,
+            message=lambda: "acquire --wait never logged waiting past 30s:\n" + read_wait_log(),
+        )
         self.assertIsNone(waiting.poll(), "acquire --wait gave up on a busy lock")
         os.rmdir(lock)
 
-        out, err = waiting.communicate(timeout=90)
-        self.assertEqual(waiting.returncode, 0, err.decode())
-        self.assertIn("leased to waiter", out.decode())
+        self.assertEqual(waiting.wait(timeout=90), 0, read_wait_log())
+        self.assertIn("leased to waiter", read_wait_log())
 
     def test_a_second_acquire_is_not_held_up_by_a_slot_being_created(self):
         self.harness.build_fixture_repo(with_parent_env=self.ENV_WITH_IDENTITY)
@@ -3491,11 +3538,12 @@ class AcquireWaitsForAFullPool(DevContainerTestCase):
             return handle.read()
 
     def _wait_for_text(self, log, text, timeout=90):
-        deadline = time.monotonic() + timeout
-        while text not in self._read(log):
-            if time.monotonic() > deadline:
-                raise AssertionError(f"never printed {text!r}:\n{self._read(log)}")
-            time.sleep(0.2)
+        wait_until(
+            lambda: os.path.isfile(log) and text in self._read(log),
+            timeout=timeout,
+            interval=0.02,
+            message=lambda: f"never printed {text!r}:\n{self._read(log) if os.path.isfile(log) else ''}",
+        )
 
     def test_plain_acquire_on_a_full_pool_says_how_to_wait_for_one(self):
         result = self.harness.run("acquire", "--for", "late", "--as", self.OWNER)
@@ -3527,23 +3575,30 @@ class AcquireWaitsForAFullPool(DevContainerTestCase):
 
         released = self.harness.run("release", "slot-1", "--for", "holder")
         self.assertEqual(released.returncode, 0, released.stderr.decode())
-        freed_at = time.monotonic()
 
-        deadline = freed_at + 60
-        while a.poll() is None and b.poll() is None:
-            self.assertLess(time.monotonic(), deadline, "neither waiter took the freed slot")
-            time.sleep(0.2)
-        self.assertLess(time.monotonic() - freed_at, 20)
+        wait_until(
+            lambda: a.poll() is not None or b.poll() is not None,
+            timeout=20.0,
+            interval=0.02,
+            message="neither waiter took the freed slot",
+        )
 
-        winner, winner_log, loser = (a, a_log, b) if a.poll() is not None else (b, b_log, a)
+        winner, winner_log, loser, loser_log = (
+            (a, a_log, b, b_log) if a.poll() is not None else (b, b_log, a, a_log)
+        )
         self.assertEqual(winner.returncode, 0, self._read(winner_log))
         holder = "waiter-a" if winner is a else "waiter-b"
+        other_holder = "waiter-b" if winner is a else "waiter-a"
         self.assertIn(f"leased to {holder}", self._read(winner_log))
         with open(self.harness.lease_path("slot-1"), encoding="utf-8") as handle:
             self.assertEqual(json.load(handle)["holder"], holder)
 
-        time.sleep(5)
         self.assertIsNone(loser.poll(), "the second waiter stopped instead of waiting")
+        second_release = self.harness.run("release", "slot-1", "--for", holder)
+        self.assertEqual(second_release.returncode, 0, second_release.stderr.decode())
+        self.assertEqual(loser.wait(timeout=30), 0, self._read(loser_log))
+        with open(self.harness.lease_path("slot-1"), encoding="utf-8") as handle:
+            self.assertEqual(json.load(handle)["holder"], other_holder)
 
 
 class AcquireAlwaysBuildsAFreshSlot(DevContainerTestCase):
@@ -4326,6 +4381,265 @@ exec "$(dirname "$0")/docker-real" "$@"
         self.assertIn("refusing to remove", result.stderr.decode())
         self.assertTrue(os.path.isdir(slot), "reap removed a directory that is not this project's checkout")
         self.assertEqual(self._down_calls(project), [], "reap took the project down although it kept the directory")
+
+
+class NowEpochClockInjection(DevContainerTestCase):
+    ENV_WITH_IDENTITY = "GIT_USER_NAME=demo-agent\nGIT_USER_EMAIL=demo-agent@example.com\n"
+
+    def _run_lib(self, body, dev_container_now=None):
+        env = self.harness._env(None)
+        env["DEV_CONTAINER_LIB"] = "1"
+        env.pop("DEV_CONTAINER_NOW", None)
+        if dev_container_now is not None:
+            env["DEV_CONTAINER_NOW"] = dev_container_now
+        return subprocess.run(
+            ["bash", "-c", '. "$0"; ' + body, self.harness.script],
+            cwd=self.harness.tmp,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+
+    def test_now_epoch_respects_integer_dev_container_now_and_falls_back_otherwise(self):
+        self.harness.build_fixture_repo(with_parent_env=self.ENV_WITH_IDENTITY)
+
+        for valid in ("0", "1", "1700000000", "1799999999", "2147483648"):
+            with self.subTest(valid=valid):
+                res = self._run_lib("now_epoch", dev_container_now=valid)
+                self.assertEqual(res.returncode, 0, res.stderr.decode())
+                self.assertEqual(res.stdout.decode().strip(), valid)
+
+        for invalid in (
+            None,
+            "",
+            "abc",
+            "1700000000.5",
+            "1700000000s",
+            " 1700000000",
+            "1700000000 ",
+            "+1700000000",
+            "-",
+            "1700000000;echo_injected",
+        ):
+            with self.subTest(invalid=repr(invalid)):
+                before = int(time.time())
+                res = self._run_lib("now_epoch", dev_container_now=invalid)
+                after = int(time.time())
+                self.assertEqual(res.returncode, 0, res.stderr.decode())
+                out = res.stdout.decode().strip()
+                self.assertRegex(out, r"^[0-9]+$")
+                self.assertNotIn("injected", out)
+                self.assertGreaterEqual(int(out), before - 1)
+                self.assertLessEqual(int(out), after + 1)
+
+    def test_acquire_writes_lease_and_holder_timestamps_from_dev_container_now(self):
+        self.harness.build_fixture_repo(with_parent_env=self.ENV_WITH_IDENTITY)
+        self.harness.set_now(1700000000)
+
+        acquired = self.harness.run_acquire(holder="clock-holder", owner="Agent [clk]")
+        self.assertEqual(acquired.returncode, 0, acquired.stderr.decode())
+        name = self.harness.acquired_slot_name(acquired)
+
+        with open(self.harness.lease_path(name), encoding="utf-8") as handle:
+            lease = json.load(handle)
+        holder = self.harness.read_holder(name)
+        self.assertEqual(lease["since"], 1700000000)
+        self.assertEqual(int(holder["since_epoch"]), 1700000000)
+        self.assertEqual(holder["since_iso"], "2023-11-14T22:13:20Z")
+
+    def test_wait_deadline_check_uses_dev_container_now(self):
+        self.harness.build_fixture_repo(with_parent_env=self.ENV_WITH_IDENTITY)
+
+        before_deadline = self._run_lib(
+            'WAIT_DEADLINE=1700000005; WAIT_TIMEOUT="5s"; wait_deadline_check',
+            dev_container_now="1700000004",
+        )
+        self.assertEqual(before_deadline.returncode, 0, before_deadline.stderr.decode())
+
+        at_deadline = self._run_lib(
+            'WAIT_DEADLINE=1700000005; WAIT_TIMEOUT="5s"; wait_deadline_check',
+            dev_container_now="1700000005",
+        )
+        self.assertEqual(at_deadline.returncode, 3, at_deadline.stderr.decode())
+        self.assertIn("no slot became free within 5s", at_deadline.stderr.decode())
+
+    def test_list_seen_stamp_and_evict_stale_use_dev_container_now(self):
+        self.harness.build_fixture_repo(with_parent_env=self.ENV_WITH_IDENTITY)
+        t_seen = 1700000000
+        self.harness.set_now(t_seen)
+
+        acquired = self.harness.run_acquire(holder="seen-holder", owner="Agent [seen]")
+        self.assertEqual(acquired.returncode, 0, acquired.stderr.decode())
+        name = self.harness.acquired_slot_name(acquired)
+        sid = f"{PROJECT_PREFIX}-{name}"
+
+        self.harness.mark_running(name)
+        self.harness.set_container_procs(name, ["sshd", "sshd"])
+
+        listed = self.harness.run("list", "--brief")
+        self.assertEqual(listed.returncode, 0, listed.stderr.decode())
+
+        seen_file = os.path.join(self.harness.state_dir, "seen", sid)
+        self.assertTrue(os.path.isfile(seen_file), f"missing seen stamp at {seen_file}")
+        with open(seen_file, encoding="utf-8") as handle:
+            self.assertEqual(handle.read().strip(), str(t_seen))
+
+        self.harness.set_container_procs(name, ["sshd"])
+
+        self.harness.set_now(t_seen + 6 * 86400)
+        before_cutoff = self.harness.run("evict", "--stale")
+        self.assertEqual(before_cutoff.returncode, 0, before_cutoff.stderr.decode())
+        self.assertTrue(
+            os.path.isfile(self.harness.lease_path(name)),
+            "evict --stale evicted slot before 7 days",
+        )
+
+        self.harness.set_now(t_seen + 8 * 86400)
+        past_cutoff = self.harness.run("evict", "--stale")
+        self.assertEqual(past_cutoff.returncode, 0, past_cutoff.stderr.decode())
+        self.assertFalse(
+            os.path.isfile(self.harness.lease_path(name)),
+            "evict --stale did not evict slot after 8 days under DEV_CONTAINER_NOW",
+        )
+
+    def test_list_seen_stamp_with_future_dev_container_now_is_not_evicted_before_stale_cutoff(self):
+        self.harness.build_fixture_repo(with_parent_env=self.ENV_WITH_IDENTITY)
+        t_seen = 2000000000
+        self.harness.set_now(t_seen)
+
+        acquired = self.harness.run_acquire(holder="future-holder", owner="Agent [fut]")
+        self.assertEqual(acquired.returncode, 0, acquired.stderr.decode())
+        name = self.harness.acquired_slot_name(acquired)
+        sid = f"{PROJECT_PREFIX}-{name}"
+
+        self.harness.mark_running(name)
+        self.harness.set_container_procs(name, ["sshd", "sshd"])
+
+        listed = self.harness.run("list", "--brief")
+        self.assertEqual(listed.returncode, 0, listed.stderr.decode())
+
+        seen_file = os.path.join(self.harness.state_dir, "seen", sid)
+        with open(seen_file, encoding="utf-8") as handle:
+            self.assertEqual(handle.read().strip(), str(t_seen))
+
+        self.harness.set_container_procs(name, ["sshd"])
+
+        self.harness.set_now(t_seen + 6 * 86400)
+        before_cutoff = self.harness.run("evict", "--stale")
+        self.assertEqual(before_cutoff.returncode, 0, before_cutoff.stderr.decode())
+        self.assertTrue(
+            os.path.isfile(self.harness.lease_path(name)),
+            "evict --stale prematurely evicted slot seen at future DEV_CONTAINER_NOW",
+        )
+
+        self.harness.set_now(t_seen + 8 * 86400)
+        past_cutoff = self.harness.run("evict", "--stale")
+        self.assertEqual(past_cutoff.returncode, 0, past_cutoff.stderr.decode())
+        self.assertFalse(
+            os.path.isfile(self.harness.lease_path(name)),
+            "evict --stale did not evict slot after 8 days from future DEV_CONTAINER_NOW",
+        )
+
+    def test_stat_mtime_or_now_respects_injected_clock(self):
+        self.harness.build_fixture_repo(with_parent_env=self.ENV_WITH_IDENTITY)
+        target = os.path.join(self.harness.tmp, "mtime-target")
+        os.makedirs(target, exist_ok=True)
+        os.utime(target, (1600000000, 1600000000))
+
+        for injected in ("1700000000", "2000000000"):
+            with self.subTest(injected=injected):
+                res = self._run_lib(
+                    f'stat_mtime_or_now "{target}"',
+                    dev_container_now=injected,
+                )
+                self.assertEqual(res.returncode, 0, res.stderr.decode())
+                self.assertEqual(res.stdout.decode().strip(), injected)
+
+        real = self._run_lib(f'stat_mtime_or_now "{target}"')
+        self.assertEqual(real.returncode, 0, real.stderr.decode())
+        self.assertEqual(real.stdout.decode().strip(), "1600000000")
+
+
+class LeaseStateSignature(DevContainerTestCase):
+    ENV_WITH_IDENTITY = "GIT_USER_NAME=demo-agent\nGIT_USER_EMAIL=demo-agent@example.com\n"
+
+    def _signature(self):
+        env = self.harness._env(None)
+        env["DEV_CONTAINER_LIB"] = "1"
+        res = subprocess.run(
+            ["bash", "-c", '. "$0"; lease_state_signature', self.harness.script],
+            cwd=self.harness.tmp,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+        self.assertEqual(res.returncode, 0, res.stderr.decode())
+        return res.stdout.decode()
+
+    @staticmethod
+    def _write_pinned(path, text, mtime):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.utime(path, (mtime, mtime))
+
+    def test_lease_state_signature_ignores_mtime_changes_when_contents_unchanged(self):
+        self.harness.build_fixture_repo(with_parent_env=self.ENV_WITH_IDENTITY)
+        limits = os.path.join(self.harness.state_dir, "limits.json")
+        lease = self.harness.lease_path("slot-1")
+        parked = self.harness.parked_path("slot-2")
+        self._write_pinned(limits, '{"machine_max": 1}', 1700000000.0)
+        self._write_pinned(lease, '{"holder": "a", "since": 1700000000}', 1700000000.0)
+        self._write_pinned(parked, '{"holder": "b", "reason": "dirty"}', 1700000000.0)
+
+        sig_before = self._signature()
+
+        for path in (limits, lease, parked):
+            os.utime(path, (1700000010.0, 1700000010.0))
+
+        sig_after = self._signature()
+        self.assertEqual(sig_before, sig_after)
+
+    def test_lease_state_signature_changes_when_limits_or_lease_contents_change_at_same_mtime(self):
+        self.harness.build_fixture_repo(with_parent_env=self.ENV_WITH_IDENTITY)
+        pinned = 1700000000.0
+        limits = os.path.join(self.harness.state_dir, "limits.json")
+        lease = self.harness.lease_path("slot-1")
+        parked = self.harness.parked_path("slot-2")
+        limits_a = '{"machine_max": 0}'
+        limits_b = '{"machine_max": 1}'
+        lease_a = '{"holder": "alpha", "since": 1700000000}'
+        lease_b = '{"holder": "bravo", "since": 1700000000}'
+        parked_a = '{"holder": "alpha", "reason": "dirty"}'
+        parked_b = '{"holder": "bravo", "reason": "dirty"}'
+        self.assertEqual(len(limits_a), len(limits_b))
+        self.assertEqual(len(lease_a), len(lease_b))
+        self.assertEqual(len(parked_a), len(parked_b))
+
+        self._write_pinned(limits, limits_a, pinned)
+        self._write_pinned(lease, lease_a, pinned)
+        self._write_pinned(parked, parked_a, pinned)
+        sig_base = self._signature()
+
+        self._write_pinned(limits, limits_b, pinned)
+        sig_limits = self._signature()
+        self.assertNotEqual(sig_limits, sig_base)
+
+        self._write_pinned(limits, limits_a, pinned)
+        self._write_pinned(lease, lease_b, pinned)
+        sig_lease = self._signature()
+        self.assertNotEqual(sig_lease, sig_base)
+
+        self._write_pinned(lease, lease_a, pinned)
+        self._write_pinned(parked, parked_b, pinned)
+        sig_parked = self._signature()
+        self.assertNotEqual(sig_parked, sig_base)
+
+        os.remove(limits)
+        sig_no_limits = self._signature()
+        self.assertNotEqual(sig_no_limits, sig_base)
 
 
 if __name__ == "__main__":

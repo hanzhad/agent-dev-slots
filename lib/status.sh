@@ -176,8 +176,7 @@ status_archives_json() {
         local branches="[]"
         local age=0
         local dir_mtime
-        dir_mtime=$(stat -c %Y "$lease_dir" 2>/dev/null || stat -f %m "$lease_dir" 2>/dev/null || echo "$now")
-        [[ "$dir_mtime" =~ ^[0-9]+$ ]] || dir_mtime=$now
+        dir_mtime=$(stat_mtime_or_now "$lease_dir")
         age=$(( now - dir_mtime ))
         (( age >= 0 )) || age=0
 

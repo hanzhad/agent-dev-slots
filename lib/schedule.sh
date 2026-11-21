@@ -360,10 +360,11 @@ eval_archive_delivery() {
     done < <(jq -r '.branches[]? // empty' "$meta_file" 2>/dev/null || true)
   fi
 
-  if [[ -z "$created_at" ]]; then
-    created_at=$(stat -c %Y "$adir" 2>/dev/null || stat -f %m "$adir" 2>/dev/null || now_epoch)
+  if [[ ! "$created_at" =~ ^[0-9]+$ ]]; then
+    created_at=$(stat_mtime_or_now "$adir")
   fi
   local age=$(( $(now_epoch) - created_at ))
+  (( age >= 0 )) || age=0
 
   if [[ -z "$root" || ! -d "$root" ]]; then
     echo "archive $lease (age ${age}s) unproven: repo_root missing or unreachable"

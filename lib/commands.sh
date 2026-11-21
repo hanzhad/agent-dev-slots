@@ -386,7 +386,9 @@ cmd_list() {
           procs="procs:$nonbase"
         fi
         if (( sessions > 0 )); then
-          date +%s >"$STATE/seen/$sid"
+          mkdir -p "$STATE/seen"
+          now_epoch >"$STATE/seen/$sid.tmp.$$"
+          mv "$STATE/seen/$sid.tmp.$$" "$STATE/seen/$sid"
         fi
       fi
 
@@ -570,6 +572,7 @@ cmd_evict() {
       local seen="$STATE/seen/$sid"
       local last=0
       [[ -f "$seen" ]] && last=$(cat "$seen")
+      [[ "$last" =~ ^[0-9]+$ ]] || last=0
       if (( last < cutoff )); then
         echo "▸ evicting '$sid' — no ssh session in $days+ days"
         if [[ -d "$sdir" ]]; then

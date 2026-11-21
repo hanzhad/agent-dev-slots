@@ -58,6 +58,18 @@ archive_and_clean_slot() {
     is_vol=1
   fi
 
+  local lease; lease=$(lease_file_of "$sid")
+  if lease_is_ephemeral "$lease"; then
+    echo "▸ slot '$name' is ephemeral — discarding without rescue archive"
+    if (( is_vol )); then
+      teardown_dir "" "$sid"
+    else
+      teardown_dir "$dir" "$sid"
+    fi
+    rm -f "$lease" "$(lease_token_file_of "$sid")" "$STATE/keys/$sid-"*
+    return 0
+  fi
+
   if [[ -z "$dir" || ! -d "$dir" ]]; then
     if [[ -n "${DOCKER_STUB_STATE:-}" && -d "$DOCKER_STUB_STATE/volumes/${sid}-workspace" ]]; then
       dir="$DOCKER_STUB_STATE/volumes/${sid}-workspace"

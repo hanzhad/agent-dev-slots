@@ -10,8 +10,8 @@ die() {
 
 usage_text() {
   cat <<USAGE
-Usage: $CALLER acquire --for <holder> [--as '<name> [<ref>]'] [--allow-host <host>[,<host>]]... [--wait [--timeout <duration>]] [--refresh]
-       $CALLER release <slot> --for <holder> — <holder> must match the lease's own holder; 'evict' takes a slot that isn't yours; wipes the slot (containers, volumes, directory) once everything in it is delivered
+Usage: $CALLER acquire --for <holder> [--as '<name> [<ref>]'] [--ephemeral] [--allow-host <host>[,<host>]]... [--wait [--timeout <duration>]] [--refresh]
+       $CALLER release <slot> --for <holder> [--discard] — <holder> must match the lease's own holder; --discard tears down dirty slots without rescue; 'evict' takes a slot that isn't yours; wipes the slot (containers, volumes, directory) once everything in it is delivered
        $CALLER park <slot>            — give back the lease on a slot that is NOT reuse-clean, without pretending it's free
        $CALLER park <slot> --clear    — remove that mark; does not touch the slot itself
        $CALLER list [--brief] [--fast]
@@ -36,6 +36,9 @@ Usage: $CALLER acquire --for <holder> [--as '<name> [<ref>]'] [--allow-host <hos
        $CALLER restart <name> [--refresh] — bring a slot's containers back; clones/removes nothing; --refresh rebuilds the image from scratch (no layer cache) even when it is not stale
        $CALLER run <slot> -- <cmd> [args...] — exec <cmd> inside a leased, running slot's container as node
        $CALLER put <slot> <src> <dst> | $CALLER put <slot> --stdin <dst> — copy a file or directory into a leased slot's workspace
+       $CALLER get <slot> <rel-src> <host-dst> [--max-bytes <N>] | $CALLER get <slot> --stdout <rel-src> [--max-bytes <N>] — copy a regular file out of a leased slot (O_NOFOLLOW, binary-safe)
+       $CALLER expose <slot> <[svc:]port> [--for <holder>] — tunnel a slot port or compose service port to host 127.0.0.1 over SSH
+       $CALLER expose-plan <slot> <[svc:]port> [--for <holder>] — print host SSH tunnel plan for a leased slot
        $CALLER fs <read|grep|glob|diff|write|edit> <slot> --stdin-json — structured O_NOFOLLOW filesystem access inside a leased volume slot
        $CALLER install <slot> [--refresh] — run the project's install script (install.sh in its compose directory) for a leased slot, then build its image labelled with the commit (--refresh: without the layer cache); refuses a checkout that is dirty or not on the default branch
        $CALLER doctor [--live] — check Docker, the state directory, the slot ports, the project file, its compose file and the credential file (--live also asks GitHub whether the token is valid), print the memory ceiling in force and the commit of the running image; exits non-zero naming each failed prerequisite

@@ -468,7 +468,7 @@ create_slot() {
 }
 
 finish_acquire() {
-  local dir="$1" slot_id="$2" holder="$3" owner="$4"
+  local dir="$1" slot_id="$2" holder="$3" owner="$4" ephemeral="${5:-0}" idle_limit="${6:-}"
   [[ -n "$slot_id" ]] || slot_id=$(slot_id_of "$dir")
   local name; name=$(slot_name_of "$slot_id")
   local target="${dir:-$slot_id}"
@@ -503,7 +503,7 @@ finish_acquire() {
   token_sha256=$(printf '%s' "$raw_token" | adopt_sha256)
   raw_token=""
 
-  write_lease "$(lease_file_of "$slot_id")" "$holder" "$slot_id" "$epoch" "$key" "$ssh_port" "$owner" "$repo_root" "$token_sha256"
+  write_lease "$(lease_file_of "$slot_id")" "$holder" "$slot_id" "$epoch" "$key" "$ssh_port" "$owner" "$repo_root" "$token_sha256" "$ephemeral" "$idle_limit"
   RESERVED_LEASE=""
   write_holder_file "$dir" "$holder" "$owner" "$slot_id" "$epoch"
 
@@ -511,7 +511,9 @@ finish_acquire() {
 
   echo
   echo "slot '$slot_id' leased to $holder: ${dir:-$slot_id}"
-  echo "  it has no term: it stays live while it is in use — a '$CALLER run $name -- <cmd>', or container CPU, within $(fmt_duration "$IDLE_LIMIT")."
+  local effective_idle
+  effective_idle=$(lease_effective_idle_limit "$IDLE_LIMIT" "$idle_limit")
+  echo "  it has no term: it stays live while it is in use — a '$CALLER run $name -- <cmd>', or container CPU, within $(fmt_duration "$effective_idle")."
   echo "  the shared key no longer opens this slot — only $key does."
   echo "  ssh -i $key -p $ssh_port node@localhost"
   echo "           first connect asks to accept the host key — do it from here."

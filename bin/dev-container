@@ -286,6 +286,10 @@ source "$lib_dir/resume.sh"
 source "$lib_dir/migrate-identity.sh"
 # shellcheck source=../lib/slot-fs.sh
 source "$lib_dir/slot-fs.sh"
+# shellcheck source=../lib/slot-get.sh
+source "$lib_dir/slot-get.sh"
+# shellcheck source=../lib/expose.sh
+source "$lib_dir/expose.sh"
 
 trap '(( LOCK_HELD )) && lock_release; (( AGENT_TOKEN_LOCK_HELD )) && rm -f "$AGENT_TOKEN_LOCK"; (( LIVE_LOCK_HELD )) && live_gateway_cleanup; [[ -n "$RESERVED_LEASE" ]] && rm -f "$RESERVED_LEASE"' EXIT
 
@@ -303,6 +307,9 @@ case "$verb" in
   restart) cmd_restart "$@" ;;
   run) cmd_run "$@" ;;
   put) cmd_put "$@" ;;
+  get) cmd_get "$@" ;;
+  expose-plan) cmd_expose_plan "$@" ;;
+  expose) die "expose runs on the host via $CALLER expose <slot> <[svc:]port>" ;;
   fs) cmd_fs "$@" ;;
   db-target) cmd_db_target "$@" ;;
   install) cmd_install "$@" ;;

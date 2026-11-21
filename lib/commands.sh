@@ -8,13 +8,14 @@ no_term_refusal() {
 }
 
 cmd_acquire() {
-  local holder="" wait=0 owner="-" timeout_seconds="" deadline=0 refresh=0
+  local holder="" wait=0 owner="-" timeout_seconds="" deadline=0 refresh=0 ephemeral=0 eph_idle_limit=""
   ALLOW_HOSTS_REQUESTED=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --for) shift; [[ $# -gt 0 ]] || die "--for needs a value"; holder="$1"; reject_duration_as_holder "$holder" ;;
       --wait) wait=1; LOCK_WAIT=1 ;;
       --refresh) refresh=1 ;;
+      --ephemeral) ephemeral=1 ;;
       --ttl|--ttl=*) no_term_refusal "--ttl" ;;
       --as) shift; [[ $# -gt 0 ]] || die "--as needs a value"; owner="$1" ;;
       --allow-host) shift; [[ $# -gt 0 ]] || die "--allow-host needs a value"; allow_hosts_collect "$1" ;;
@@ -24,6 +25,7 @@ cmd_acquire() {
     shift
   done
   [[ -n "$holder" ]] || die "acquire needs --for <holder>"
+  (( ephemeral )) && eph_idle_limit="$EPHEMERAL_IDLE_LIMIT_DEFAULT"
   if [[ "${AUTO_ADOPTED:-0}" == "1" ]]; then
     if ! ( cmd_doctor >/dev/null 2>&1 ); then
       cmd_doctor >&2 || true
@@ -52,7 +54,7 @@ cmd_acquire() {
     seen=$(lease_state_signature)
     try_acquire_once && ok=1
     if (( ok )); then
-      write_reservation "$(lease_file_of "$ACQUIRED_ID")" "$ACQUIRE_SETUP" "$holder" "$owner" "$repo_root"
+      write_reservation "$(lease_file_of "$ACQUIRED_ID")" "$ACQUIRE_SETUP" "$holder" "$owner" "$repo_root" "$ephemeral" "$eph_idle_limit"
       allow_hosts_store "$ACQUIRED_ID"
       WAIT_DEADLINE=0
     fi
@@ -60,7 +62,7 @@ cmd_acquire() {
     if (( ok )); then
       local slot_name="${ACQUIRED_NAME:-$(basename "$ACQUIRED_DIR")}"
       create_slot "$slot_name" "$refresh" || { clear_slot_allow_hosts "$ACQUIRED_ID"; die "creating '$slot_name' failed — the reason is above this line."; }
-      finish_acquire "$ACQUIRED_DIR" "$ACQUIRED_ID" "$holder" "$owner"
+      finish_acquire "$ACQUIRED_DIR" "$ACQUIRED_ID" "$holder" "$owner" "$ephemeral" "$eph_idle_limit"
       resync_node_modules "$slot_name" "$ACQUIRED_DIR" "$ACQUIRED_ID" || true
       return 0
     fi
@@ -118,11 +120,12 @@ cmd_acquire() {
 }
 
 cmd_release() {
-  local name="" force=0 for_holder=""
+  local name="" force=0 discard=0 for_holder=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --slot) shift; [[ $# -gt 0 ]] || die "--slot needs a value"; name="$1" ;;
       --for) shift; [[ $# -gt 0 ]] || die "--for needs a value"; for_holder="$1" ;;
+      --discard) discard=1 ;;
       -*) die "unknown flag to release: $1" ;;
       *)
         [[ -z "$name" ]] || die "unknown flag to release: $1"
@@ -166,18 +169,23 @@ cmd_release() {
     fi
   fi
 
-  # A forced release goes ahead whatever it finds, so it only warns, and by
-  # git cherry alone; otherwise the delivery check below decides and refuses.
-  local check_dir="${dir:-${DOCKER_STUB_STATE:+$DOCKER_STUB_STATE/volumes/${sid}-workspace}}"
-  (( ! force )) || warn_unproven_branches "${check_dir:-$dir}" "⚠ '$sid' still holds branch(es) not proved to be in origin/$DEFAULT_BRANCH — check before assuming they're redundant:"
+  local is_ephemeral=0
+  lease_is_ephemeral "$lease" && is_ephemeral=1
 
-  if (( ! force )) && [[ -n "$check_dir" && -d "$check_dir/.git" ]] && ! slot_is_clean_for_teardown "$check_dir"; then
-    {
-      echo "refusing to release '$sid' — it holds work that exists nowhere else:"
-      slot_dirty_report "$check_dir"
-      echo "push what's worth keeping, or '$CALLER evict $name' to take the slot anyway."
-    } >&2
-    exit 1
+  # A forced release goes ahead whatever it finds, so it only warns, and by
+  # git cherry alone; --discard or ephemeral leases bypass dirty checks cleanly.
+  local check_dir="${dir:-${DOCKER_STUB_STATE:+$DOCKER_STUB_STATE/volumes/${sid}-workspace}}"
+  if (( ! force && ! discard && ! is_ephemeral )); then
+    if [[ -n "$check_dir" && -d "$check_dir/.git" ]] && ! slot_is_clean_for_teardown "$check_dir"; then
+      {
+        echo "refusing to release '$sid' — it holds work that exists nowhere else:"
+        slot_dirty_report "$check_dir"
+        echo "push what's worth keeping, or '$CALLER release $name --for $holder --discard' (or '$CALLER evict $name') to take the slot anyway."
+      } >&2
+      exit 1
+    fi
+  elif (( force )); then
+    warn_unproven_branches "${check_dir:-$dir}" "⚠ '$sid' still holds branch(es) not proved to be in origin/$DEFAULT_BRANCH — check before assuming they're redundant:"
   fi
 
   sweep_leftover_gateway "$dir" "$sid"

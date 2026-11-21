@@ -58,13 +58,129 @@ case $status in
 esac
 
 tty=
-if [ "${1:-}" != "fs" ] && [ -t 0 ]; then tty=-t; fi
+if [ "${1:-}" != "fs" ] && [ "${1:-}" != "get" ] && [ "${1:-}" != "expose" ] && [ -t 0 ]; then tty=-t; fi
 # What the global command found out for `doctor`, passed by name only when it set it.
 cli_env=
 if [ -n "${DEV_CONTAINER_CLI_STATE+set}" ]; then cli_env="$cli_env -e DEV_CONTAINER_CLI_STATE"; fi
 if [ -n "${DEV_CONTAINER_CLI_CLONE+set}" ]; then cli_env="$cli_env -e DEV_CONTAINER_CLI_CLONE"; fi
 if [ -n "${DEV_CONTAINER_CLI_FOUND+set}" ]; then cli_env="$cli_env -e DEV_CONTAINER_CLI_FOUND"; fi
 here=$(pwd -P)
+
+if [ "${1:-}" = "get" ]; then
+  get_passthrough=0
+  for get_arg in "$@"; do
+    case "$get_arg" in
+      --help|--stdout) get_passthrough=1 ;;
+    esac
+  done
+  if [ "$get_passthrough" = "0" ] && [ $# -ge 4 ]; then
+    shift
+    get_slot=$1
+    get_src=$2
+    get_dst=$3
+    shift 3
+    case "$get_src" in -*) get_passthrough=1 ;; esac
+    case "$get_dst" in -*) get_passthrough=1 ;; esac
+    if [ "$get_passthrough" = "0" ]; then
+      if [ -d "$get_dst" ]; then
+        echo "$caller get: destination is a directory: $get_dst" >&2
+        exit 1
+      fi
+      get_dir=$(dirname "$get_dst")
+      if [ ! -d "$get_dir" ]; then
+        echo "$caller get: destination directory does not exist: $get_dir" >&2
+        exit 1
+      fi
+      get_tmp="$get_dst.tmp.$$"
+      rm -f "$get_tmp"
+      get_rc=0
+      if [ -n "${CLAUDE_CODE_HOST_SESSION_ID+set}" ]; then
+        # shellcheck disable=SC2086
+        docker exec -i $cli_env -e "DEV_CONTAINER_CALLER_PWD=$here" -e "DEV_CONTAINER_CALLER=$caller" \
+          -e CLAUDE_CODE_HOST_SESSION_ID "$name" dev-container get "$get_slot" --stdout "$get_src" "$@" >"$get_tmp" || get_rc=$?
+      else
+        # shellcheck disable=SC2086
+        docker exec -i $cli_env -e "DEV_CONTAINER_CALLER_PWD=$here" -e "DEV_CONTAINER_CALLER=$caller" \
+          "$name" dev-container get "$get_slot" --stdout "$get_src" "$@" >"$get_tmp" || get_rc=$?
+      fi
+      if [ "$get_rc" -ne 0 ]; then
+        rm -f "$get_tmp"
+        exit "$get_rc"
+      fi
+      if ! mv -f "$get_tmp" "$get_dst"; then
+        rm -f "$get_tmp"
+        exit 1
+      fi
+      exit 0
+    fi
+  fi
+fi
+
+if [ "${1:-}" = "expose" ]; then
+  exp_help=0
+  for exp_arg in "$@"; do
+    [ "$exp_arg" = "--help" ] && exp_help=1
+  done
+  if [ "$exp_help" = "0" ]; then
+    shift
+    exp_rc=0
+    if [ -n "${CLAUDE_CODE_HOST_SESSION_ID+set}" ]; then
+      # shellcheck disable=SC2086
+      exp_plan=$(docker exec -i $cli_env -e "DEV_CONTAINER_CALLER_PWD=$here" -e "DEV_CONTAINER_CALLER=$caller" \
+        -e CLAUDE_CODE_HOST_SESSION_ID "$name" dev-container expose-plan "$@") || exp_rc=$?
+    else
+      # shellcheck disable=SC2086
+      exp_plan=$(docker exec -i $cli_env -e "DEV_CONTAINER_CALLER_PWD=$here" -e "DEV_CONTAINER_CALLER=$caller" \
+        "$name" dev-container expose-plan "$@") || exp_rc=$?
+    fi
+    if [ "$exp_rc" -ne 0 ]; then
+      exit "$exp_rc"
+    fi
+    exp_ssh_port=
+    exp_key=
+    exp_th=
+    exp_tp=
+    exp_ports=
+    while IFS='=' read -r exp_k exp_v; do
+      case "$exp_k" in
+        ssh_port) exp_ssh_port=$exp_v ;;
+        key) exp_key=$exp_v ;;
+        target_host) exp_th=$exp_v ;;
+        target_port) exp_tp=$exp_v ;;
+        host_port) exp_ports="${exp_ports:+$exp_ports }$exp_v" ;;
+      esac
+    done <<EOF
+$exp_plan
+EOF
+    if [ -z "$exp_ssh_port" ] || [ -z "$exp_key" ] || [ -z "$exp_th" ] || [ -z "$exp_tp" ] || [ -z "$exp_ports" ]; then
+      echo "$caller expose: invalid expose-plan output" >&2
+      exit 1
+    fi
+    for exp_hp in $exp_ports; do
+      exp_local_cmd="printf 'EXPOSED http://localhost:%s -> %s:%s\\n' '$exp_hp' '$exp_th' '$exp_tp'"
+      exp_ssh_rc=0
+      ssh -N \
+        -o ExitOnForwardFailure=yes \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        -o ServerAliveInterval=15 \
+        -o PermitLocalCommand=yes \
+        -o "LocalCommand=$exp_local_cmd" \
+        -L "127.0.0.1:${exp_hp}:${exp_th}:${exp_tp}" \
+        -i "$exp_key" \
+        -p "$exp_ssh_port" \
+        -l node 127.0.0.1 || exp_ssh_rc=$?
+      if [ "$exp_ssh_rc" -eq 0 ]; then
+        exit 0
+      fi
+      if [ "$exp_ssh_rc" -eq 130 ] || [ "$exp_ssh_rc" -eq 143 ]; then
+        exit "$exp_ssh_rc"
+      fi
+    done
+    echo "$caller expose: could not bind any candidate port for $exp_th:$exp_tp" >&2
+    exit 1
+  fi
+fi
 
 if [ "${1:-}" = "put" ]; then
   if [ "${3:-}" = "--stdin" ]; then

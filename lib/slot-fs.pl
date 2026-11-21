@@ -7,7 +7,9 @@ use Fcntl qw(:DEFAULT O_NOFOLLOW);
 use JSON::PP ();
 
 my $MAX_FILE_BYTES = 131072;
+my $DEFAULT_GET_MAX_BYTES = 52428800;
 my $JSON = JSON::PP->new->utf8->canonical;
+my $RAW_ERRORS_TO_STDERR = 0;
 
 sub reply_ok {
     my ($hash) = @_;
@@ -20,11 +22,16 @@ sub fail {
     my ($msg) = @_;
     $msg = "operation refused" if !defined $msg || $msg eq '';
     chomp $msg;
+    if ($RAW_ERRORS_TO_STDERR) {
+        print STDERR "$msg\n";
+        exit 1;
+    }
     print $JSON->encode({ ok => JSON::PP::false, error => "$msg" }) . "\n";
     exit 1;
 }
 
 my ($op, $compose_dir_raw, $slot_copy_raw) = @ARGV;
+$RAW_ERRORS_TO_STDERR = 1 if defined $op && $op eq 'get_raw';
 fail("missing operation") if !defined $op || $op eq '';
 
 my $compose_dir = defined $compose_dir_raw ? $compose_dir_raw : '.devcontainer';
@@ -685,10 +692,62 @@ sub op_edit {
     });
 }
 
-if    ($op eq 'read')  { op_read(); }
-elsif ($op eq 'glob')  { op_glob(); }
-elsif ($op eq 'grep')  { op_grep(); }
-elsif ($op eq 'diff')  { op_diff(); }
-elsif ($op eq 'write') { op_write(); }
-elsif ($op eq 'edit')  { op_edit(); }
-else                   { fail("unsupported operation: $op"); }
+sub op_get_raw {
+    my $max_bytes = $DEFAULT_GET_MAX_BYTES;
+    if (defined $req->{max_bytes}) {
+        fail("max_bytes must be a positive integer")
+            if ref($req->{max_bytes}) || $req->{max_bytes} !~ /^[1-9][0-9]*$/;
+        $max_bytes = int($req->{max_bytes});
+        fail("max_bytes must be >= 1") if $max_bytes < 1;
+    }
+    my $rel = $req->{path};
+    my $segs = validate_rel_path($rel);
+    check_no_symlinks($segs, $rel, 0);
+    my $full = "$ws_root/$rel";
+    sysopen(my $fh, $full, O_RDONLY | O_NOFOLLOW)
+        or fail("cannot open '$rel': $!");
+    binmode $fh;
+    my @st = stat($fh);
+    if (!@st || !-f _) {
+        close $fh;
+        fail("not a regular file: $rel");
+    }
+    if ($st[7] > $max_bytes) {
+        close $fh;
+        fail("file '$rel' exceeds $max_bytes bytes");
+    }
+    my $total = 0;
+    while (1) {
+        my $n = sysread($fh, my $buf, 65536);
+        if (!defined $n) {
+            close $fh;
+            fail("read failed on '$rel': $!");
+        }
+        last if $n == 0;
+        if ($total + $n > $max_bytes) {
+            close $fh;
+            fail("file '$rel' exceeds $max_bytes bytes");
+        }
+        $total += $n;
+        my $off = 0;
+        while ($off < $n) {
+            my $w = syswrite(STDOUT, $buf, $n - $off, $off);
+            if (!defined $w) {
+                close $fh;
+                fail("write failed for '$rel': $!");
+            }
+            $off += $w;
+        }
+    }
+    close $fh;
+    exit 0;
+}
+
+if    ($op eq 'read')    { op_read(); }
+elsif ($op eq 'glob')    { op_glob(); }
+elsif ($op eq 'grep')    { op_grep(); }
+elsif ($op eq 'diff')    { op_diff(); }
+elsif ($op eq 'write')   { op_write(); }
+elsif ($op eq 'edit')    { op_edit(); }
+elsif ($op eq 'get_raw') { op_get_raw(); }
+else                     { fail("unsupported operation: $op"); }

@@ -45,13 +45,20 @@ lease_field() {
   jq -r --arg f "$field" '.[$f] // empty' "$file" 2>/dev/null
 }
 
+lease_is_ephemeral() {
+  local file="$1"
+  [[ -f "$file" && "$(lease_field "$file" ephemeral 2>/dev/null || true)" == "true" ]]
+}
+
 write_lease() {
-  local file="$1" holder="$2" project="$3" since="$4" key="$5" ssh_port="$6" owner="$7" root="$8" token_sha256="${9:-}"
+  local file="$1" holder="$2" project="$3" since="$4" key="$5" ssh_port="$6" owner="$7" root="$8" token_sha256="${9:-}" ephemeral="${10:-0}" idle_limit="${11:-}"
   jq -n --arg holder "$holder" --arg project "$project" \
         --argjson since "$since" \
         --arg key "$key" --argjson ssh_port "$ssh_port" --arg owner "$owner" --arg repo_root "$root" \
         --arg lease_token_sha256 "$token_sha256" \
-    '{holder:$holder, project:$project, since:$since, key:$key, ssh_port:$ssh_port, owner:$owner, repo_root:$repo_root} + (if $lease_token_sha256 == "" then {} else {lease_token_sha256:$lease_token_sha256} end)' \
+        --arg ephemeral "$ephemeral" \
+        --arg idle_limit "$idle_limit" \
+    '{holder:$holder, project:$project, since:$since, key:$key, ssh_port:$ssh_port, owner:$owner, repo_root:$repo_root} + (if $lease_token_sha256 == "" then {} else {lease_token_sha256:$lease_token_sha256} end) + (if ($ephemeral == "1" or $ephemeral == "true") then {ephemeral:true} else {} end) + (if ($idle_limit | test("^[1-9][0-9]*$")) then {idle_limit:($idle_limit | tonumber)} else {} end)' \
     >"$file.tmp.$$"
   mv "$file.tmp.$$" "$file"
 }
@@ -200,12 +207,14 @@ check_session_slot_limit() {
 }
 
 write_reservation() {
-  local file="$1" setup="$2" holder="$3" owner="$4" root="${5:-${repo_root:-}}"
+  local file="$1" setup="$2" holder="$3" owner="$4" root="${5:-${repo_root:-}}" ephemeral="${6:-0}" idle_limit="${7:-}"
   jq -n --arg holder "$holder" --arg project "$(basename "$file" .json)" \
         --argjson since "$(now_epoch)" \
         --arg owner "$owner" --arg setup "$setup" --argjson pid "$$" --arg boot_id "${BOOT_ID:-}" \
         --arg repo_root "$root" \
-    '{holder:$holder, project:$project, since:$since, key:"", ssh_port:0, owner:$owner, setup:$setup, pid:$pid, boot_id:$boot_id, repo_root:$repo_root}' \
+        --arg ephemeral "$ephemeral" \
+        --arg idle_limit "$idle_limit" \
+    '{holder:$holder, project:$project, since:$since, key:"", ssh_port:0, owner:$owner, setup:$setup, pid:$pid, boot_id:$boot_id, repo_root:$repo_root} + (if ($ephemeral == "1" or $ephemeral == "true") then {ephemeral:true} else {} end) + (if ($idle_limit | test("^[1-9][0-9]*$")) then {idle_limit:($idle_limit | tonumber)} else {} end)' \
     >"$file.tmp.$$"
   mv "$file.tmp.$$" "$file"
   RESERVED_LEASE="$file"

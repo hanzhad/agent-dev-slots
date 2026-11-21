@@ -8,6 +8,7 @@
 # later decides what to do with an idle slot reads the same data.
 
 IDLE_LIMIT_DEFAULT=7200
+EPHEMERAL_IDLE_LIMIT_DEFAULT=900
 IDLE_LIMIT=$IDLE_LIMIT_DEFAULT
 IDLE_LIMIT_WARNED=0
 CPU_ACTIVE_PERCENT=${DEV_CONTAINER_CPU_ACTIVE_PERCENT:-5}
@@ -81,8 +82,17 @@ lease_last_activity() {
   echo "$best"
 }
 
+lease_effective_idle_limit() {
+  local machine_limit="$1" lease_limit="${2:-}"
+  if [[ "$lease_limit" =~ ^[1-9][0-9]*$ ]] && (( lease_limit < machine_limit )); then
+    echo "$lease_limit"
+  else
+    echo "$machine_limit"
+  fi
+}
+
 lease_is_live() {
-  local file="$1" pid boot current_boot
+  local file="$1" pid boot current_boot lease_limit effective_limit
   [[ -f "$file" ]] || return 1
   if [[ -n "$(lease_field "$file" setup)" ]]; then
     boot=$(lease_field "$file" boot_id)
@@ -92,7 +102,9 @@ lease_is_live() {
     [[ -z "$pid" ]] || kill -0 "$pid" 2>/dev/null
     return
   fi
-  (( $(now_epoch) - $(lease_last_activity "$file") < IDLE_LIMIT ))
+  lease_limit=$(lease_field "$file" idle_limit 2>/dev/null || true)
+  effective_limit=$(lease_effective_idle_limit "$IDLE_LIMIT" "$lease_limit")
+  (( $(now_epoch) - $(lease_last_activity "$file") < effective_limit ))
 }
 
 fmt_idle_for() {

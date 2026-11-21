@@ -303,6 +303,224 @@ class SlotFsReadOnlyOps(SlotFsTestCase):
         self.assertIn("-before-change", diff_text)
         self.assertIn("+after-change", diff_text)
 
+    def test_fs_diff_excludes_tracked_env_files_even_under_directory_paths_and_refuses_symlinks(self):
+        self.build_repo(
+            extra_files={
+                ".env.local": "LOCAL_OLD=1\n",
+                "src/.env.production": "PROD_OLD=1\n",
+                "src/code.txt": "code-before\n",
+                "src/[id]/route.txt": "route-before\n",
+                ".env.example": "EXAMPLE_OLD=1\n",
+            },
+            slot_copy_files="config/master.key",
+            untracked_files={"config/master.key": "MASTER_KEY_SECRET=1\n"},
+        )
+        name = self.acquire_slot()
+        slot_dir = self.harness.slot_dir(name)
+        for rel, content in (
+            (".env.local", "LOCAL_SECRET_NEW=1\n"),
+            ("src/.env.production", "PROD_SECRET_NEW=1\n"),
+            ("src/code.txt", "code-after\n"),
+            ("src/[id]/route.txt", "route-after\n"),
+            (".env.example", "EXAMPLE_NEW=1\n"),
+        ):
+            with open(os.path.join(slot_dir, rel), "w", encoding="utf-8") as handle:
+                handle.write(content)
+
+        outside_dir = os.path.join(self.harness.tmp, "outside_diff_dir")
+        os.makedirs(outside_dir, exist_ok=True)
+        os.symlink("/etc/hosts", os.path.join(slot_dir, "src", "hosts_link"))
+        os.symlink(outside_dir, os.path.join(slot_dir, "link_dir"))
+
+        all_res = self.assert_fs_ok(self.run_fs("diff", name, {"paths": []}))
+        self.assertIs(all_res.get("truncated"), False)
+        all_diff = all_res.get("diff", "")
+        self.assertIn("src/code.txt", all_diff)
+        self.assertIn("+code-after", all_diff)
+        self.assertIn("src/[id]/route.txt", all_diff)
+        self.assertIn("+route-after", all_diff)
+        self.assertIn(".env.example", all_diff)
+        self.assertIn("+EXAMPLE_NEW=1", all_diff)
+        for secret in (
+            ".env.local",
+            "LOCAL_OLD",
+            "LOCAL_SECRET_NEW",
+            ".env.production",
+            "PROD_OLD",
+            "PROD_SECRET_NEW",
+            "MASTER_KEY_SECRET",
+        ):
+            self.assertNotIn(secret, all_diff)
+
+        src_res = self.assert_fs_ok(self.run_fs("diff", name, {"paths": ["src"]}))
+        self.assertIs(src_res.get("truncated"), False)
+        src_diff = src_res.get("diff", "")
+        self.assertIn("src/code.txt", src_diff)
+        self.assertIn("+code-after", src_diff)
+        self.assertNotIn(".env.example", src_diff)
+        for secret in (".env.production", "PROD_OLD", "PROD_SECRET_NEW"):
+            self.assertNotIn(secret, src_diff)
+
+        for bad_paths in (
+            [".env.local"],
+            ["src/.env.production"],
+            ["config/master.key"],
+            ["src/hosts_link"],
+            ["link_dir"],
+            ["../etc/passwd"],
+        ):
+            self.assert_fs_refused(self.run_fs("diff", name, {"paths": bad_paths}), str(bad_paths))
+
+    def test_fs_diff_supports_cached_and_truncates_oversized_diff_cleanly(self):
+        self.build_repo(
+            extra_files={
+                "staged.txt": "staged-before\n",
+                "unstaged.txt": "unstaged-before\n",
+                ".env.local": "STAGED_ENV_OLD=1\n",
+                "big.txt": "small\n",
+            }
+        )
+        name = self.acquire_slot()
+        slot_dir = self.harness.slot_dir(name)
+
+        with open(os.path.join(slot_dir, "staged.txt"), "w", encoding="utf-8") as handle:
+            handle.write("staged-after\n")
+        with open(os.path.join(slot_dir, ".env.local"), "w", encoding="utf-8") as handle:
+            handle.write("STAGED_ENV_SECRET=1\n")
+        subprocess.run(
+            [self.harness.real_git_bin, "-C", slot_dir, "add", "-f", "--", "staged.txt", ".env.local"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        with open(os.path.join(slot_dir, "unstaged.txt"), "w", encoding="utf-8") as handle:
+            handle.write("unstaged-after\n")
+
+        cached_res = self.assert_fs_ok(self.run_fs("diff", name, {"cached": True}))
+        self.assertIs(cached_res.get("truncated"), False)
+        cached_diff = cached_res.get("diff", "")
+        self.assertIn("staged.txt", cached_diff)
+        self.assertIn("+staged-after", cached_diff)
+        self.assertNotIn("unstaged.txt", cached_diff)
+        self.assertNotIn("+unstaged-after", cached_diff)
+        for secret in (".env.local", "STAGED_ENV_OLD", "STAGED_ENV_SECRET"):
+            self.assertNotIn(secret, cached_diff)
+
+        unstaged_res = self.assert_fs_ok(self.run_fs("diff", name, {"cached": False}))
+        self.assertIs(unstaged_res.get("truncated"), False)
+        unstaged_diff = unstaged_res.get("diff", "")
+        self.assertIn("unstaged.txt", unstaged_diff)
+        self.assertIn("+unstaged-after", unstaged_diff)
+        self.assertNotIn("+staged-after", unstaged_diff)
+
+        with open(os.path.join(slot_dir, "big.txt"), "w", encoding="utf-8") as handle:
+            handle.write("\u00e9" * 80000 + "\n")
+
+        big_res = self.assert_fs_ok(self.run_fs("diff", name, {"paths": ["big.txt"]}))
+        self.assertIs(big_res.get("truncated"), True)
+        big_diff = big_res.get("diff", "")
+        self.assertGreater(len(big_diff.encode("utf-8")), 0)
+        self.assertLessEqual(len(big_diff.encode("utf-8")), 131072)
+        self.assertNotIn("\ufffd", big_diff)
+
+        capped_res = self.assert_fs_ok(
+            self.run_fs("diff", name, {"paths": ["unstaged.txt"], "max_bytes": 32})
+        )
+        self.assertIs(capped_res.get("truncated"), True)
+        capped_bytes = capped_res.get("diff", "").encode("utf-8")
+        self.assertGreater(len(capped_bytes), 0)
+        self.assertLessEqual(len(capped_bytes), 32)
+
+    def test_fs_grep_and_glob_support_contract_fields_fixed_strings_path_and_max_results(self):
+        self.build_repo(
+            extra_files={
+                "top.txt": "call foo(0) at root\n",
+                "src/a.txt": "first foo(1)\nsecond foo(2)\n",
+                "src/b.py": "third foo(3)\n",
+                "src/.env.local": "secret foo(99)\n",
+            }
+        )
+        name = self.acquire_slot()
+        slot_dir = self.harness.slot_dir(name)
+        os.symlink("/etc/hosts", os.path.join(slot_dir, "hosts_link"))
+
+        self.assert_fs_refused(self.run_fs("grep", name, {"pattern": "foo("}))
+
+        scoped_one = self.assert_fs_ok(
+            self.run_fs(
+                "grep",
+                name,
+                {"pattern": "foo(", "fixed_strings": True, "path": "src", "max_results": 1},
+            )
+        )
+        self.assertIs(scoped_one.get("truncated"), True)
+        self.assertEqual(len(scoped_one.get("matches", [])), 1)
+        self.assertEqual(scoped_one["matches"][0].get("path"), "src/a.txt")
+        self.assertIn("foo(1)", scoped_one["matches"][0].get("text", ""))
+
+        scoped_all = self.assert_fs_ok(
+            self.run_fs(
+                "grep",
+                name,
+                {"pattern": "foo(", "fixed_strings": True, "path": "src", "max_results": 10},
+            )
+        )
+        self.assertIs(scoped_all.get("truncated"), False)
+        self.assertEqual(
+            [m.get("path") for m in scoped_all.get("matches", [])],
+            ["src/a.txt", "src/a.txt", "src/b.py"],
+        )
+
+        file_scoped = self.assert_fs_ok(
+            self.run_fs("grep", name, {"pattern": "foo(", "fixed_strings": True, "path": "top.txt"})
+        )
+        self.assertIs(file_scoped.get("truncated"), False)
+        self.assertEqual([m.get("path") for m in file_scoped.get("matches", [])], ["top.txt"])
+
+        alias_res = self.assert_fs_ok(
+            self.run_fs(
+                "grep",
+                name,
+                {"pattern": "foo(", "is_literal": True, "path": "src", "max_matches": 2},
+            )
+        )
+        self.assertIs(alias_res.get("truncated"), True)
+        self.assertEqual(len(alias_res.get("matches", [])), 2)
+
+        glob_scoped = self.assert_fs_ok(
+            self.run_fs(
+                "grep",
+                name,
+                {"pattern": "foo(", "fixed_strings": True, "path": "src", "glob": "*.py"},
+            )
+        )
+        self.assertIs(glob_scoped.get("truncated"), False)
+        self.assertEqual([m.get("path") for m in glob_scoped.get("matches", [])], ["src/b.py"])
+
+        for bad_path in ("../etc/passwd", "/etc/passwd", "src/.env.local", ".git", "hosts_link"):
+            self.assert_fs_refused(
+                self.run_fs("grep", name, {"pattern": "foo(", "fixed_strings": True, "path": bad_path}),
+                bad_path,
+            )
+
+        glob_capped = self.assert_fs_ok(
+            self.run_fs("glob", name, {"pattern": "**/*", "max_results": 2})
+        )
+        self.assertIs(glob_capped.get("truncated"), True)
+        self.assertEqual(len(glob_capped.get("paths", [])), 2)
+
+        glob_default = self.assert_fs_ok(
+            self.run_fs("glob", name, {"pattern": "**/*"})
+        )
+        self.assertIs(glob_default.get("truncated"), False)
+        self.assertGreater(len(glob_default.get("paths", [])), 2)
+
+        glob_under_cap = self.assert_fs_ok(
+            self.run_fs("glob", name, {"pattern": "src/*", "max_results": 10})
+        )
+        self.assertIs(glob_under_cap.get("truncated"), False)
+        self.assertEqual(glob_under_cap.get("paths"), ["src/a.txt", "src/b.py"])
+
 
 class SlotFsWriteAndEditOps(SlotFsTestCase):
 

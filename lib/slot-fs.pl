@@ -56,6 +56,7 @@ fail("invalid JSON object on stdin") if $@ || ref($req) ne 'HASH';
 sub is_blocked_dir_rel {
     my ($rel, $name) = @_;
     return 1 if $name eq '.git';
+    return 1 if $name =~ /^\.env(?:\..+)?$/;
     return 1 if $rel eq $compose_dir || index($rel, "$compose_dir/") == 0;
     for my $c (@copy_files) {
         return 1 if $rel eq $c || index($rel, "$c/") == 0;
@@ -100,6 +101,19 @@ sub validate_rel_path {
     return \@segs;
 }
 
+sub has_symlink_on_disk {
+    my ($segs) = @_;
+    my $cur = $ws_root;
+    for my $seg (@$segs) {
+        $cur .= "/" . $seg;
+        my @st = lstat($cur);
+        last if !@st;
+        return 1 if -l _;
+        last if !-d _;
+    }
+    return 0;
+}
+
 sub check_no_symlinks {
     my ($segs, $rel, $allow_missing_leaf) = @_;
     my $cur = $ws_root;
@@ -120,6 +134,39 @@ sub check_no_symlinks {
             fail("file not found: $rel");
         }
     }
+}
+
+sub truncate_utf8_bytes {
+    my ($bytes, $max) = @_;
+    return $bytes if length($bytes) <= $max;
+    my $cut = substr($bytes, 0, $max);
+    my $len = length($cut);
+    my $cont = 0;
+    while ($cont < $len && $cont < 3) {
+        my $b = ord(substr($cut, $len - 1 - $cont, 1));
+        last if ($b & 0xC0) != 0x80;
+        $cont++;
+    }
+    if ($cont < $len) {
+        my $lead_pos = $len - 1 - $cont;
+        my $lead = ord(substr($cut, $lead_pos, 1));
+        if (($lead & 0x80) == 0) {
+            if ($cont > 0) {
+                substr($cut, $len - $cont) = '';
+            }
+        } else {
+            my $need = ($lead & 0xE0) == 0xC0 ? 2
+                     : ($lead & 0xF0) == 0xE0 ? 3
+                     : ($lead & 0xF8) == 0xF0 ? 4
+                     : 0;
+            if ($need == 0 || (1 + $cont) < $need) {
+                substr($cut, $lead_pos) = '';
+            }
+        }
+    } else {
+        $cut = '';
+    }
+    return $cut;
 }
 
 sub read_regular_bytes {
@@ -249,9 +296,11 @@ sub compile_glob {
 }
 
 sub walk_workspace_files {
-    my ($glob_qr) = @_;
+    my ($glob_qr, $start_prefix) = @_;
+    $start_prefix = '' if !defined $start_prefix;
     my @out;
-    my @queue = ('');
+    my @queue = ($start_prefix);
+    my $sub_offset = $start_prefix eq '' ? 0 : length($start_prefix) + 1;
     while (@queue) {
         my $prefix = shift @queue;
         my $dir_full = $prefix eq '' ? $ws_root : "$ws_root/$prefix";
@@ -270,7 +319,9 @@ sub walk_workspace_files {
             } elsif (-f _) {
                 my @segs = split m{/}, $rel, -1;
                 next if is_blocked_rel($rel, \@segs);
-                if (!defined $glob_qr || $rel =~ $glob_qr) {
+                if (!defined $glob_qr
+                    || $rel =~ $glob_qr
+                    || ($sub_offset > 0 && substr($rel, $sub_offset) =~ $glob_qr)) {
                     push @out, $rel;
                 }
             }
@@ -278,6 +329,57 @@ sub walk_workspace_files {
     }
     @out = sort @out;
     return \@out;
+}
+
+sub resolve_grep_files {
+    my ($glob_qr) = @_;
+    if (!defined $req->{path} || $req->{path} eq '') {
+        return walk_workspace_files($glob_qr, '');
+    }
+    my $scope = $req->{path};
+    fail("path must be a string") if ref($scope);
+    fail("NUL byte refused in path") if index($scope, "\x00") >= 0;
+    fail("backslash refused in path: $scope") if index($scope, "\\") >= 0;
+    fail("absolute path refused: $scope") if substr($scope, 0, 1) eq '/';
+    return walk_workspace_files($glob_qr, '') if $scope eq '.';
+
+    $scope =~ s{/$}{};
+    my @segs = split m{/}, $scope, -1;
+    fail("empty path refused") if !@segs;
+    for my $seg (@segs) {
+        fail("invalid path segment in '$scope'")
+            if $seg eq '' || $seg eq '.' || $seg eq '..';
+    }
+    fail("protected path refused: $scope") if is_blocked_rel($scope, \@segs);
+
+    my $cur = $ws_root;
+    my $last_idx = $#segs;
+    my $is_dir = 0;
+    for my $i (0 .. $last_idx) {
+        $cur .= "/" . $segs[$i];
+        my @st = lstat($cur);
+        fail("path not found: $scope") if !@st;
+        fail("symlink refused: $scope") if -l _;
+        if ($i < $last_idx) {
+            fail("not a directory: $scope") if !-d _;
+        } else {
+            if (-d _) {
+                fail("protected path refused: $scope")
+                    if is_blocked_dir_rel($scope, $segs[$i]);
+                $is_dir = 1;
+            } elsif (!-f _) {
+                fail("not a regular file or directory: $scope");
+            }
+        }
+    }
+
+    if ($is_dir) {
+        return walk_workspace_files($glob_qr, $scope);
+    }
+    if (!defined $glob_qr || $scope =~ $glob_qr || $segs[-1] =~ $glob_qr) {
+        return [$scope];
+    }
+    return [];
 }
 
 sub op_read {
@@ -325,26 +427,46 @@ sub op_read {
 
 sub op_glob {
     my $qr = compile_glob($req->{pattern});
+    fail("invalid max_results") if defined $req->{max_results} && ref($req->{max_results});
+    my $max_results = defined $req->{max_results} ? int($req->{max_results}) : 1000;
+    fail("max_results must be >= 1") if $max_results < 1;
+
     my $paths = walk_workspace_files($qr);
-    reply_ok({ paths => $paths });
+    my $truncated = 0;
+    if (scalar(@$paths) > $max_results) {
+        @$paths = @$paths[0 .. $max_results - 1];
+        $truncated = 1;
+    }
+    reply_ok({
+        paths     => $paths,
+        truncated => ($truncated ? JSON::PP::true : JSON::PP::false),
+    });
 }
 
 sub op_grep {
     my $pat = $req->{pattern};
     fail("non-empty pattern required") if !defined $pat || ref($pat) || $pat eq '';
-    my $rx = $req->{is_literal}
+    my $fixed = ($req->{fixed_strings} || $req->{is_literal}) ? 1 : 0;
+    my $rx = $fixed
         ? qr/\Q$pat\E/
         : eval { qr/$pat/ };
     fail("invalid grep pattern") if !$rx;
 
     my $glob_qr;
-    if (defined $req->{glob} && !ref($req->{glob}) && $req->{glob} ne '') {
-        $glob_qr = compile_glob($req->{glob});
+    if (defined $req->{glob}) {
+        fail("glob must be a string") if ref($req->{glob});
+        if ($req->{glob} ne '') {
+            $glob_qr = compile_glob($req->{glob});
+        }
     }
-    my $max_matches = defined $req->{max_matches} ? int($req->{max_matches}) : 200;
-    fail("max_matches must be >= 1") if $max_matches < 1;
+    fail("invalid max_results") if defined $req->{max_results} && ref($req->{max_results});
+    fail("invalid max_matches") if defined $req->{max_matches} && ref($req->{max_matches});
+    my $max_matches = defined $req->{max_results}
+        ? int($req->{max_results})
+        : (defined $req->{max_matches} ? int($req->{max_matches}) : 200);
+    fail("max_results must be >= 1") if $max_matches < 1;
 
-    my $files = walk_workspace_files($glob_qr);
+    my $files = resolve_grep_files($glob_qr);
     my @matches;
     my $truncated = 0;
 
@@ -400,31 +522,105 @@ sub op_grep {
 }
 
 sub op_diff {
+    fail("cached must be a boolean")
+        if defined $req->{cached} && (ref($req->{cached}) eq 'ARRAY' || ref($req->{cached}) eq 'HASH');
+    my @cached_flag = $req->{cached} ? ('--cached') : ();
+
+    fail("invalid max_bytes") if defined $req->{max_bytes} && ref($req->{max_bytes});
+    my $max_bytes = defined $req->{max_bytes} ? int($req->{max_bytes}) : $MAX_FILE_BYTES;
+    fail("max_bytes must be >= 1") if $max_bytes < 1;
+
     my @paths;
     if (defined $req->{paths}) {
         fail("paths must be an array") if ref($req->{paths}) ne 'ARRAY';
-        for my $p (@{ $req->{paths} }) {
+        for my $raw_p (@{ $req->{paths} }) {
+            fail("path must be a non-empty relative string")
+                if !defined $raw_p || ref($raw_p) || $raw_p eq '';
+            my $p = $raw_p;
+            $p =~ s{/$}{} if $p ne '/';
             my $segs = validate_rel_path($p);
-            check_no_symlinks($segs, $p, 1);
+            fail("symlink refused: $p") if has_symlink_on_disk($segs);
+            if (my @lst = lstat("$ws_root/$p")) {
+                if (-d _ && is_blocked_dir_rel($p, $segs->[-1])) {
+                    fail("protected path refused: $p");
+                }
+            }
             push @paths, $p;
         }
     }
-    my @git_args = ('git', '-C', $ws_root, 'diff', '--');
-    if (@paths) {
-        push @git_args, @paths;
-    } else {
-        push @git_args, '.', ":(exclude)$compose_dir", ':(exclude)project.env';
-        for my $c (@copy_files) {
-            push @git_args, ":(exclude)$c";
+
+    open(
+        my $nfh, '-|',
+        'git', '--literal-pathspecs', '-C', $ws_root, 'diff', '--no-ext-diff', '--no-renames',
+        @cached_flag, '--name-only', '-z', '--', (@paths ? @paths : ('.'))
+    ) or fail("git diff failed: $!");
+    binmode $nfh;
+    my $names_raw = do { local $/; <$nfh> };
+    if (!close($nfh) && $? != 0) {
+        fail("git diff failed");
+    }
+    $names_raw = '' if !defined $names_raw;
+
+    my @raw_names = split /\x00/, $names_raw, -1;
+    pop @raw_names if @raw_names && $raw_names[-1] eq '';
+
+    my %seen_allowed;
+    my @allowed_files;
+    NAME_LOOP:
+    for my $rel (@raw_names) {
+        next if $rel eq '' || substr($rel, 0, 1) eq '/' || index($rel, "\\") >= 0;
+        my @segs = split m{/}, $rel, -1;
+        next if !@segs;
+        for my $seg (@segs) {
+            next NAME_LOOP if $seg eq '' || $seg eq '.' || $seg eq '..';
+        }
+        next if is_blocked_rel($rel, \@segs);
+        next if has_symlink_on_disk(\@segs);
+        if (!$seen_allowed{$rel}++) {
+            push @allowed_files, $rel;
         }
     }
-    open(my $gfh, '-|', @git_args) or fail("git diff failed: $!");
+
+    if (!@allowed_files) {
+        reply_ok({
+            diff      => '',
+            truncated => JSON::PP::false,
+        });
+    }
+
+    open(
+        my $gfh, '-|',
+        'git', '--literal-pathspecs', '-C', $ws_root, 'diff', '--no-ext-diff', '--no-color',
+        @cached_flag, '--', @allowed_files
+    ) or fail("git diff failed: $!");
     binmode $gfh;
-    my $raw_diff = do { local $/; <$gfh> };
-    close $gfh;
-    $raw_diff = '' if !defined $raw_diff;
+    my $raw_diff = '';
+    my $limit = $max_bytes + 1;
+    while (length($raw_diff) < $limit) {
+        my $n = sysread($gfh, my $buf, $limit - length($raw_diff));
+        if (!defined $n) {
+            close $gfh;
+            fail("read failed on git diff: $!");
+        }
+        last if $n == 0;
+        $raw_diff .= $buf;
+    }
+    my $truncated = 0;
+    if (length($raw_diff) > $max_bytes) {
+        close $gfh;
+        $truncated = 1;
+        $raw_diff = truncate_utf8_bytes($raw_diff, $max_bytes);
+    } else {
+        if (!close($gfh) && $? != 0) {
+            fail("git diff failed");
+        }
+    }
+
     my $diff_text = decode('UTF-8', $raw_diff);
-    reply_ok({ diff => $diff_text });
+    reply_ok({
+        diff      => $diff_text,
+        truncated => ($truncated ? JSON::PP::true : JSON::PP::false),
+    });
 }
 
 sub op_write {

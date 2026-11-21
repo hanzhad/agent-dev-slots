@@ -165,11 +165,29 @@ reject_duration_as_holder() {
   return 0
 }
 
+now_epoch_is_injected() {
+  [[ "${DEV_CONTAINER_NOW:-}" =~ ^(0|[1-9][0-9]*)$ ]]
+}
+
 now_epoch() {
-  if [[ "${DEV_CONTAINER_NOW:-}" =~ ^(0|[1-9][0-9]*)$ ]]; then
+  if now_epoch_is_injected; then
     printf '%s\n' "$DEV_CONTAINER_NOW"
   else
     date +%s
+  fi
+}
+
+stat_mtime_or_now() {
+  local path="$1" mtime=""
+  if now_epoch_is_injected; then
+    now_epoch
+    return 0
+  fi
+  mtime=$(stat -c %Y "$path" 2>/dev/null || stat -f %m "$path" 2>/dev/null || true)
+  if [[ "$mtime" =~ ^[0-9]+$ ]]; then
+    printf '%s\n' "$mtime"
+  else
+    now_epoch
   fi
 }
 

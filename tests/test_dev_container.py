@@ -4464,6 +4464,102 @@ class NowEpochClockInjection(DevContainerTestCase):
         self.assertEqual(at_deadline.returncode, 3, at_deadline.stderr.decode())
         self.assertIn("no slot became free within 5s", at_deadline.stderr.decode())
 
+    def test_list_seen_stamp_and_evict_stale_use_dev_container_now(self):
+        self.harness.build_fixture_repo(with_parent_env=self.ENV_WITH_IDENTITY)
+        t_seen = 1700000000
+        self.harness.set_now(t_seen)
+
+        acquired = self.harness.run_acquire(holder="seen-holder", owner="Agent [seen]")
+        self.assertEqual(acquired.returncode, 0, acquired.stderr.decode())
+        name = self.harness.acquired_slot_name(acquired)
+        sid = f"{PROJECT_PREFIX}-{name}"
+
+        self.harness.mark_running(name)
+        self.harness.set_container_procs(name, ["sshd", "sshd"])
+
+        listed = self.harness.run("list", "--brief")
+        self.assertEqual(listed.returncode, 0, listed.stderr.decode())
+
+        seen_file = os.path.join(self.harness.state_dir, "seen", sid)
+        self.assertTrue(os.path.isfile(seen_file), f"missing seen stamp at {seen_file}")
+        with open(seen_file, encoding="utf-8") as handle:
+            self.assertEqual(handle.read().strip(), str(t_seen))
+
+        self.harness.set_container_procs(name, ["sshd"])
+
+        self.harness.set_now(t_seen + 6 * 86400)
+        before_cutoff = self.harness.run("evict", "--stale")
+        self.assertEqual(before_cutoff.returncode, 0, before_cutoff.stderr.decode())
+        self.assertTrue(
+            os.path.isfile(self.harness.lease_path(name)),
+            "evict --stale evicted slot before 7 days",
+        )
+
+        self.harness.set_now(t_seen + 8 * 86400)
+        past_cutoff = self.harness.run("evict", "--stale")
+        self.assertEqual(past_cutoff.returncode, 0, past_cutoff.stderr.decode())
+        self.assertFalse(
+            os.path.isfile(self.harness.lease_path(name)),
+            "evict --stale did not evict slot after 8 days under DEV_CONTAINER_NOW",
+        )
+
+    def test_list_seen_stamp_with_future_dev_container_now_is_not_evicted_before_stale_cutoff(self):
+        self.harness.build_fixture_repo(with_parent_env=self.ENV_WITH_IDENTITY)
+        t_seen = 2000000000
+        self.harness.set_now(t_seen)
+
+        acquired = self.harness.run_acquire(holder="future-holder", owner="Agent [fut]")
+        self.assertEqual(acquired.returncode, 0, acquired.stderr.decode())
+        name = self.harness.acquired_slot_name(acquired)
+        sid = f"{PROJECT_PREFIX}-{name}"
+
+        self.harness.mark_running(name)
+        self.harness.set_container_procs(name, ["sshd", "sshd"])
+
+        listed = self.harness.run("list", "--brief")
+        self.assertEqual(listed.returncode, 0, listed.stderr.decode())
+
+        seen_file = os.path.join(self.harness.state_dir, "seen", sid)
+        with open(seen_file, encoding="utf-8") as handle:
+            self.assertEqual(handle.read().strip(), str(t_seen))
+
+        self.harness.set_container_procs(name, ["sshd"])
+
+        self.harness.set_now(t_seen + 6 * 86400)
+        before_cutoff = self.harness.run("evict", "--stale")
+        self.assertEqual(before_cutoff.returncode, 0, before_cutoff.stderr.decode())
+        self.assertTrue(
+            os.path.isfile(self.harness.lease_path(name)),
+            "evict --stale prematurely evicted slot seen at future DEV_CONTAINER_NOW",
+        )
+
+        self.harness.set_now(t_seen + 8 * 86400)
+        past_cutoff = self.harness.run("evict", "--stale")
+        self.assertEqual(past_cutoff.returncode, 0, past_cutoff.stderr.decode())
+        self.assertFalse(
+            os.path.isfile(self.harness.lease_path(name)),
+            "evict --stale did not evict slot after 8 days from future DEV_CONTAINER_NOW",
+        )
+
+    def test_stat_mtime_or_now_respects_injected_clock(self):
+        self.harness.build_fixture_repo(with_parent_env=self.ENV_WITH_IDENTITY)
+        target = os.path.join(self.harness.tmp, "mtime-target")
+        os.makedirs(target, exist_ok=True)
+        os.utime(target, (1600000000, 1600000000))
+
+        for injected in ("1700000000", "2000000000"):
+            with self.subTest(injected=injected):
+                res = self._run_lib(
+                    f'stat_mtime_or_now "{target}"',
+                    dev_container_now=injected,
+                )
+                self.assertEqual(res.returncode, 0, res.stderr.decode())
+                self.assertEqual(res.stdout.decode().strip(), injected)
+
+        real = self._run_lib(f'stat_mtime_or_now "{target}"')
+        self.assertEqual(real.returncode, 0, real.stderr.decode())
+        self.assertEqual(real.stdout.decode().strip(), "1600000000")
+
 
 class LeaseStateSignature(DevContainerTestCase):
     ENV_WITH_IDENTITY = "GIT_USER_NAME=demo-agent\nGIT_USER_EMAIL=demo-agent@example.com\n"

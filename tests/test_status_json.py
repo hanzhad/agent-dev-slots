@@ -246,6 +246,29 @@ class TestStatusJsonArchives(StatusCase):
         self.assertFalse(entry.get("verdict", entry.get("has_verdict")))
         self.assertIn("age", entry)
 
+    def test_archives_without_meta_uses_dev_container_now_for_age(self):
+        proj = "other-proj"
+        lease = "slot-no-meta"
+        rescue_dir = os.path.join(self.rescue, proj, lease)
+        os.makedirs(rescue_dir, exist_ok=True)
+        with open(os.path.join(rescue_dir, "payload.txt"), "w", encoding="utf-8") as handle:
+            handle.write("payload content\n")
+
+        for injected in (2000000000, 1700000000):
+            with self.subTest(injected=injected):
+                result = self.engine("status", "--json", DEV_CONTAINER_NOW=str(injected))
+                self.assertEqual(result.returncode, 0, self.output(result))
+                archives = json.loads(result.stdout.decode()).get("archives", [])
+                self.assertEqual(len(archives), 1)
+                self.assertEqual(archives[0].get("age"), 0)
+
+        self.write_meta(proj, lease, timestamp=1700000000)
+        result = self.engine("status", "--json", DEV_CONTAINER_NOW="1700000125")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        archives = json.loads(result.stdout.decode()).get("archives", [])
+        self.assertEqual(len(archives), 1)
+        self.assertEqual(archives[0].get("age"), 125)
+
 
 class TestStatusThin(FakeDockerCase):
 

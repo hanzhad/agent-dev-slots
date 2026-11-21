@@ -9,12 +9,27 @@ from dockerkit import FIXTURE_DIR, RealEngineCase, docker, needs_docker, write
 FOUR_GIB = 4 * 1024 ** 3
 ONE_GIB = 1024 ** 3
 
-COMPOSE_YML = """services:
+COMPOSE_YML = r"""services:
   app:
     build: ./ctx
     user: node
     working_dir: /workspace
-    command: ["sh", "-c", "mkdir -p /tmp/www && echo app-http-ok > /tmp/www/health && exec busybox httpd -f -p 8080 -h /tmp/www"]
+    command:
+      - sh
+      - -c
+      - |
+        cat <<'EOF' > /tmp/respond.sh
+        #!/bin/sh
+        cr=$$(printf '\r')
+        while IFS= read -r l; do
+          case "$$l" in
+            ""|"$$cr") break ;;
+          esac
+        done
+        printf 'HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\napp-http-ok\n'
+        EOF
+        chmod +x /tmp/respond.sh
+        exec nc -lk -p 8080 -e /tmp/respond.sh
     volumes:
       - ${WORKSPACE_DIR:-..}:/workspace
     networks:
@@ -83,6 +98,7 @@ class TestToolboxDocker(RealEngineCase):
         write(
             os.path.join(compose_dir, ".env"),
             "GIT_USER_NAME=demo-agent\nGIT_USER_EMAIL=demo-agent@example.com\nGH_TOKEN=tok_docker_tb_e2e\n",
+            mode=0o600,
         )
         write(os.path.join(compose_dir, "docker-compose.yml"), COMPOSE_YML)
         write(os.path.join(compose_dir, "ctx", "Dockerfile"), f"FROM {self.fixture}\n")
@@ -116,7 +132,7 @@ class TestToolboxDocker(RealEngineCase):
         write(os.path.join(self.state, "ports", f"{sid}.ports"), "SSH_PORT=41901\n")
         write(
             os.path.join(self.state, "env", f"{sid}.env"),
-            f"COMPOSE_PROJECT_NAME={sid}\nSSH_PORT=41901\nGH_TOKEN=tok_docker_tb_e2e\n",
+            f"COMPOSE_PROJECT_NAME={sid}\nSSH_PORT=41901\nGIT_USER_NAME=demo-agent\nGIT_USER_EMAIL=demo-agent@example.com\nGH_TOKEN=tok_docker_tb_e2e\n",
         )
         write(
             os.path.join(self.state, "leases", f"{sid}.json"),
@@ -196,7 +212,7 @@ class TestToolboxDocker(RealEngineCase):
             'printf "from-toolbox\\n" > /workspace/from_toolbox.txt; '
             'case ",$NO_PROXY," in *,app,*) ;; *) echo "NO_PROXY=$NO_PROXY" >&2; exit 1 ;; esac; '
             'case ",$no_proxy," in *,app,*) ;; *) echo "no_proxy=$no_proxy" >&2; exit 1 ;; esac; '
-            'body=$(curl -fsS http://app:8080/health); '
+            'body=$(curl -fsS --retry 10 --retry-delay 1 --retry-all-errors http://app:8080/health); '
             'test "$body" = "app-http-ok"'
         )
         probe = self._in_engine(checkout, "run", "slot-1", "--toolbox", "--", "sh", "-c", probe_script)

@@ -235,10 +235,41 @@ sweep_dead_reservations() {
   done
 }
 
+lease_state_stream_file() {
+  local f="$1" sz
+  sz=$({ wc -c <"$f"; } 2>/dev/null) || sz=""
+  printf 'file:%s\n' "${sz//[[:space:]]/}"
+  cat "$f" 2>/dev/null || true
+  printf '\n'
+}
+
 lease_state_signature() {
-  ls -a "$STATE/leases" "$STATE/parked" "$slots_dir" 2>/dev/null || true
-  stat -c '%Y:%s' "$STATE/limits.json" 2>/dev/null || stat -f '%m:%z' "$STATE/limits.json" 2>/dev/null || true
-  cat "$STATE/limits.json" 2>/dev/null || true
+  {
+    local dir f
+    for dir in "$STATE/leases" "$STATE/parked"; do
+      printf 'dir:%s\n' "$dir"
+      if [[ -d "$dir" ]]; then
+        for f in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
+          [[ -e "$f" || -L "$f" ]] || continue
+          printf 'entry:%s\n' "${f##*/}"
+          if [[ -f "$f" ]]; then
+            lease_state_stream_file "$f"
+          fi
+        done
+      fi
+    done
+    printf 'slots:%s\n' "${slots_dir:-}"
+    if [[ -n "${slots_dir:-}" && -d "$slots_dir" ]]; then
+      ls -1A "$slots_dir" 2>/dev/null || true
+    fi
+    printf 'limits:%s\n' "$STATE/limits.json"
+    if [[ -f "$STATE/limits.json" ]]; then
+      printf 'present:1\n'
+      lease_state_stream_file "$STATE/limits.json"
+    else
+      printf 'present:0\n'
+    fi
+  } | adopt_sha256
 }
 
 live_lease_ids() {

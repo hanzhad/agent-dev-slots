@@ -165,7 +165,13 @@ reject_duration_as_holder() {
   return 0
 }
 
-now_epoch() { date +%s; }
+now_epoch() {
+  if [[ "${DEV_CONTAINER_NOW:-}" =~ ^(0|[1-9][0-9]*)$ ]]; then
+    printf '%s\n' "$DEV_CONTAINER_NOW"
+  else
+    date +%s
+  fi
+}
 
 adopt_sha256() {
   if command -v sha256sum >/dev/null 2>&1; then

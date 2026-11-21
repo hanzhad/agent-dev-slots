@@ -1791,6 +1791,7 @@ class TheTokenCacheBelongsToTheProject(AuthTestCase):
         self.acquire()
         self.other = DevContainerHarness()
         self.addCleanup(self.other.cleanup)
+        self.other.set_now(self.now)
         self.other.state_dir = self.harness.state_dir
         self.install_stubs(self.other)
         other_key = os.path.join(self.other.tmp, "keys", "app.pem")

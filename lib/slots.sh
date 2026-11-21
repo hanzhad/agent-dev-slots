@@ -485,7 +485,25 @@ finish_acquire() {
   install_lease_key "$dir" "$slot_id" "$key.pub"
   sync_slot_ssh_key "$target" "$(cat "$key.pub")"
 
-  write_lease "$(lease_file_of "$slot_id")" "$holder" "$slot_id" "$epoch" "$key" "$ssh_port" "$owner" "$repo_root"
+  mkdir -p "$STATE/lease-tokens"
+  chmod 700 "$STATE/lease-tokens" 2>/dev/null || true
+  local raw_token token_file token_sha256
+  raw_token=$(od -An -tx1 -N32 /dev/urandom 2>/dev/null | tr -d ' \n') || raw_token=""
+  if [[ ! "$raw_token" =~ ^[0-9a-f]{64}$ ]]; then
+    raw_token=$(openssl rand -hex 32 | tr 'A-F' 'a-f' | tr -d ' \n')
+  fi
+  [[ "$raw_token" =~ ^[0-9a-f]{64}$ ]] || die "could not generate a lease token for '$slot_id'"
+  token_file=$(lease_token_file_of "$slot_id")
+  (
+    umask 077
+    printf '%s\n' "$raw_token" >"${token_file}.tmp.$$" \
+      && chmod 600 "${token_file}.tmp.$$" \
+      && mv "${token_file}.tmp.$$" "$token_file"
+  ) || die "could not write lease token for '$slot_id'"
+  token_sha256=$(printf '%s' "$raw_token" | adopt_sha256)
+  raw_token=""
+
+  write_lease "$(lease_file_of "$slot_id")" "$holder" "$slot_id" "$epoch" "$key" "$ssh_port" "$owner" "$repo_root" "$token_sha256"
   RESERVED_LEASE=""
   write_holder_file "$dir" "$holder" "$owner" "$slot_id" "$epoch"
 
@@ -529,6 +547,12 @@ try_acquire_once() {
   ACQUIRE_BLOCKED=cap
   machine_cap_load
   (( $(machine_in_use) < MACHINE_CAP )) || return 1
+  project_cap_load
+  if [[ -n "$PROJECT_CAP" ]] && (( $(project_in_use) >= PROJECT_CAP )); then
+    ACQUIRE_BLOCKED=project_cap
+    return 1
+  fi
+  ACQUIRE_BLOCKED=""
 
   local name; name=$(default_slot_name)
   local idx; idx=$(slot_index_of "$name")

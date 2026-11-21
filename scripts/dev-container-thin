@@ -58,7 +58,7 @@ case $status in
 esac
 
 tty=
-if [ -t 0 ]; then tty=-t; fi
+if [ "${1:-}" != "fs" ] && [ -t 0 ]; then tty=-t; fi
 # What the global command found out for `doctor`, passed by name only when it set it.
 cli_env=
 if [ -n "${DEV_CONTAINER_CLI_STATE+set}" ]; then cli_env="$cli_env -e DEV_CONTAINER_CLI_STATE"; fi

@@ -3181,14 +3181,14 @@ class MachineCapFromLimitsFile(DevContainerTestCase):
         self.assertEqual(result.returncode, 0, result.stderr.decode())
 
 
-    def test_machine_max_0_is_clamped_to_1(self):
+    def test_machine_max_negative_is_clamped_to_0(self):
         self._identity_repo()
-        self._write_limits({"machine_max": 0})
+        self._write_limits({"machine_max": -1})
         self._foreign_lease("alpha-slot-1")
 
         result = self._acquire()
 
-        self._assert_refused(result, 1, 1)
+        self._assert_refused(result, 1, 0)
 
     def test_machine_max_25_is_clamped_to_20(self):
         self._identity_repo()
@@ -3219,8 +3219,15 @@ class MachineCapFromLimitsFile(DevContainerTestCase):
         warned = [line for line in stderr.splitlines() if "machine_max" in line]
         self.assertEqual(len(warned), 1, f"expected a one-line warning for {value!r}:\n{stderr}")
 
-    def test_machine_max_0_warns_in_one_line(self):
-        self._assert_one_line_warning(0)
+    def test_machine_max_0_pauses_without_warning(self):
+        self._identity_repo()
+        self._write_limits({"machine_max": 0})
+
+        result = self._acquire()
+
+        self._assert_refused(result, 0, 0)
+        warned = [line for line in result.stderr.decode().splitlines() if line.startswith("warning:")]
+        self.assertEqual(warned, [], result.stderr.decode())
 
     def test_machine_max_25_warns_in_one_line(self):
         self._assert_one_line_warning(25)
@@ -3246,8 +3253,8 @@ class MachineCapFromLimitsFile(DevContainerTestCase):
     def test_a_non_number_machine_max_warns_once_on_a_refused_acquire(self):
         self._assert_one_warning_on_a_refused_acquire("lots", self.CEILING)
 
-    def test_machine_max_0_warns_once_on_a_refused_acquire(self):
-        self._assert_one_warning_on_a_refused_acquire(0, 1)
+    def test_machine_max_negative_warns_once_on_a_refused_acquire(self):
+        self._assert_one_warning_on_a_refused_acquire(-1, 1)
 
     def test_an_in_range_machine_max_does_not_warn(self):
         self._identity_repo()

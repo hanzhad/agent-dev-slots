@@ -25,7 +25,7 @@ Usage: $CALLER acquire --for <holder> [--as '<name> [<ref>]'] [--allow-host <hos
        $CALLER resume <branch or lease> — restore work from an archive, report a live slot, or take a slot from remote
        $CALLER unlock — read a read-only forge token from standard input into the engine's tmpfs
        $CALLER clean [fast] — run fast clean on demand (reaps inactive leases across all projects)
-       $CALLER status [--json] — report status of engine, live slots, cleaners, and archives
+       $CALLER status [--json] [--project <repo_root_or_label>] — report status of engine, live slots, cleaners, and archives
        $CALLER check [slow] — run the slow archive check when unlocked; reports locked and skips when no token is held
        $CALLER verdict <archive or project/lease> — evaluate unproven work in an archive and write verdict.md
        $CALLER schedule run [--once] — run the jobs in \\$STATE/schedule/jobs when they are due; --once goes through them once and exits
@@ -36,6 +36,7 @@ Usage: $CALLER acquire --for <holder> [--as '<name> [<ref>]'] [--allow-host <hos
        $CALLER restart <name> [--refresh] — bring a slot's containers back; clones/removes nothing; --refresh rebuilds the image from scratch (no layer cache) even when it is not stale
        $CALLER run <slot> -- <cmd> [args...] — exec <cmd> inside a leased, running slot's container as node
        $CALLER put <slot> <src> <dst> | $CALLER put <slot> --stdin <dst> — copy a file or directory into a leased slot's workspace
+       $CALLER fs <read|grep|glob|diff|write|edit> <slot> --stdin-json — structured O_NOFOLLOW filesystem access inside a leased volume slot
        $CALLER install <slot> [--refresh] — run the project's install script (install.sh in its compose directory) for a leased slot, then build its image labelled with the commit (--refresh: without the layer cache); refuses a checkout that is dirty or not on the default branch
        $CALLER doctor [--live] — check Docker, the state directory, the slot ports, the project file, its compose file and the credential file (--live also asks GitHub whether the token is valid), print the memory ceiling in force and the commit of the running image; exits non-zero naming each failed prerequisite
        $CALLER db-target <slot> — print that slot's compose project (scalar) and files (bash array), %q-quoted, for 'eval' under bash by a HOST caller that has to drive one of the slot's compose services directly

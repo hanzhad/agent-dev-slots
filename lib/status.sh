@@ -1,7 +1,11 @@
 # shellcheck shell=bash disable=SC2034,SC2154
 
 status_slots_json() {
-  local f sid project holder last_activity ports_file
+  local filter="${1:-}" want_root=""
+  if [[ -n "$filter" && ( "$filter" == /* || -d "$filter" ) ]]; then
+    want_root=$(CDPATH= cd -P "$filter" 2>/dev/null && pwd -P || echo "${filter%/}")
+  fi
+  local f sid project holder last_activity ports_file repo_root
   local -a slot_objs=()
   for f in "$STATE"/leases/*.json; do
     [[ -f "$f" ]] || continue
@@ -11,6 +15,20 @@ status_slots_json() {
     sid=$(basename "$f" .json)
     project=$(lease_field "$f" project)
     [[ -n "$project" ]] || project="$sid"
+    repo_root=$(lease_field "$f" repo_root 2>/dev/null || true)
+
+    if [[ -n "$filter" ]]; then
+      if [[ -n "$want_root" ]]; then
+        local canon_lroot="$repo_root"
+        if [[ -n "$repo_root" && -d "$repo_root" ]]; then
+          canon_lroot=$(CDPATH= cd -P "$repo_root" 2>/dev/null && pwd -P || echo "${repo_root%/}")
+        fi
+        [[ -n "$canon_lroot" && "$canon_lroot" == "$want_root" ]] || continue
+      else
+        [[ "$sid" == "${filter}-slot-"* || "$project" == "${filter}-slot-"* || "$project" == "$filter" ]] || continue
+      fi
+    fi
+
     holder=$(lease_field "$f" holder)
     last_activity=$(lease_last_activity "$f")
 
@@ -31,7 +49,16 @@ status_slots_json() {
     allowed_json=$(slot_allowed_hosts "$sid" | allow_hosts_json_array)
     slot_hosts_json=$(slot_extra_hosts "$sid" | allow_hosts_json_array)
     local obj
-    obj=$(jq -n       --arg slot "$sid"       --arg project "$project"       --arg holder "$holder"       --argjson last_activity "$last_activity"       --argjson ports "$ports_json"       --argjson allowed "$allowed_json"       --argjson slot_hosts "$slot_hosts_json"       '{slot: $slot, project: $project, holder: $holder, last_activity: $last_activity, last_activity_timestamp: $last_activity, ports: $ports, allowed_hosts: $allowed, slot_hosts: $slot_hosts}')
+    obj=$(jq -n \
+      --arg slot "$sid" \
+      --arg project "$project" \
+      --arg holder "$holder" \
+      --arg repo_root "$repo_root" \
+      --argjson last_activity "$last_activity" \
+      --argjson ports "$ports_json" \
+      --argjson allowed "$allowed_json" \
+      --argjson slot_hosts "$slot_hosts_json" \
+      '{slot: $slot, project: $project, holder: $holder, repo_root: (if $repo_root == "" then null else $repo_root end), last_activity: $last_activity, last_activity_timestamp: $last_activity, ports: $ports, allowed_hosts: $allowed, slot_hosts: $slot_hosts}')
     slot_objs+=("$obj")
   done
 
@@ -195,16 +222,26 @@ status_archives_json() {
 }
 
 cmd_status() {
-  local json_format=0
+  local json_format=0 project_filter=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --json) json_format=1; shift ;;
+      --project)
+        [[ $# -ge 2 && -n "${2:-}" ]] || die "status: --project needs a value"
+        project_filter="$2"
+        shift 2
+        ;;
+      --project=*)
+        project_filter="${1#--project=}"
+        [[ -n "$project_filter" ]] || die "status: --project needs a value"
+        shift
+        ;;
       *) die "status: unknown argument '$1'" ;;
     esac
   done
 
   local slots cleaners archives
-  slots=$(status_slots_json)
+  slots=$(status_slots_json "$project_filter")
   cleaners=$(status_cleaners_json)
   archives=$(status_archives_json)
 

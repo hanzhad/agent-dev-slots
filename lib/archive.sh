@@ -66,7 +66,7 @@ archive_and_clean_slot() {
 
   if [[ -z "$dir" || ! -d "$dir" ]]; then
     teardown_dir "" "$sid"
-    rm -f "$(lease_file_of "$sid")" "$STATE/keys/$sid-"*
+    rm -f "$(lease_file_of "$sid")" "$(lease_token_file_of "$sid")" "$STATE/keys/$sid-"*
     return 0
   fi
 
@@ -77,7 +77,7 @@ archive_and_clean_slot() {
     else
       teardown_dir "$dir" "$sid"
     fi
-    rm -f "$(lease_file_of "$sid")" "$STATE/keys/$sid-"*
+    rm -f "$(lease_file_of "$sid")" "$(lease_token_file_of "$sid")" "$STATE/keys/$sid-"*
     return 0
   fi
 
@@ -177,7 +177,7 @@ archive_and_clean_slot() {
     else
       teardown_dir "$dir" "$sid"
     fi
-    rm -f "$(lease_file_of "$sid")" "$STATE/keys/$sid-"*
+    rm -f "$(lease_file_of "$sid")" "$(lease_token_file_of "$sid")" "$STATE/keys/$sid-"*
     return 0
   fi
 
@@ -255,7 +255,7 @@ archive_and_clean_slot() {
   else
     teardown_dir "$dir" "$sid"
   fi
-  rm -f "$(lease_file_of "$sid")" "$STATE/keys/$sid-"*
+  rm -f "$(lease_file_of "$sid")" "$(lease_token_file_of "$sid")" "$STATE/keys/$sid-"*
   return 0
 }
 

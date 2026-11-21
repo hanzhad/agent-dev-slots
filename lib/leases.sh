@@ -37,6 +37,7 @@ lock_release() {
 RESERVED_LEASE=""
 
 lease_file_of() { echo "$STATE/leases/$1.json"; }
+lease_token_file_of() { echo "$STATE/lease-tokens/$1.token"; }
 
 lease_field() {
   local file="$1" field="$2"
@@ -45,11 +46,12 @@ lease_field() {
 }
 
 write_lease() {
-  local file="$1" holder="$2" project="$3" since="$4" key="$5" ssh_port="$6" owner="$7" root="$8"
+  local file="$1" holder="$2" project="$3" since="$4" key="$5" ssh_port="$6" owner="$7" root="$8" token_sha256="${9:-}"
   jq -n --arg holder "$holder" --arg project "$project" \
         --argjson since "$since" \
         --arg key "$key" --argjson ssh_port "$ssh_port" --arg owner "$owner" --arg repo_root "$root" \
-    '{holder:$holder, project:$project, since:$since, key:$key, ssh_port:$ssh_port, owner:$owner, repo_root:$repo_root}' \
+        --arg lease_token_sha256 "$token_sha256" \
+    '{holder:$holder, project:$project, since:$since, key:$key, ssh_port:$ssh_port, owner:$owner, repo_root:$repo_root} + (if $lease_token_sha256 == "" then {} else {lease_token_sha256:$lease_token_sha256} end)' \
     >"$file.tmp.$$"
   mv "$file.tmp.$$" "$file"
 }
@@ -180,7 +182,8 @@ check_session_slot_limit() {
   # equals the caller's id exactly wins; otherwise the key in the other spelling.
   limit=$(jq -r --arg ref "$ref" --arg bare "${ref#local_}" '
     (.sessions // {}) as $s
-    | ($s[$ref] // ([$s | to_entries[] | select((.key | sub("^local_"; "")) == $bare) | .value] | first) // .default) // empty' "$limits")
+    | (if (has("project_default") or has("projects")) then null else .default end) as $dflt
+    | ($s[$ref] // ([$s | to_entries[] | select((.key | sub("^local_"; "")) == $bare) | .value] | first) // $dflt) // empty' "$limits")
   [[ -n "$limit" ]] || return 0
   local f lease_ref held=0 held_ids=""
   for f in "$STATE"/leases/*.json; do
@@ -197,11 +200,12 @@ check_session_slot_limit() {
 }
 
 write_reservation() {
-  local file="$1" setup="$2" holder="$3" owner="$4"
+  local file="$1" setup="$2" holder="$3" owner="$4" root="${5:-${repo_root:-}}"
   jq -n --arg holder "$holder" --arg project "$(basename "$file" .json)" \
         --argjson since "$(now_epoch)" \
         --arg owner "$owner" --arg setup "$setup" --argjson pid "$$" --arg boot_id "${BOOT_ID:-}" \
-    '{holder:$holder, project:$project, since:$since, key:"", ssh_port:0, owner:$owner, setup:$setup, pid:$pid, boot_id:$boot_id}' \
+        --arg repo_root "$root" \
+    '{holder:$holder, project:$project, since:$since, key:"", ssh_port:0, owner:$owner, setup:$setup, pid:$pid, boot_id:$boot_id, repo_root:$repo_root}' \
     >"$file.tmp.$$"
   mv "$file.tmp.$$" "$file"
   RESERVED_LEASE="$file"
@@ -233,6 +237,8 @@ sweep_dead_reservations() {
 
 lease_state_signature() {
   ls -a "$STATE/leases" "$STATE/parked" "$slots_dir" 2>/dev/null || true
+  stat -c '%Y:%s' "$STATE/limits.json" 2>/dev/null || stat -f '%m:%z' "$STATE/limits.json" 2>/dev/null || true
+  cat "$STATE/limits.json" 2>/dev/null || true
 }
 
 live_lease_ids() {
@@ -255,8 +261,8 @@ machine_cap_load() {
   raw=$(jq -r 'if (type == "object") and has("machine_max") then (.machine_max | if type == "number" then tostring else "not-a-number" end) else "" end' "$limits" 2>/dev/null) || raw=""
   [[ -n "$raw" ]] || return 0
   if [[ "$raw" =~ ^-?[0-9]+$ ]]; then
-    if (( raw < 1 )); then
-      MACHINE_CAP=1; bad="$raw is below 1, using 1"
+    if (( raw < 0 )); then
+      MACHINE_CAP=0; bad="$raw is below 0, using 0"
     elif (( raw > SLOT_INDEX_CEILING )); then
       MACHINE_CAP=$SLOT_INDEX_CEILING; bad="$raw is above $SLOT_INDEX_CEILING, using $SLOT_INDEX_CEILING"
     else
@@ -283,6 +289,73 @@ machine_cap_report() {
   for f in "$STATE"/leases/*.json; do
     [[ -f "$f" ]] || continue
     lease_is_live "$f" || continue
+    echo "  $(basename "$f" .json): $(lease_field "$f" holder)"
+  done
+  return 0
+}
+
+project_cap_load() {
+  local limits="$STATE/limits.json" raw=""
+  PROJECT_CAP=""
+  [[ -f "$limits" ]] || return 0
+  raw=$(jq -r --arg lbl "${SLOT_PROJECT_PREFIX:-}" --arg pe "${PE_PROJECT:-}" '
+    if (type != "object") then ""
+    else
+      (if ((.projects | type) == "object") then .projects else {} end) as $p
+      | if ($lbl != "" and ($p | has($lbl))) then ($p[$lbl] | if type == "number" then tostring else "not-a-number" end)
+        elif ($pe != "" and $pe != $lbl and ($p | has($pe))) then ($p[$pe] | if type == "number" then tostring else "not-a-number" end)
+        elif has("project_default") then (.project_default | if type == "number" then tostring else "not-a-number" end)
+        else ""
+        end
+    end' "$limits" 2>/dev/null) || raw=""
+  [[ -n "$raw" ]] || return 0
+  if [[ "$raw" =~ ^-?[0-9]+$ ]]; then
+    if (( raw < 0 )); then
+      PROJECT_CAP=0
+    elif (( raw > SLOT_INDEX_CEILING )); then
+      PROJECT_CAP=$SLOT_INDEX_CEILING
+    else
+      PROJECT_CAP=$raw
+    fi
+  fi
+  return 0
+}
+
+lease_is_this_projects() {
+  local f="$1" lroot mine theirs
+  lroot=$(lease_field "$f" repo_root 2>/dev/null) || lroot=""
+  if [[ -n "$lroot" ]]; then
+    [[ "$lroot" == "$repo_root" ]] && return 0
+    mine=$(project_canonical_root "$repo_root")
+    theirs=$(project_canonical_root "$lroot")
+    [[ "$mine" == "$theirs" ]]
+    return
+  fi
+  [[ "$(basename "$f" .json)" == "${SLOT_PROJECT_PREFIX}-slot-"* ]]
+}
+
+project_in_use() {
+  local f count=0
+  for f in "$STATE"/leases/*.json; do
+    [[ -f "$f" ]] || continue
+    lease_is_live "$f" || continue
+    lease_is_this_projects "$f" || continue
+    count=$((count + 1))
+  done
+  echo "$count"
+}
+
+project_cap_report() {
+  project_cap_load
+  [[ -n "$PROJECT_CAP" ]] || return 1
+  local used; used=$(project_in_use)
+  (( used >= PROJECT_CAP )) || return 1
+  echo "acquire refuses: $used/$PROJECT_CAP live slots for project '$SLOT_PROJECT_PREFIX'; the cap is projects.$SLOT_PROJECT_PREFIX / project_default in $STATE/limits.json."
+  local f
+  for f in "$STATE"/leases/*.json; do
+    [[ -f "$f" ]] || continue
+    lease_is_live "$f" || continue
+    lease_is_this_projects "$f" || continue
     echo "  $(basename "$f" .json): $(lease_field "$f" holder)"
   done
   return 0

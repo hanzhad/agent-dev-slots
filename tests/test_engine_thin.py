@@ -3,7 +3,7 @@ import pty
 import subprocess
 import unittest
 
-from engine_stub import FakeDockerCase, THIN, option_values
+from engine_stub import FAKE_DOCKER, FakeDockerCase, THIN, option_values
 
 SESSION_VAR = "CLAUDE_CODE_HOST_SESSION_ID"
 
@@ -119,6 +119,106 @@ class ThinCommand(FakeDockerCase):
         self.thin("put", "slot-1", "--stdin", "stream.txt")
         call = self.exec_call()
         self.assertEqual(call[-5:], ["dev-container", "put", "slot-1", "--stdin", "stream.txt"])
+
+    def _install_stdout_docker_stub(self):
+        self._stub(
+            "docker",
+            FAKE_DOCKER.replace(
+                '  exec) exit "${FAKE_EXEC_RC:-0}" ;;',
+                '  exec) [ -n "${FAKE_STDOUT_FILE:-}" ] && [ "${FAKE_EXEC_RC:-0}" = "0" ] && cat "$FAKE_STDOUT_FILE"; exit "${FAKE_EXEC_RC:-0}" ;;',
+                1,
+            ),
+        )
+
+    def test_thin_get_stdout_disables_tty_and_preserves_binary_png_bytes(self):
+        self._install_stdout_docker_stub()
+        png_bytes = b"\x89PNG\r\n\x1a\n\x00\x01\x02\xff\xfe\r\n" + bytes(range(256))
+        payload = os.path.join(self.tmp, "payload.png")
+        with open(payload, "wb") as handle:
+            handle.write(png_bytes)
+
+        master, slave = pty.openpty()
+        self.addCleanup(os.close, master)
+        try:
+            result = self.thin("get", "slot-1", "--stdout", "shot.png", stdin=slave, FAKE_STDOUT_FILE=payload)
+        finally:
+            os.close(slave)
+
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        call = self.exec_call()
+        self.assertFalse({"-t", "-it", "-ti", "--tty"} & set(call), call)
+        self.assertEqual(call[-5:], ["dev-container", "get", "slot-1", "--stdout", "shot.png"])
+        self.assertEqual(result.stdout, png_bytes)
+        self.assertEqual(self.forbidden_calls(), [])
+
+        os.remove(self.docker_log)
+        capped = self.thin("get", "slot-1", "--stdout", "shot.png", "--max-bytes", "64", FAKE_STDOUT_FILE=payload)
+        self.assertEqual(capped.returncode, 0, capped.stderr.decode())
+        self.assertEqual(
+            self.exec_call()[-7:],
+            ["dev-container", "get", "slot-1", "--stdout", "shot.png", "--max-bytes", "64"],
+        )
+
+    def test_thin_get_to_host_dst_writes_atomically_and_cleans_tmp_on_failure(self):
+        self._install_stdout_docker_stub()
+        png_bytes = b"\x89PNG\r\n\x1a\n\x00\x01\x02\xff\xfe\r\n" + bytes(range(256))
+        payload = os.path.join(self.tmp, "payload.png")
+        with open(payload, "wb") as handle:
+            handle.write(png_bytes)
+
+        outside = os.path.join(self.tmp, "outside")
+        os.makedirs(outside)
+        dst = os.path.join(outside, "shot.png")
+
+        master, slave = pty.openpty()
+        self.addCleanup(os.close, master)
+        try:
+            result = self.thin("get", "slot-1", "shot.png", dst, stdin=slave, FAKE_STDOUT_FILE=payload)
+        finally:
+            os.close(slave)
+
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        call = self.exec_call()
+        self.assertFalse({"-t", "-it", "-ti", "--tty"} & set(call), call)
+        self.assertEqual(call[-5:], ["dev-container", "get", "slot-1", "--stdout", "shot.png"])
+        with open(dst, "rb") as handle:
+            self.assertEqual(handle.read(), png_bytes)
+        self.assertEqual(os.listdir(outside), ["shot.png"])
+        self.assertEqual(self.forbidden_calls(), [])
+
+        fail_dst = os.path.join(outside, "failed.png")
+        os.remove(self.docker_log)
+        failed = self.thin("get", "slot-1", "shot.png", fail_dst, FAKE_EXEC_RC="1", FAKE_STDOUT_FILE=payload)
+        self.assertNotEqual(failed.returncode, 0)
+        self.assertFalse(os.path.exists(fail_dst))
+        self.assertEqual(os.listdir(outside), ["shot.png"])
+
+        keep_dst = os.path.join(outside, "keep.png")
+        with open(keep_dst, "wb") as handle:
+            handle.write(b"original")
+        os.remove(self.docker_log)
+        kept = self.thin("get", "slot-1", "shot.png", keep_dst, FAKE_EXEC_RC="1", FAKE_STDOUT_FILE=payload)
+        self.assertNotEqual(kept.returncode, 0)
+        with open(keep_dst, "rb") as handle:
+            self.assertEqual(handle.read(), b"original")
+        self.assertEqual(sorted(os.listdir(outside)), ["keep.png", "shot.png"])
+
+    def test_thin_expose_runs_expose_plan_without_tty_or_forbidden_tools_and_uses_no_at_syntax(self):
+        master, slave = pty.openpty()
+        self.addCleanup(os.close, master)
+        try:
+            result = self.thin("expose", "slot-1", "3000", stdin=slave)
+        finally:
+            os.close(slave)
+
+        self.assertNotEqual(result.returncode, 0)
+        call = self.exec_call()
+        self.assertFalse({"-t", "-it", "-ti", "--tty"} & set(call), call)
+        self.assertEqual(call[-4:], ["dev-container", "expose-plan", "slot-1", "3000"])
+        self.assertEqual(self.forbidden_calls(), [])
+        with open(THIN, encoding="utf-8") as handle:
+            text = handle.read()
+        self.assertNotIn("node" + "@" + "127.0.0.1", text)
 
 
 if __name__ == "__main__":

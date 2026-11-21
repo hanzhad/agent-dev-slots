@@ -2,8 +2,10 @@
 
 status_slots_json() {
   local filter="${1:-}" want_root=""
-  if [[ -n "$filter" && ( "$filter" == /* || -d "$filter" ) ]]; then
-    want_root=$(CDPATH= cd -P "$filter" 2>/dev/null && pwd -P || echo "${filter%/}")
+  if [[ -n "$filter" && "$filter" == */* ]]; then
+    local base="${DEV_CONTAINER_CALLER_PWD:-$PWD}" target_dir="$filter"
+    [[ "$target_dir" == /* ]] || target_dir="$base/$target_dir"
+    want_root=$(CDPATH= cd -P "$target_dir" 2>/dev/null && pwd -P || echo "${target_dir%/}")
   fi
   local f sid project holder last_activity ports_file repo_root
   local -a slot_objs=()

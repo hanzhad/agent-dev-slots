@@ -407,6 +407,44 @@ class TestStatusJsonProjectFilter(StatusCase):
         self.assertEqual(none_res.returncode, 0, self.output(none_res))
         self.assertEqual(json.loads(none_res.stdout.decode()).get("slots"), [])
 
+    def test_status_json_project_filter_bare_label_ignores_same_named_cwd_dir(self):
+        demo_root, _second_root = self._acquire_two_projects()
+        unrelated_demo = os.path.join(self.harness.tmp, "demo")
+        os.makedirs(unrelated_demo, exist_ok=True)
+
+        label_res = self.engine("status", "--json", "--project", "demo")
+        self.assertEqual(label_res.returncode, 0, self.output(label_res))
+        label_slots = json.loads(label_res.stdout.decode()).get("slots", [])
+        self.assertEqual(len(label_slots), 1)
+        self.assertEqual(label_slots[0].get("repo_root"), demo_root)
+        self.assertEqual(label_slots[0].get("holder"), "holder-demo")
+
+        dot_demo_res = self.engine("status", "--json", "--project", "./demo")
+        self.assertEqual(dot_demo_res.returncode, 0, self.output(dot_demo_res))
+        self.assertEqual(json.loads(dot_demo_res.stdout.decode()).get("slots"), [])
+
+        rel_fixture = "./" + os.path.relpath(demo_root, self.harness.tmp)
+        rel_res = self.engine("status", "--json", "--project", rel_fixture)
+        self.assertEqual(rel_res.returncode, 0, self.output(rel_res))
+        rel_slots = json.loads(rel_res.stdout.decode()).get("slots", [])
+        self.assertEqual(len(rel_slots), 1)
+        self.assertEqual(rel_slots[0].get("repo_root"), demo_root)
+        self.assertEqual(rel_slots[0].get("holder"), "holder-demo")
+
+        caller_rel = "../" + os.path.basename(demo_root)
+        caller_res = self.engine(
+            "status",
+            "--json",
+            "--project",
+            caller_rel,
+            DEV_CONTAINER_CALLER_PWD=unrelated_demo,
+        )
+        self.assertEqual(caller_res.returncode, 0, self.output(caller_res))
+        caller_slots = json.loads(caller_res.stdout.decode()).get("slots", [])
+        self.assertEqual(len(caller_slots), 1)
+        self.assertEqual(caller_slots[0].get("repo_root"), demo_root)
+        self.assertEqual(caller_slots[0].get("holder"), "holder-demo")
+
 
 if __name__ == "__main__":
     unittest.main()

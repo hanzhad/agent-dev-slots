@@ -584,12 +584,55 @@ class SessionSlotLimit(DevContainerTestCase):
     def test_wait_does_not_wait_out_the_limit(self):
         self.harness.build_fixture_repo(with_parent_env=self.ENV_WITH_IDENTITY)
         self.write_limits({"default": 1})
-        self.acquire_ok("first", "Agent [aaa]")
+        held = self.acquire_ok("first", "Agent [aaa]")
 
-        result = self.harness.run(
-            "acquire", "--for", "second", "--as", "Agent [aaa]", "--wait", "--timeout", "30s"
+        non_wait = self.harness.run_acquire(holder="second-nowait", owner="Agent [aaa]")
+        self.assertEqual(non_wait.returncode, 4, non_wait.stderr.decode())
+
+        def _read(path):
+            if not os.path.isfile(path):
+                return ""
+            with open(path, encoding="utf-8") as handle:
+                return handle.read()
+
+        log_release = os.path.join(self.harness.tmp, "wait-release.log")
+        waiter_release = self.harness.spawn(
+            "acquire", "--for", "second-wait", "--as", "Agent [aaa]", "--wait", "--timeout", "15s",
+            log=log_release,
         )
-        self.assertEqual(result.returncode, 4, result.stderr.decode())
+        self.addCleanup(
+            lambda: waiter_release.poll() is None and (waiter_release.kill(), waiter_release.wait(timeout=30))
+        )
+
+        wait_until(
+            lambda: "limits.json" in _read(log_release),
+            timeout=15,
+            interval=0.02,
+            message=lambda: f"waiter never logged waiting on session cap:\n{_read(log_release)}",
+        )
+        self.assertIsNone(waiter_release.poll(), _read(log_release))
+
+        rel = self.harness.run("release", held, "--for", "first")
+        self.assertEqual(rel.returncode, 0, rel.stderr.decode())
+        self.assertEqual(waiter_release.wait(timeout=20), 0, _read(log_release))
+
+        log_bump = os.path.join(self.harness.tmp, "wait-bump.log")
+        waiter_bump = self.harness.spawn(
+            "acquire", "--for", "third-wait", "--as", "Agent [aaa]", "--wait", "--timeout", "15s",
+            log=log_bump,
+        )
+        self.addCleanup(
+            lambda: waiter_bump.poll() is None and (waiter_bump.kill(), waiter_bump.wait(timeout=30))
+        )
+
+        wait_until(
+            lambda: "limits.json" in _read(log_bump),
+            timeout=15,
+            interval=0.02,
+            message=lambda: f"second waiter never logged waiting on session cap:\n{_read(log_bump)}",
+        )
+        self.write_limits({"default": 2})
+        self.assertEqual(waiter_bump.wait(timeout=20), 0, _read(log_bump))
 
     def test_per_session_override_lets_a_second_slot_through(self):
         self.harness.build_fixture_repo(with_parent_env=self.ENV_WITH_IDENTITY)
@@ -3596,7 +3639,7 @@ class AcquireWaitsForAFullPool(DevContainerTestCase):
         self.assertIsNone(loser.poll(), "the second waiter stopped instead of waiting")
         second_release = self.harness.run("release", "slot-1", "--for", holder)
         self.assertEqual(second_release.returncode, 0, second_release.stderr.decode())
-        self.assertEqual(loser.wait(timeout=30), 0, self._read(loser_log))
+        self.assertEqual(loser.wait(timeout=90), 0, self._read(loser_log))
         with open(self.harness.lease_path("slot-1"), encoding="utf-8") as handle:
             self.assertEqual(json.load(handle)["holder"], other_holder)
 

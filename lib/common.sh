@@ -73,10 +73,11 @@ acquire always builds a new slot, in the first free index under the machine
 cap; a directory left behind is skipped, never reused, and a slot cannot be
 named.
 --wait waits for a slot instead of exiting 2 when none is free — as long as
-it takes, or until --timeout, which exits 3. Exit 4: the session is at its
-slot limit (keyed by CLAUDE_CODE_HOST_SESSION_ID when set, else the --as ref, with or
-without a leading local_; or
-$STATE/limits.json needs --as) — --wait does not help.
+it takes, or until --timeout, which exits 3. --wait queues on session limits as
+well as machine_max. Exit 4: non---wait refusal when the session is at its slot
+limit (keyed by CLAUDE_CODE_HOST_SESSION_ID when set, else the --as ref, with or
+without a leading local_), or missing [<ref>] when $STATE/limits.json exists
+(even under --wait, since waiting cannot populate --as "<name> [<ref>]").
 
 'list' without --brief answers "is this slot safe to take back", which costs a
 git status, a stash list, a delivery check per branch and a worktree list per

@@ -858,10 +858,16 @@ try_acquire_once() {
   ACQUIRE_BLOCKED=cap
   machine_cap_load
   (( $(machine_in_use) < MACHINE_CAP )) || return 1
-  project_cap_load
-  if [[ -n "$PROJECT_CAP" ]] && (( $(project_in_use) >= PROJECT_CAP )); then
-    ACQUIRE_BLOCKED=project_cap
+  if [[ -f "$STATE/limits.json" && -z "${ACQUIRE_SESSION_REF:-}" ]]; then
+    ACQUIRE_BLOCKED=missing_ref
     return 1
+  fi
+  if [[ -n "${ACQUIRE_SESSION_REF:-}" ]]; then
+    session_cap_load "$ACQUIRE_SESSION_REF"
+    if [[ -n "$SESSION_CAP" ]] && (( $(session_in_use "$ACQUIRE_SESSION_REF") >= SESSION_CAP )); then
+      ACQUIRE_BLOCKED=session_cap
+      return 1
+    fi
   fi
   ACQUIRE_BLOCKED=""
 

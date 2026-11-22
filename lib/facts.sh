@@ -119,6 +119,10 @@ exit 1
 
 FACTS_NO_FETCH=${FACTS_NO_FETCH:-0}
 
+target_is_facts() {
+  [[ -n "$1" ]] && [[ ! -d "$1" ]] && { [[ "$1" != /* ]] || [[ -f "$1" ]]; }
+}
+
 facts_file() {
   local scratch="${SCRATCH:-${DEV_CONTAINER_HOME:-$HOME/.dev-containers}/scratch}"
   local sid="$1" sub="${2:-.}"

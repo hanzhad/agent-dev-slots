@@ -183,18 +183,20 @@ cmd_release() {
 
   # A forced release goes ahead whatever it finds, so it only warns, and by
   # git cherry alone; --discard or ephemeral leases bypass dirty checks cleanly.
-  local check_dir="${dir:-${DOCKER_STUB_STATE:+$DOCKER_STUB_STATE/volumes/${sid}-workspace}}"
+  local check_target; check_target=$(slot_check_target "$dir" "$sid")
   if (( ! force && ! discard && ! is_ephemeral )); then
-    if [[ -n "$check_dir" && -d "$check_dir/.git" ]] && ! slot_is_clean_for_teardown "$check_dir"; then
+    [[ "$check_target" == "$sid" ]] && facts_reset "$sid"
+    if [[ -n "$check_target" ]] && { [[ "$check_target" != /* ]] || [[ -d "$check_target/.git" ]]; } && ! slot_is_clean_for_teardown "$check_target"; then
       {
         echo "refusing to release '$sid' — it holds work that exists nowhere else:"
-        slot_dirty_report "$check_dir"
+        slot_dirty_report "$check_target"
         echo "push what's worth keeping, or '$CALLER release $name --for $holder --discard' (or '$CALLER evict $name') to take the slot anyway."
       } >&2
       exit 1
     fi
   elif (( force )); then
-    warn_unproven_branches "${check_dir:-$dir}" "⚠ '$sid' still holds branch(es) not proved to be in origin/$DEFAULT_BRANCH — check before assuming they're redundant:"
+    [[ "$check_target" == "$sid" ]] && facts_reset "$sid"
+    warn_unproven_branches "${check_target:-$dir}" "⚠ '$sid' still holds branch(es) not proved to be in origin/$DEFAULT_BRANCH — check before assuming they're redundant:"
   fi
 
   sweep_leftover_gateway "$dir" "$sid"
@@ -284,9 +286,10 @@ cmd_park() {
   [[ -f "$lease" ]] || die "'$sid' has no lease — there is nothing held to park. Acquire it first, or if it is already unleased and dirty, 'evict' (or a person at the slot) is the tool for that, not park."
 
   local holder; holder=$(lease_field "$lease" holder)
-  local check_dir="${dir:-${DOCKER_STUB_STATE:+$DOCKER_STUB_STATE/volumes/${sid}-workspace}}"
+  local check_target; check_target=$(slot_check_target "$dir" "$sid")
+  [[ "$check_target" == "$sid" ]] && facts_reset "$sid"
 
-  if [[ -n "$check_dir" && -d "$check_dir" ]] && slot_is_clean_for_reuse "$check_dir"; then
+  if [[ -n "$check_target" ]] && slot_is_clean_for_reuse "$check_target"; then
     clear_lease_key "$dir" "$sid"
     clear_slot_allow_hosts "$sid"
     sync_slot_ssh_key "${sid:-$dir}" ""
@@ -299,7 +302,7 @@ cmd_park() {
   fi
 
   local reason="-"
-  [[ -n "$check_dir" && -d "$check_dir" ]] && reason=$(slot_dirty_column "$check_dir")
+  [[ -n "$check_target" ]] && reason=$(slot_dirty_column "$check_target")
 
   clear_lease_key "$dir" "$sid"
   clear_slot_allow_hosts "$sid"
@@ -370,13 +373,17 @@ cmd_list() {
     local lease; lease=$(lease_file_of "$sid")
     local state holder="-" owner="-" age="-" lastactive="-" sshc="-" procs="-"
     local check_d="${d:-${DOCKER_STUB_STATE:+$DOCKER_STUB_STATE/volumes/${sid}-workspace}}"
+    local check_target; check_target=$(slot_check_target "$d" "$sid")
     local dirty="-"
     if (( ! brief && ! fast )); then
-      if [[ -n "$check_d" && -d "$check_d" ]]; then
-        dirty=$(slot_dirty_column "$check_d")
+      [[ "$check_target" == "$sid" ]] && facts_reset "$sid"
+      if [[ -n "$check_target" ]]; then
+        dirty=$(slot_dirty_column "$check_target")
       else
         dirty="-"
       fi
+    elif (( fast )) && [[ "$check_target" == "$sid" ]]; then
+      facts_reset "$sid"
     fi
     local git_user; git_user="unset"
     if [[ -n "$d" && -d "$d" ]]; then
@@ -413,13 +420,17 @@ cmd_list() {
       slot_unbuilt_reason "$check_d" "$sid" >/dev/null && unbuilt=1
       local clash=0
       PORT_CLASH_REASON=""
-      slot_port_clash "$check_d" && clash=1
+      slot_port_clash "${check_d:-$sid}" && clash=1
       local docsdrift=0
       DOCS_ORIGIN_DRIFT_REASON=""
-      slot_docs_origin_drifted "$check_d" && docsdrift=1
+      if (( ! brief && ! fast )) || [[ -n "$check_d" && -d "$check_d" ]]; then
+        slot_docs_origin_drifted "${check_target:-$check_d}" && docsdrift=1
+      fi
       local offpin=0
       DOCS_PIN_REASON=""
-      docs_repo_off_pin "$check_d" && { offpin=1; offpin_notes+=("$name: $DOCS_PIN_REASON"); }
+      if (( ! brief && ! fast )) || [[ -n "$check_d" && -d "$check_d" ]]; then
+        docs_repo_off_pin "${check_target:-$check_d}" && { offpin=1; offpin_notes+=("$name: $DOCS_PIN_REASON"); }
+      fi
 
       local parked_file; parked_file=$(parked_file_of "$sid")
       local parked=0 parked_reason="" parked_holder="" parked_since=""
@@ -432,11 +443,14 @@ cmd_list() {
 
       local acquirable="-"
       if (( fast || ! brief )); then
+        local prev_no_fetch=$FACTS_NO_FETCH
+        (( fast )) && FACTS_NO_FETCH=1
         if slot_acquire_verdict "$check_d" "$sid" "$fast"; then
           acquirable="acquirable"
         else
           acquirable="$ACQUIRE_REASON"
         fi
+        FACTS_NO_FETCH=$prev_no_fetch
         if (( clash )); then
           case "$acquirable" in
             acquirable|unreadable:*) acquirable="portclash:$PORT_CLASH_REASON" ;;
@@ -570,7 +584,7 @@ cmd_reap() {
       continue
     fi
     echo "▸ reaping abandoned volume slot '$sid'"
-    archive_and_clean_slot "" "$sid" "$sname" || teardown_dir "" "$sid" || true
+    archive_and_clean_slot "" "$sid" "$sname" || true
   done
 
   exit 0
@@ -1233,11 +1247,14 @@ cmd_down() {
   if [[ -f "$lease" ]] && (( ! force )); then
     die "'$sid' is leased to $(lease_field "$lease" holder) — release it first, or 'down $name --force'."
   fi
-  local check_dir="${dir:-${DOCKER_STUB_STATE:+$DOCKER_STUB_STATE/volumes/${sid}-workspace}}"
-  if [[ -n "$check_dir" && -d "$check_dir/.git" ]] && (( ! force )) && ! slot_is_clean_for_teardown "$check_dir"; then
+  local check_target; check_target=$(slot_check_target "$dir" "$sid")
+  if (( ! force )) && [[ "$check_target" == "$sid" ]]; then
+    facts_reset "$sid"
+  fi
+  if [[ -n "$check_target" ]] && { [[ "$check_target" != /* ]] || [[ -d "$check_target/.git" ]]; } && (( ! force )) && ! slot_is_clean_for_teardown "$check_target"; then
     {
       echo "refusing to remove '$sid' — it holds work that exists nowhere else:"
-      slot_dirty_report "$check_dir"
+      slot_dirty_report "$check_target"
       echo "push what's worth keeping, or 'down $name --force' to remove it anyway."
     } >&2
     exit 1

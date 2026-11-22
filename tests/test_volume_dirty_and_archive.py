@@ -543,6 +543,9 @@ project="${COMPOSE_PROJECT_NAME:-}"
 prev=""
 for a in "$@"; do
   [[ "$prev" == "-p" ]] && project="$a"
+  if [[ -z "$project" && "$prev" == "-v" && "$a" == *-workspace:/workspace* ]]; then
+    project="${a%%-workspace:/workspace*}"
+  fi
   prev="$a"
 done
 
@@ -1178,7 +1181,9 @@ class TestVolumeRescueArchiveWithoutStubState(_NoStubStateVolumeCase):
 
         for stopped in (True, False):
             with self.subTest(stopped=stopped):
+                shutil.rmtree(self.rescue_dir, ignore_errors=True)
                 name = self.acquire_vol(f"evict-{'stopped' if stopped else 'running'}", with_docs=False)
+                shutil.rmtree(os.path.join(self.harness.tmp, f"recover-{name}"), ignore_errors=True)
                 full_bundle = self._seed_dirty_volume_work(name)
                 if stopped:
                     self.harness.mark_stopped(name)
@@ -1348,7 +1353,7 @@ class TestVolumeRescueArchiveWithoutStubState(_NoStubStateVolumeCase):
         self.assertTrue(self.harness.volume_exists(s1), "volume removed despite helper failure")
         self.assertTrue(os.path.isfile(self.harness.parked_path(s1)), "slot not parked on helper failure")
         with open(self.harness.parked_path(s1), encoding="utf-8") as f:
-            self.assertEqual(json.load(f)["reason"], "archive-failed")
+            self.assertEqual(json.load(f)["holder"], "archive-failed")
 
         # Cleanup marker so second case can inspect rescue dir cleanly
         os.remove(os.path.join(self.harness.docker_state, f"{sid1}.helperfail"))

@@ -20,7 +20,11 @@ ensure_remote_refs_fresh() {
 }
 
 head_branch_of() {
-  git -C "$1" symbolic-ref --quiet --short HEAD 2>/dev/null || true
+  if target_is_facts "$1"; then
+    fact "$1" head | cut -f1
+  else
+    git -C "$1" symbolic-ref --quiet --short HEAD 2>/dev/null || true
+  fi
 }
 
 slot_map_workspace_path() {
@@ -35,6 +39,13 @@ slot_map_workspace_path() {
 slot_worktrees_of() {
   local dir="$1" line wt
   WORKTREES=()
+  if target_is_facts "$dir"; then
+    while IFS= read -r wt; do
+      [[ -n "$wt" ]] || continue
+      WORKTREES+=("$wt")
+    done < <(facts_lines "$dir" worktree)
+    return 0
+  fi
   while IFS= read -r line; do
     [[ "$line" == worktree\ * ]] || continue
     wt=${line#worktree }

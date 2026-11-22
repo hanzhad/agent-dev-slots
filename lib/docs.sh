@@ -33,6 +33,91 @@ docs_repo_is_clean() {
   local note=""
   [[ "$subpath" == docs/repo ]] && note=" — $DOCS_READ_ONLY_NOTE"
   DOCS_PRUNABLE_BRANCHES=()
+
+  if target_is_facts "$dir"; then
+    facts_lines "$dir" clone | grep -qxF "$subpath" || return 0
+    local df; df=$(facts_file "$dir" "$subpath")
+    facts_of "$dir" "$subpath" >/dev/null
+    if facts_unreadable "$df"; then
+      DOCS_DIRTY_REASON="$label: could not read repository facts"
+      DOCS_DIRTY_COLUMN="$colprefix:unknown"
+      return 2
+    fi
+    local origin
+    origin=$(fact "$df" origin)
+    if [[ -z "$origin" ]]; then
+      DOCS_DIRTY_REASON="$label: no origin remote — cannot verify delivery"
+      DOCS_DIRTY_COLUMN="$colprefix:unknown"
+      return 2
+    fi
+    if ! docs_origin_matches "$origin"; then
+      DOCS_DIRTY_REASON="$label: origin is '$origin', not $DOCS_REPO_URL — a drifted mirror can only answer for itself, not GitHub"
+      DOCS_DIRTY_COLUMN="$colprefix:unknown origin"
+      return 2
+    fi
+    local v n
+    v=$(facts_lines "$df" status)
+    if [[ -n "$v" ]]; then
+      n=$(printf '%s\n' "$v" | grep -c .)
+      DOCS_DIRTY_REASON="$label: $n uncommitted change(s)"
+      DOCS_DIRTY_COLUMN="$colprefix:uncommitted:$n"
+      return 1
+    fi
+    v=$(facts_lines "$df" stash)
+    if [[ -n "$v" ]]; then
+      n=$(printf '%s\n' "$v" | grep -c .)
+      DOCS_DIRTY_REASON="$label: $n stashed"
+      DOCS_DIRTY_COLUMN="$colprefix:stash:$n"
+      return 1
+    fi
+    local b btip _rest rc held=0 unknown=0 first_reason=""
+    while IFS=$'\t' read -r b btip _rest; do
+      [[ -n "$b" ]] || continue
+      if branch_delivery_status "$df" "$b" "$docs_gh_repo" "$dir" "$subpath"; then
+        rc=0
+      else
+        rc=$?
+      fi
+      case "$rc" in
+        0) if branch_is_prunable_candidate "$df" "$b"; then
+             DOCS_PRUNABLE_BRANCHES+=("$b $btip")
+           fi ;;
+        1) held=$((held + 1)); [[ -n "$first_reason" ]] || first_reason="$BRANCH_REPORT" ;;
+        2) unknown=$((unknown + 1)); [[ -n "$first_reason" ]] || first_reason="$BRANCH_REPORT" ;;
+      esac
+    done < <(facts_lines "$df" branch)
+
+    if [[ -z "$(fact "$df" head | cut -f1)" ]]; then
+      local tip reach pin marker
+      tip=$(fact "$df" head | cut -f2)
+      if [[ -n "$tip" ]]; then
+        reach=$(fact "$df" headreach)
+        pin=$(fact "$dir" docspin)
+        marker=$(fact "$df" marker)
+        if [[ "$tip" != "$pin" ]] \
+           && [[ -z "$marker" || "$tip" != "$marker" ]] \
+           && [[ "$reach" != 1 ]]; then
+          held=$((held + 1))
+          [[ -n "$first_reason" ]] || first_reason="detached HEAD not reachable from any remote ref"
+        fi
+      fi
+    fi
+
+    if (( unknown > 0 )); then
+      DOCS_DIRTY_REASON="$label: $unknown branch(es) could not be verified"
+      (( held > 0 )) && DOCS_DIRTY_REASON+=", $held held"
+      DOCS_DIRTY_REASON+=" (e.g. $first_reason)$note"
+      DOCS_DIRTY_COLUMN="$colprefix:unknown:$unknown"
+      return 2
+    fi
+    if (( held > 0 )); then
+      DOCS_DIRTY_REASON="$label: $held branch(es) held (e.g. $first_reason)$note"
+      DOCS_DIRTY_COLUMN="$colprefix:$held unpushed"
+      return 1
+    fi
+    return 0
+  fi
+
   [[ -f "$docs/.git/HEAD" ]] || return 0
 
   local origin
@@ -120,6 +205,17 @@ docs_pin_of() {
 DOCS_PIN_REASON=""
 docs_repo_off_pin() {
   local dir="$1" docs="$1/docs/repo" pin head
+  if target_is_facts "$dir"; then
+    facts_lines "$dir" clone | grep -qxF "docs/repo" || return 1
+    pin=$(fact "$dir" docspin)
+    [[ -n "$pin" ]] || return 1
+    head=$(fact "$dir" docshead)
+    [[ -n "$head" ]] || head="nothing"
+    [[ "$head" == "$pin" ]] && return 1
+    local def; def=$(fact "$dir" default); def=${def:-$DEFAULT_BRANCH}
+    DOCS_PIN_REASON="docs/repo is at ${head:0:12}, origin/${def}'s $DOCS_PIN_FILE is ${pin:0:12}"
+    return 0
+  fi
   [[ -f "$docs/.git/HEAD" ]] || return 1
   pin=$(docs_pin_of "$dir")
   [[ -n "$pin" ]] || return 1
@@ -174,6 +270,14 @@ guard_docs_repo_readonly() {
 DOCS_ORIGIN_DRIFT_REASON=""
 slot_docs_origin_drifted() {
   local dir="$1" docs="$1/docs/repo"
+  if target_is_facts "$dir"; then
+    facts_lines "$dir" clone | grep -qxF "docs/repo" || return 1
+    local origin; origin=$(fact "$dir" docsorigin)
+    [[ -n "$origin" ]] || return 1
+    docs_origin_matches "$origin" && return 1
+    DOCS_ORIGIN_DRIFT_REASON="docs/repo origin is '$origin', not $DOCS_REPO_URL"
+    return 0
+  fi
   [[ -f "$docs/.git/HEAD" ]] || return 1
   local origin
   origin=$(git -C "$docs" remote get-url origin 2>/dev/null) || return 1

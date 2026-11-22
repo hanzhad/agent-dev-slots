@@ -149,7 +149,28 @@ slot_unbuilt_reason() {
 
 slot_is_clean_for_reuse() {
   local dir="$1"
-  [[ -d "$dir/.git" ]] || return 1
+  if target_is_facts "$dir"; then
+    facts_of "$dir" >/dev/null
+    if facts_norepo "$dir"; then
+      docs_repo_is_clean "$dir" || return 1
+      docs_repo_is_clean "$dir" docs/fix docs/fix docsfix || return 1
+      return 0
+    fi
+    ! facts_unreadable "$dir" || return 1
+    [[ -z "$(facts_lines "$dir" status)" ]] || return 1
+    [[ -z "$(facts_lines "$dir" stash)" ]] || return 1
+    docs_repo_is_clean "$dir" || return 1
+    docs_repo_is_clean "$dir" docs/fix docs/fix docsfix || return 1
+    head_is_delivered "$dir"
+    return
+  fi
+  [[ -d "$dir" ]] || return 1
+  if [[ ! -e "$dir/.git" ]]; then
+    docs_repo_is_clean "$dir" || return 1
+    docs_repo_is_clean "$dir" docs/fix docs/fix docsfix || return 1
+    return 0
+  fi
+  git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 1
   [[ -z "$(git -C "$dir" status --porcelain 2>/dev/null)" ]] || return 1
   [[ -z "$(git -C "$dir" stash list 2>/dev/null)" ]] || return 1
   docs_repo_is_clean "$dir" || return 1
@@ -167,10 +188,37 @@ slot_is_clean_for_teardown() {
 }
 
 slot_dirty_column() {
-  local dir="$1" out="" n
-  n=$(git -C "$dir" status --porcelain 2>/dev/null | grep -c . || true)
+  local dir="$1" out="" n status_out="" stash_out=""
+  local is_facts=0 has_repo=1
+  if target_is_facts "$dir"; then
+    is_facts=1
+    facts_of "$dir" >/dev/null
+    if facts_norepo "$dir"; then
+      has_repo=0
+    elif facts_unreadable "$dir"; then
+      echo "unreadable"
+      return 0
+    else
+      status_out=$(facts_lines "$dir" status)
+      stash_out=$(facts_lines "$dir" stash)
+    fi
+  else
+    if [[ ! -d "$dir" ]]; then
+      echo "unreadable"
+      return 0
+    elif [[ ! -e "$dir/.git" ]]; then
+      has_repo=0
+    elif ! git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
+      echo "unreadable"
+      return 0
+    else
+      status_out=$(git -C "$dir" status --porcelain 2>/dev/null)
+      stash_out=$(git -C "$dir" stash list 2>/dev/null)
+    fi
+  fi
+  n=$(printf '%s' "$status_out" | grep -c . || true)
   (( n > 0 )) && out="uncommitted:$n"
-  n=$(git -C "$dir" stash list 2>/dev/null | grep -c . || true)
+  n=$(printf '%s' "$stash_out" | grep -c . || true)
   (( n > 0 )) && out="${out:+$out,}stash:$n"
 
   docs_repo_is_clean "$dir" || out="${out:+$out,}$DOCS_DIRTY_COLUMN"
@@ -179,54 +227,98 @@ slot_dirty_column() {
   local docs_fix_prunable=("${DOCS_PRUNABLE_BRANCHES[@]}")
   DOCS_PRUNABLE_BRANCHES=("${docs_repo_prunable[@]}" "${docs_fix_prunable[@]}")
 
-  local head_branch head_held=0
-  head_branch=$(head_branch_of "$dir")
-  if head_is_delivered "$dir"; then
-    head_held=0
+  if (( has_repo )); then
+    local head_branch head_held=0
+    head_branch=$(head_branch_of "$dir")
+    if head_is_delivered "$dir"; then
+      head_held=0
+    else
+      head_held=1
+    fi
+    (( head_held )) && out="${out:+$out,}head:held"
+
+    collect_branch_statuses "$dir"
+    local held=$((HELD_COUNT + UNKNOWN_COUNT))
+    [[ -n "$head_branch" ]] && (( head_held )) && held=$((held - 1))
+    (( held > 0 )) && out="${out:+$out,}held:$held branches"
+
+    slot_worktrees_of "$dir"
+    (( ${#WORKTREES[@]} > 0 )) && out="${out:+$out,}worktrees:${#WORKTREES[@]}"
   else
-    head_held=1
+    PRUNABLE_BRANCHES=()
   fi
-  (( head_held )) && out="${out:+$out,}head:held"
-
-  collect_branch_statuses "$dir"
-  local held=$((HELD_COUNT + UNKNOWN_COUNT))
-  [[ -n "$head_branch" ]] && (( head_held )) && held=$((held - 1))
-  (( held > 0 )) && out="${out:+$out,}held:$held branches"
-
-  slot_worktrees_of "$dir"
-  (( ${#WORKTREES[@]} > 0 )) && out="${out:+$out,}worktrees:${#WORKTREES[@]}"
 
   [[ -n "$out" ]] || out="clean"
   local prunable=$(( ${#PRUNABLE_BRANCHES[@]} + ${#DOCS_PRUNABLE_BRANCHES[@]} ))
-  if (( prunable > 0 )) && ! slot_dir_is_leased "$dir" \
-     && [[ ! -f "$(parked_file_of "$(slot_id_of "$dir")")" ]]; then
-    out+=",prunable:$prunable"
+  if (( prunable > 0 )); then
+    if (( is_facts )); then
+      if [[ ! -f "$(lease_file_of "$dir")" && ! -f "$(parked_file_of "$dir")" ]]; then
+        out+=",prunable:$prunable"
+      fi
+    elif ! slot_dir_is_leased "$dir" \
+       && [[ ! -f "$(parked_file_of "$(slot_id_of "$dir")")" ]]; then
+      out+=",prunable:$prunable"
+    fi
   fi
   echo "$out"
 }
 
 slot_dirty_report() {
-  local dir="$1" out="" v
-  v=$(git -C "$dir" status --porcelain 2>/dev/null)
-  [[ -z "$v" ]] || out+="  uncommitted:"$'\n'"$(printf '%s\n' "$v" | sed 's/^/    /')"$'\n'
-  v=$(git -C "$dir" stash list 2>/dev/null)
-  [[ -z "$v" ]] || out+="  stashed:"$'\n'"$(printf '%s\n' "$v" | sed 's/^/    /')"$'\n'
+  local dir="$1" out="" v has_repo=1
+  if target_is_facts "$dir"; then
+    facts_of "$dir" >/dev/null
+    if facts_norepo "$dir"; then
+      has_repo=0
+    elif facts_unreadable "$dir"; then
+      printf '  unreadable: could not read repository facts from %s\n' "$dir"
+      return 0
+    else
+      v=$(facts_lines "$dir" status)
+      [[ -z "$v" ]] || out+="  uncommitted:"$'\n'"$(printf '%s\n' "$v" | sed 's/^/    /')"$'\n'
+      v=$(facts_lines "$dir" stash)
+      [[ -z "$v" ]] || out+="  stashed:"$'\n'"$(printf '%s\n' "$v" | sed 's/^/    /')"$'\n'
+    fi
+  else
+    if [[ ! -d "$dir" ]]; then
+      printf '  unreadable: slot directory does not exist at %s\n' "$dir"
+      return 0
+    elif [[ ! -e "$dir/.git" ]]; then
+      has_repo=0
+    elif ! git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
+      printf '  unreadable: could not read git repository at %s\n' "$dir"
+      return 0
+    else
+      v=$(git -C "$dir" status --porcelain 2>/dev/null)
+      [[ -z "$v" ]] || out+="  uncommitted:"$'\n'"$(printf '%s\n' "$v" | sed 's/^/    /')"$'\n'
+      v=$(git -C "$dir" stash list 2>/dev/null)
+      [[ -z "$v" ]] || out+="  stashed:"$'\n'"$(printf '%s\n' "$v" | sed 's/^/    /')"$'\n'
+    fi
+  fi
   docs_repo_is_clean "$dir" || out+="  $DOCS_DIRTY_REASON"$'\n'
   docs_repo_is_clean "$dir" docs/fix docs/fix docsfix || out+="  $DOCS_DIRTY_REASON"$'\n'
-  if [[ -z "$(head_branch_of "$dir")" ]] && ! head_is_delivered "$dir"; then
-    out+="  detached HEAD at $(git -C "$dir" rev-parse --short HEAD 2>/dev/null), not reachable from any remote ref"$'\n'
-  fi
-  collect_branch_statuses "$dir"
-  if (( ${#BRANCH_REPORTS[@]} > 0 )); then
-    out+="  held/unknown branches:"$'\n'
-    local r
-    for r in "${BRANCH_REPORTS[@]}"; do out+="    $r"$'\n'; done
-  fi
-  slot_worktrees_of "$dir"
-  if (( ${#WORKTREES[@]} > 0 )); then
-    out+="  worktrees — a session may be working in one right now:"$'\n'
-    local w
-    for w in "${WORKTREES[@]}"; do out+="    $w"$'\n'; done
+  if (( has_repo )); then
+    if [[ -z "$(head_branch_of "$dir")" ]] && ! head_is_delivered "$dir"; then
+      local tip
+      if target_is_facts "$dir"; then
+        tip=$(fact "$dir" head | cut -f2)
+        tip=${tip:0:7}
+      else
+        tip=$(git -C "$dir" rev-parse --short HEAD 2>/dev/null)
+      fi
+      out+="  detached HEAD at $tip, not reachable from any remote ref"$'\n'
+    fi
+    collect_branch_statuses "$dir"
+    if (( ${#BRANCH_REPORTS[@]} > 0 )); then
+      out+="  held/unknown branches:"$'\n'
+      local r
+      for r in "${BRANCH_REPORTS[@]}"; do out+="    $r"$'\n'; done
+    fi
+    slot_worktrees_of "$dir"
+    if (( ${#WORKTREES[@]} > 0 )); then
+      out+="  worktrees — a session may be working in one right now:"$'\n'
+      local w
+      for w in "${WORKTREES[@]}"; do out+="    $w"$'\n'; done
+    fi
   fi
   printf '%s' "$out"
 }
@@ -507,7 +599,8 @@ finish_acquire() {
   RESERVED_LEASE=""
   write_holder_file "$dir" "$holder" "$owner" "$slot_id" "$epoch"
 
-  warn_unproven_branches "$target" "⚠ '$slot_id' already holds branch(es) not proved to be in origin/$DEFAULT_BRANCH, from before this lease — not yours; check before assuming they're redundant:"
+  local check_target; check_target=$(slot_check_target "$dir" "$slot_id")
+  [[ -n "$check_target" ]] && warn_unproven_branches "$check_target" "⚠ '$slot_id' already holds branch(es) not proved to be in origin/$DEFAULT_BRANCH, from before this lease — not yours; check before assuming they're redundant:"
 
   echo
   echo "slot '$slot_id' leased to $holder: ${dir:-$slot_id}"
@@ -594,6 +687,16 @@ resync_node_modules() {
   fi
 }
 
+slot_check_target() {
+  local dir="$1" sid="$2"
+  local check_dir="${dir:-${DOCKER_STUB_STATE:+$DOCKER_STUB_STATE/volumes/${sid}-workspace}}"
+  if [[ -n "$check_dir" && -d "$check_dir" ]]; then
+    echo "$check_dir"
+  elif [[ "$(spec_of "$sid")" == vol:* ]]; then
+    echo "$sid"
+  fi
+}
+
 ACQUIRE_REASON=""
 ACQUIRE_BLOCKED=""
 slot_acquire_verdict() {
@@ -601,7 +704,7 @@ slot_acquire_verdict() {
   local check_dir="${dir:-${DOCKER_STUB_STATE:+$DOCKER_STUB_STATE/volumes/${sid}-workspace}}"
   ACQUIRE_REASON=""
 
-  if slot_unbuilt_reason "$dir" >/dev/null; then
+  if slot_unbuilt_reason "$dir" "$sid" >/dev/null; then
     ACQUIRE_REASON="unbuilt"
     return 1
   fi
@@ -623,8 +726,72 @@ slot_acquire_verdict() {
     return 1
   fi
 
+  local check_target; check_target=$(slot_check_target "$dir" "$sid")
+
+  if target_is_facts "$check_target"; then
+    facts_of "$check_target" >/dev/null
+    local is_norepo=0
+    if facts_norepo "$check_target"; then
+      is_norepo=1
+    elif facts_unreadable "$check_target"; then
+      ACQUIRE_REASON="unreadable:facts"
+      return 1
+    fi
+    if (( fast )); then
+      if (( ! is_norepo )) && { [[ -n "$(facts_lines "$check_target" status)" || -n "$(facts_lines "$check_target" stash)" ]]; }; then
+        ACQUIRE_REASON="dirty:uncommitted-or-stashed (fast: not delivery-checked)"
+        return 1
+      fi
+      if facts_lines "$check_target" clone | grep -qxF "docs/repo"; then
+        local df; df=$(facts_file "$check_target" docs/repo)
+        facts_of "$check_target" docs/repo >/dev/null
+        if facts_unreadable "$df" || [[ -n "$(facts_lines "$df" status)" || -n "$(facts_lines "$df" stash)" ]]; then
+          ACQUIRE_REASON="dirty:docs uncommitted-or-stashed (fast: not delivery-checked)"
+          return 1
+        fi
+      fi
+      if facts_lines "$check_target" clone | grep -qxF "docs/fix"; then
+        local dff; dff=$(facts_file "$check_target" docs/fix)
+        facts_of "$check_target" docs/fix >/dev/null
+        if facts_unreadable "$dff" || [[ -n "$(facts_lines "$dff" status)" || -n "$(facts_lines "$dff" stash)" ]]; then
+          ACQUIRE_REASON="dirty:docs/fix uncommitted-or-stashed (fast: not delivery-checked)"
+          return 1
+        fi
+      fi
+    else
+      if ! slot_is_clean_for_reuse "$check_target"; then
+        ACQUIRE_REASON="dirty:$(slot_dirty_column "$check_target")"
+        return 1
+      fi
+    fi
+
+    if (( ! is_norepo )); then
+      slot_worktrees_of "$check_target"
+      local unreadable=0 wt
+      for wt in "${WORKTREES[@]}"; do
+        case "$wt" in
+          /workspace|/workspace/*) ;;
+          *) unreadable=$((unreadable + 1)) ;;
+        esac
+      done
+      if (( unreadable > 0 )); then
+        ACQUIRE_REASON="unreadable:$unreadable"
+        return 1
+      fi
+    fi
+
+    ACQUIRE_REASON="acquirable"
+    return 0
+  fi
+
+  if [[ -n "$check_dir" && -d "$check_dir" && -e "$check_dir/.git" ]] \
+     && ! git -C "$check_dir" rev-parse --git-dir >/dev/null 2>&1; then
+    ACQUIRE_REASON="unreadable:git"
+    return 1
+  fi
+
   if (( fast )); then
-    if [[ -n "$check_dir" && -d "$check_dir" ]] \
+    if [[ -n "$check_dir" && -d "$check_dir" && -e "$check_dir/.git" ]] \
        && { [[ -n "$(git -C "$check_dir" status --porcelain 2>/dev/null)" ]] \
             || [[ -n "$(git -C "$check_dir" stash list 2>/dev/null)" ]]; }; then
       ACQUIRE_REASON="dirty:uncommitted-or-stashed (fast: not delivery-checked)"
@@ -651,15 +818,17 @@ slot_acquire_verdict() {
     fi
   fi
 
-  slot_worktrees_of "$check_dir"
-  local unreadable=0 wt mapped_wt
-  for wt in "${WORKTREES[@]}"; do
-    mapped_wt=$(slot_map_workspace_path "$check_dir" "$wt")
-    [[ -d "$mapped_wt" ]] || unreadable=$((unreadable + 1))
-  done
-  if (( unreadable > 0 )); then
-    ACQUIRE_REASON="unreadable:$unreadable"
-    return 1
+  if [[ -n "$check_dir" && -d "$check_dir" && -e "$check_dir/.git" ]]; then
+    slot_worktrees_of "$check_dir"
+    local unreadable=0 wt mapped_wt
+    for wt in "${WORKTREES[@]}"; do
+      mapped_wt=$(slot_map_workspace_path "$check_dir" "$wt")
+      [[ -d "$mapped_wt" ]] || unreadable=$((unreadable + 1))
+    done
+    if (( unreadable > 0 )); then
+      ACQUIRE_REASON="unreadable:$unreadable"
+      return 1
+    fi
   fi
 
   ACQUIRE_REASON="acquirable"

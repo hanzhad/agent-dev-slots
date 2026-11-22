@@ -8,9 +8,17 @@ export GIT_OPTIONAL_LOCKS=0 GIT_TERMINAL_PROMPT=0
 T=$(printf "\t")
 sub=${1:-.}
 cd "$sub" 2>/dev/null || { echo norepo; exit 0; }
-[ -e .git ] || { echo norepo; exit 0; }
+if [ ! -e .git ]; then
+  echo norepo
+  if [ "$sub" = . ]; then
+    for c in docs/repo docs/fix; do
+      [ ! -f "$c/.git/HEAD" ] || printf "clone%s%s\n" "$T" "$c"
+    done
+  fi
+  exit 0
+fi
 [ "$sub" = . ] || [ -f .git/HEAD ] || [ -f .git ] || { echo norepo; exit 0; }
-git rev-parse --git-dir >/dev/null 2>&1 || { echo norepo; exit 0; }
+git rev-parse --git-dir >/dev/null 2>&1 || { printf "error%snot a valid git repository\n" "$T"; exit 0; }
 if [ "${2:-fetch}" != fetch ]; then
   echo "fetch${T}skipped"
 elif git fetch --quiet --prune origin >/dev/null 2>&1; then
@@ -119,6 +127,10 @@ exit 1
 
 FACTS_NO_FETCH=${FACTS_NO_FETCH:-0}
 
+target_is_facts() {
+  [[ -n "$1" ]] && [[ ! -d "$1" ]] && { [[ "$1" != /* ]] || [[ -f "$1" ]]; }
+}
+
 facts_file() {
   local scratch="${SCRATCH:-${DEV_CONTAINER_HOME:-$HOME/.dev-containers}/scratch}"
   local sid="$1" sub="${2:-.}"
@@ -193,6 +205,28 @@ facts_unreadable() {
     [[ -f "$src" ]] || facts_of "$target" >/dev/null 2>&1 || true
     [[ -f "$src" ]] || return 0
     grep -q -E '^(error|norepo)($|	)' "$src" 2>/dev/null
+  fi
+}
+
+facts_norepo() {
+  local tab=$'\t'
+  if (( $# == 0 )); then
+    grep -q -E "^norepo(\$|${tab})"
+  else
+    local target="$1" src="$1"
+    [[ -f "$src" ]] || src=$(facts_file "$target")
+    [[ -f "$src" ]] || facts_of "$target" >/dev/null 2>&1 || true
+    [[ -f "$src" ]] || return 1
+    grep -q -E "^norepo(\$|${tab})" "$src" 2>/dev/null
+  fi
+}
+
+facts_error() {
+  local tab=$'\t'
+  if (( $# == 0 )); then
+    grep -q -E "^error(\$|${tab})"
+  else
+    facts_unreadable "$1" && ! facts_norepo "$1"
   fi
 }
 

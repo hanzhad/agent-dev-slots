@@ -1956,6 +1956,7 @@ class TestMultiRepoVolumeRescueArchive(DevContainerTestCase, MultiRepoSetupMixin
         self.assertEqual(meta.get("repos"), [])
 
         # 2. Completely clean root + clean pinned shallow ro specs + clean rw notes -> zero archive
+        shutil.rmtree(self.rescue_dir, ignore_errors=True)
         s_clean = self._acquire_vol("all-clean", now=since)
         lease_path = self.harness.lease_path(s_clean)
         with open(lease_path, encoding="utf-8") as handle:
@@ -2017,6 +2018,7 @@ class TestMultiRepoVolumeRescueArchive(DevContainerTestCase, MultiRepoSetupMixin
         self.assertEqual(by_alias["specs"]["files"], ["new-files.tar"])
 
         # 2. --discard and --ephemeral skip archive even with dirty sub-repos
+        shutil.rmtree(self.rescue_dir, ignore_errors=True)
         s_disc = self._acquire_vol("disc-sub", "--repo", "tools", now=since)
         with open(os.path.join(self.harness.slot_dir(s_disc), "extras", "tools", "wip.txt"), "w", encoding="utf-8") as handle:
             handle.write("discard me\n")
@@ -2042,6 +2044,7 @@ class TestMultiRepoVolumeRescueArchive(DevContainerTestCase, MultiRepoSetupMixin
         )
         shutil.move(os.path.join(host_dir + "-tmp", ".git"), os.path.join(host_dir, ".git"))
         shutil.rmtree(host_dir + "-tmp")
+        self.real_git(host_dir, "remote", "set-url", "origin", "https://github.com/acme/primary.git")
         self.real_git(host_dir, "reset", "-q", "--hard")
         with open(os.path.join(host_dir, ".devcontainer", ".slot-holder"), "w", encoding="utf-8") as handle:
             handle.write("holder=host-par\n")

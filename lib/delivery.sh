@@ -184,13 +184,23 @@ branch_delivery_status() {
     }
   fi
 
-  if [[ "$repo_slug" == "$gh_repo" ]]; then
+  if [[ -n "$repo_slug" && "$repo_slug" == "$gh_repo" ]]; then
     # Named by the key, as rescue and the token cache are. An entry still named by
     # the label is not read: it is a cache miss, and the verdict is derived again.
     cache_key="${PROJECT_KEY:-$SLOT_PROJECT_PREFIX}-${branch//\//_}-${tip}"
+  elif [[ -n "$repo_slug" ]]; then
+    cache_key="${repo_slug//\//_}-${branch//\//_}-${tip}"
   else
-    cache_key="${repo_slug:-no-slug}"
-    cache_key="${cache_key//\//_}-${branch//\//_}-${tip}"
+    local origin_id="" origin_hash=""
+    if target_is_facts "$dir"; then
+      origin_id=$(fact "$dir" origin)
+      [[ -n "$origin_id" ]] || origin_id="${facts_sid}:${facts_sub}"
+    else
+      origin_id=$(git -C "$dir" remote get-url origin 2>/dev/null || true)
+      [[ -n "$origin_id" ]] || origin_id="$dir"
+    fi
+    origin_hash=$(printf '%s' "$origin_id" | adopt_sha256)
+    cache_key="noslug-${origin_hash:0:16}-${branch//\//_}-${tip}"
   fi
   local cache="$STATE/delivered/$cache_key"
   local closed_cache="$STATE/closed/$cache_key"
@@ -471,16 +481,21 @@ slot_branches_unproven_against_master() {
   local dir="$1" all=()
   collect_unproven_branches "$dir" ""
   all+=("${UNPROVEN_REPORTS[@]}")
-  if target_is_facts "$dir"; then
-    if facts_lines "$dir" clone | grep -qxF "docs/repo"; then
-      facts_of "$dir" docs/repo >/dev/null
-      collect_unproven_branches "$(facts_file "$dir" docs/repo)" "docs/repo: "
+  local _path _lbl _col _url _slug _ro _rep_lbl
+  while IFS=$'\037' read -r _path _lbl _col _url _slug _ro; do
+    _rep_lbl="$_col"
+    [[ "$_col" == docs || "$_col" == docsfix ]] && _rep_lbl="$_lbl"
+    if target_is_facts "$dir"; then
+      if facts_lines "$dir" clone | grep -qxF "$_path"; then
+        facts_of "$dir" "$_path" >/dev/null
+        collect_unproven_branches "$(facts_file "$dir" "$_path")" "$_rep_lbl: "
+        all+=("${UNPROVEN_REPORTS[@]}")
+      fi
+    elif [[ -f "$dir/$_path/.git/HEAD" || -f "$dir/$_path/.git" ]]; then
+      collect_unproven_branches "$dir/$_path" "$_rep_lbl: "
       all+=("${UNPROVEN_REPORTS[@]}")
     fi
-  else
-    collect_unproven_branches "$dir/docs/repo" "docs/repo: "
-    all+=("${UNPROVEN_REPORTS[@]}")
-  fi
+  done < <(slot_catalog_repos_iter "$dir")
   UNPROVEN_REPORTS=("${all[@]}")
 }
 

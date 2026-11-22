@@ -60,11 +60,59 @@ cmd_fs() {
     || fs_refuse "failed to sanitize request JSON"
   raw_json=""
 
+  if [[ "$op" == diff ]] && printf '%s' "$clean_json" | jq -e 'has("subdir") and .subdir != null' >/dev/null 2>&1; then
+    local sub_val
+    sub_val=$(printf '%s' "$clean_json" | jq -r '
+      if (.subdir | type) != "string" or (.subdir | length) == 0 then
+        error("subdir must be a non-empty relative string")
+      elif (.subdir | explode | any(. == 0)) then
+        error("NUL byte refused in subdir")
+      elif (.subdir | contains("\\")) then
+        error("backslash refused in subdir")
+      elif (.subdir | startswith("/") or endswith("/")) then
+        error("subdir must be a relative path without leading or trailing /")
+      elif (.subdir | split("/") | any(. == "" or . == "." or . == ".." or . == ".git")) then
+        error("invalid path segment in subdir")
+      else
+        .subdir
+      end
+    ' 2>/dev/null) || fs_refuse "invalid subdir parameter"
+
+    local state_repos_file state_json="[]" cat_json="[]" allowed_repos_json resolved_subdir=""
+    state_repos_file=$(slot_repos_state_file_of "$sid" 2>/dev/null || true)
+    [[ -n "$state_repos_file" && -f "$state_repos_file" ]] \
+      && state_json=$(jq -c 'if type == "array" then . else [] end' "$state_repos_file" 2>/dev/null || echo "[]")
+    if [[ -n "${SLOT_REPOS_CATALOG:-}" ]]; then
+      cat_json=$(printf '%s' "$SLOT_REPOS_CATALOG" | jq -c '[.repos[] | select(.attach == "default" or .legacy_docs == true)]' 2>/dev/null || echo "[]")
+    elif declare -F docs_repo_configured >/dev/null 2>&1 && docs_repo_configured; then
+      cat_json='[{"alias":"docs","path":"docs/repo"},{"alias":"docs-fix","path":"docs/fix"}]'
+    fi
+    allowed_repos_json=$(jq -nc --argjson a "$state_json" --argjson b "$cat_json" '$a + $b')
+    resolved_subdir=$(printf '%s' "$allowed_repos_json" | jq -r --arg s "$sub_val" '[.[] | select(.alias == $s or .path == $s) | .path] | first // empty' 2>/dev/null || true)
+    [[ -n "$resolved_subdir" ]] || fs_refuse "unknown or unattached subdir: $sub_val"
+    clean_json=$(printf '%s' "$clean_json" | jq -c --arg s "$resolved_subdir" '.subdir = $s' 2>/dev/null) \
+      || fs_refuse "failed to normalize subdir"
+  fi
+
+  local ro_prefixes=""
+  ro_prefixes=$({
+    if [[ -n "${SLOT_REPOS_CATALOG:-}" ]]; then
+      printf '%s' "$SLOT_REPOS_CATALOG" | jq -r '.repos[] | select(.mode == "ro") | .path' 2>/dev/null || true
+    fi
+    local sr_file; sr_file=$(slot_repos_state_file_of "$sid" 2>/dev/null || true)
+    if [[ -n "$sr_file" && -f "$sr_file" ]]; then
+      jq -r '.[]? | select(.mode == "ro") | .path' "$sr_file" 2>/dev/null || true
+    fi
+    if declare -F docs_repo_configured >/dev/null 2>&1 && docs_repo_configured; then
+      printf 'docs/repo\n'
+    fi
+  } | sort -u | tr '\n' ' ')
+
   activity_stamp "$sid" run
   local perl_src rc=0
   perl_src=$(<"$lib_dir/slot-fs.pl")
   printf '%s' "$clean_json" \
-    | slot_helper_run "$sid" perl -e "$perl_src" -- "$op" "$COMPOSE_DIR" "$SLOT_COPY_FILES" \
+    | slot_helper_run "$sid" perl -e "$perl_src" -- "$op" "$COMPOSE_DIR" "$SLOT_COPY_FILES" "$ro_prefixes" "${SLOT_REPOS_FILE:-}" \
     || rc=$?
   activity_stamp "$sid" run
   return "$rc"

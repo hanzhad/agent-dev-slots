@@ -30,7 +30,7 @@ sub fail {
     exit 1;
 }
 
-my ($op, $compose_dir_raw, $slot_copy_raw) = @ARGV;
+my ($op, $compose_dir_raw, $slot_copy_raw, $ro_prefixes_raw, $slot_repos_file_raw) = @ARGV;
 $RAW_ERRORS_TO_STDERR = 1 if defined $op && $op eq 'get_raw';
 fail("missing operation") if !defined $op || $op eq '';
 
@@ -50,6 +50,21 @@ if (defined $slot_copy_raw && $slot_copy_raw =~ /\S/) {
     }
 }
 
+my @ro_prefixes;
+if (defined $ro_prefixes_raw && $ro_prefixes_raw =~ /\S/) {
+    for my $entry (split /\s+/, $ro_prefixes_raw) {
+        $entry =~ s{^\./+}{};
+        $entry =~ s{^/+}{};
+        $entry =~ s{/+$}{};
+        push @ro_prefixes, $entry if $entry ne '';
+    }
+}
+
+my $slot_repos_file = defined $slot_repos_file_raw ? $slot_repos_file_raw : '';
+$slot_repos_file =~ s{^\./+}{};
+$slot_repos_file =~ s{^/+}{};
+$slot_repos_file =~ s{/+$}{};
+
 my $ws_root = getcwd();
 fail("cannot resolve workspace directory") if !defined $ws_root || $ws_root eq '';
 
@@ -61,22 +76,24 @@ my $req = eval { $JSON->decode($stdin_bytes) };
 fail("invalid JSON object on stdin") if $@ || ref($req) ne 'HASH';
 
 sub is_blocked_dir_rel {
-    my ($rel, $name) = @_;
+    my ($rel, $name, $ws_rel) = @_;
+    $ws_rel = $rel if !defined $ws_rel;
     return 1 if $name eq '.git';
     return 1 if $name =~ /^\.env(?:\..+)?$/;
-    return 1 if $rel eq $compose_dir || index($rel, "$compose_dir/") == 0;
+    return 1 if $ws_rel eq $compose_dir || index($ws_rel, "$compose_dir/") == 0;
     for my $c (@copy_files) {
-        return 1 if $rel eq $c || index($rel, "$c/") == 0;
+        return 1 if $ws_rel eq $c || index($ws_rel, "$c/") == 0;
     }
     return 0;
 }
 
 sub is_blocked_rel {
-    my ($rel, $segs) = @_;
-    return 1 if $rel eq 'project.env';
-    return 1 if $rel eq $compose_dir || index($rel, "$compose_dir/") == 0;
+    my ($rel, $segs, $ws_rel) = @_;
+    $ws_rel = $rel if !defined $ws_rel;
+    return 1 if $ws_rel eq 'project.env';
+    return 1 if $ws_rel eq $compose_dir || index($ws_rel, "$compose_dir/") == 0;
     for my $c (@copy_files) {
-        return 1 if $rel eq $c || index($rel, "$c/") == 0;
+        return 1 if $ws_rel eq $c || index($ws_rel, "$c/") == 0;
     }
     my $last_idx = $#$segs;
     for my $i (0 .. $last_idx) {
@@ -90,8 +107,17 @@ sub is_blocked_rel {
     return 0;
 }
 
+sub is_write_protected_rel {
+    my ($rel) = @_;
+    return 1 if $slot_repos_file ne '' && $rel eq $slot_repos_file;
+    for my $p (@ro_prefixes) {
+        return 1 if $rel eq $p || index($rel, "$p/") == 0;
+    }
+    return 0;
+}
+
 sub validate_rel_path {
-    my ($p) = @_;
+    my ($p, $sub_prefix) = @_;
     fail("path must be a non-empty relative string")
         if !defined $p || ref($p) || $p eq '';
     fail("NUL byte refused in path") if index($p, "\x00") >= 0;
@@ -104,13 +130,14 @@ sub validate_rel_path {
         fail("invalid path segment in '$p'")
             if $seg eq '' || $seg eq '.' || $seg eq '..';
     }
-    fail("protected path refused: $p") if is_blocked_rel($p, \@segs);
+    my $ws_rel = (defined $sub_prefix && $sub_prefix ne '') ? "$sub_prefix/$p" : $p;
+    fail("protected path refused: $p") if is_blocked_rel($p, \@segs, $ws_rel);
     return \@segs;
 }
 
 sub has_symlink_on_disk {
-    my ($segs) = @_;
-    my $cur = $ws_root;
+    my ($segs, $base_dir) = @_;
+    my $cur = defined $base_dir ? $base_dir : $ws_root;
     for my $seg (@$segs) {
         $cur .= "/" . $seg;
         my @st = lstat($cur);
@@ -537,6 +564,34 @@ sub op_diff {
     my $max_bytes = defined $req->{max_bytes} ? int($req->{max_bytes}) : $MAX_FILE_BYTES;
     fail("max_bytes must be >= 1") if $max_bytes < 1;
 
+    my $diff_root = $ws_root;
+    my $sub_prefix = '';
+    if (defined $req->{subdir}) {
+        my $sub = $req->{subdir};
+        fail("subdir must be a non-empty relative string")
+            if ref($sub) || $sub eq '';
+        fail("NUL byte refused in subdir") if index($sub, "\x00") >= 0;
+        fail("backslash refused in subdir: $sub") if index($sub, "\\") >= 0;
+        fail("absolute path refused in subdir: $sub") if substr($sub, 0, 1) eq '/';
+        my @sub_segs = split m{/}, $sub, -1;
+        fail("empty subdir refused") if !@sub_segs;
+        for my $seg (@sub_segs) {
+            fail("invalid subdir segment in '$sub'")
+                if $seg eq '' || $seg eq '.' || $seg eq '..' || $seg eq '.git';
+        }
+        fail("protected subdir refused: $sub") if is_blocked_rel($sub, \@sub_segs, $sub);
+        my $cur = $ws_root;
+        for my $seg (@sub_segs) {
+            $cur .= "/" . $seg;
+            my @st = lstat($cur);
+            fail("subdir not found: $sub") if !@st;
+            fail("symlink refused in subdir: $sub") if -l _;
+            fail("subdir is not a directory: $sub") if !-d _;
+        }
+        $diff_root = $cur;
+        $sub_prefix = $sub;
+    }
+
     my @paths;
     if (defined $req->{paths}) {
         fail("paths must be an array") if ref($req->{paths}) ne 'ARRAY';
@@ -545,10 +600,11 @@ sub op_diff {
                 if !defined $raw_p || ref($raw_p) || $raw_p eq '';
             my $p = $raw_p;
             $p =~ s{/$}{} if $p ne '/';
-            my $segs = validate_rel_path($p);
-            fail("symlink refused: $p") if has_symlink_on_disk($segs);
-            if (my @lst = lstat("$ws_root/$p")) {
-                if (-d _ && is_blocked_dir_rel($p, $segs->[-1])) {
+            my $segs = validate_rel_path($p, $sub_prefix);
+            fail("symlink refused: $p") if has_symlink_on_disk($segs, $diff_root);
+            if (my @lst = lstat("$diff_root/$p")) {
+                my $ws_rel = $sub_prefix ne '' ? "$sub_prefix/$p" : $p;
+                if (-d _ && is_blocked_dir_rel($p, $segs->[-1], $ws_rel)) {
                     fail("protected path refused: $p");
                 }
             }
@@ -558,7 +614,7 @@ sub op_diff {
 
     open(
         my $nfh, '-|',
-        'git', '--literal-pathspecs', '-C', $ws_root, 'diff', '--no-ext-diff', '--no-renames',
+        'git', '--literal-pathspecs', '-C', $diff_root, 'diff', '--no-ext-diff', '--no-renames',
         @cached_flag, '--name-only', '-z', '--', (@paths ? @paths : ('.'))
     ) or fail("git diff failed: $!");
     binmode $nfh;
@@ -581,8 +637,9 @@ sub op_diff {
         for my $seg (@segs) {
             next NAME_LOOP if $seg eq '' || $seg eq '.' || $seg eq '..';
         }
-        next if is_blocked_rel($rel, \@segs);
-        next if has_symlink_on_disk(\@segs);
+        my $ws_rel = $sub_prefix ne '' ? "$sub_prefix/$rel" : $rel;
+        next if is_blocked_rel($rel, \@segs, $ws_rel);
+        next if has_symlink_on_disk(\@segs, $diff_root);
         if (!$seen_allowed{$rel}++) {
             push @allowed_files, $rel;
         }
@@ -597,7 +654,7 @@ sub op_diff {
 
     open(
         my $gfh, '-|',
-        'git', '--literal-pathspecs', '-C', $ws_root, 'diff', '--no-ext-diff', '--no-color',
+        'git', '--literal-pathspecs', '-C', $diff_root, 'diff', '--no-ext-diff', '--no-color',
         @cached_flag, '--', @allowed_files
     ) or fail("git diff failed: $!");
     binmode $gfh;
@@ -633,6 +690,7 @@ sub op_diff {
 sub op_write {
     my $rel = $req->{path};
     my $segs = validate_rel_path($rel);
+    fail("protected read-only path refused: $rel") if is_write_protected_rel($rel);
     my $content = $req->{content};
     fail("content string required") if !defined $content || ref($content);
     fail("NUL byte refused in content") if index($content, "\x00") >= 0;
@@ -655,6 +713,7 @@ sub op_write {
 sub op_edit {
     my $rel = $req->{path};
     my $segs = validate_rel_path($rel);
+    fail("protected read-only path refused: $rel") if is_write_protected_rel($rel);
     my ($cur_raw, $cur_text, $mode) = read_regular_bytes($rel);
     if (defined $req->{expected_sha256} && !ref($req->{expected_sha256}) && $req->{expected_sha256} ne '') {
         fail("CAS sha256 mismatch") if sha256_hex($cur_raw) ne lc($req->{expected_sha256});

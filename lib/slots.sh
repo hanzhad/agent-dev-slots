@@ -158,11 +158,13 @@ slot_unbuilt_reason() {
 }
 
 slot_catalog_repos_iter() {
+  local target="${1:-}" seen_paths=" "
   local cat="${SLOT_REPOS_CATALOG:-}"
   if [[ -n "$cat" ]] && [[ "$(printf '%s' "$cat" | jq -r '.repos | length' 2>/dev/null || echo 0)" -gt 0 ]]; then
     local alias path url mode legacy_docs slug is_ro colprefix
     while IFS=$'\037' read -r alias path url mode legacy_docs; do
       [[ -n "$alias" ]] || continue
+      seen_paths+="$path "
       slug=$(repo_github_slug "$url")
       if [[ -z "$slug" && "$legacy_docs" == "1" && "$url" == /* ]]; then
         slug="${docs_gh_repo:-}"
@@ -176,9 +178,90 @@ slot_catalog_repos_iter() {
       printf '%s\037%s\037%s\037%s\037%s\037%s\n' "$path" "$path" "$colprefix" "$url" "$slug" "$is_ro"
     done < <(printf '%s' "$cat" | jq -r '.repos[] | [.alias, .path, .url, .mode, (if .legacy_docs then "1" else "0" end)] | join("\u001f")')
   else
+    seen_paths+="docs/repo docs/fix "
     printf '%s\037%s\037%s\037%s\037%s\037%s\n' "docs/repo" "docs/repo" "docs" "${DOCS_REPO_URL:-}" "${docs_gh_repo:-}" "1"
     printf '%s\037%s\037%s\037%s\037%s\037%s\n' "docs/fix" "docs/fix" "docsfix" "${DOCS_REPO_URL:-}" "${docs_gh_repo:-}" "0"
   fi
+  if [[ -n "$target" ]]; then
+    local sid state_file
+    if [[ "$target" == /* ]]; then
+      sid=$(slot_id_of "$target" 2>/dev/null || true)
+    else
+      sid="$target"
+    fi
+    if [[ -n "$sid" ]]; then
+      state_file=$(slot_repos_state_file_of "$sid")
+      if [[ -f "$state_file" ]]; then
+        local alias path slug mode is_ro colprefix
+        while IFS=$'\037' read -r alias path slug mode; do
+          [[ -n "$path" ]] || continue
+          case "$seen_paths" in *" $path "*) continue ;; esac
+          seen_paths+="$path "
+          [[ "$mode" == "ro" ]] && is_ro=1 || is_ro=0
+          case "$alias" in
+            docs) colprefix="docs" ;;
+            docs-fix) colprefix="docsfix" ;;
+            *) colprefix="$alias" ;;
+          esac
+          printf '%s\037%s\037%s\037%s\037%s\037%s\n' "$path" "$path" "$colprefix" "" "$slug" "$is_ro"
+        done < <(jq -r '.[]? | [.alias, .path, (.slug // ""), (.mode // "rw")] | join("\u001f")' "$state_file" 2>/dev/null || true)
+      fi
+    fi
+  fi
+}
+
+slot_repos_union_tsv() {
+  local target="${1:-}" seen_paths=" "
+  local cat="${SLOT_REPOS_CATALOG:-}"
+  if [[ -n "$cat" ]] && [[ "$(printf '%s' "$cat" | jq -r '.repos | length' 2>/dev/null || echo 0)" -gt 0 ]]; then
+    local alias path url mode attach rbranch pin_file auth rw_alias legacy_docs slug
+    while IFS=$'\037' read -r alias path url mode attach rbranch pin_file auth rw_alias legacy_docs; do
+      [[ -n "$alias" ]] || continue
+      seen_paths+="$path "
+      slug=$(repo_github_slug "$url")
+      if [[ -z "$slug" && "$legacy_docs" == "1" && "$url" == /* ]]; then
+        slug="${docs_gh_repo:-}"
+      fi
+      printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' \
+        "$alias" "$path" "$url" "$slug" "$mode" "$attach" "$rbranch" "$pin_file" "$auth" "$rw_alias" "$legacy_docs"
+    done < <(printf '%s' "$cat" | jq -r '.repos[] | [.alias, .path, (.url // ""), (.mode // "rw"), (.attach // "default"), (.branch // ""), (.pin_file // ""), (.auth // "project"), (.rw_alias // ""), (if .legacy_docs then "1" else "0" end)] | join("\u001f")')
+  fi
+  if [[ -n "$target" ]]; then
+    local sid state_file
+    if [[ "$target" == /* ]]; then
+      sid=$(slot_id_of "$target" 2>/dev/null || true)
+    else
+      sid="$target"
+    fi
+    if [[ -n "$sid" ]]; then
+      state_file=$(slot_repos_state_file_of "$sid")
+      if [[ -f "$state_file" ]]; then
+        local alias path slug mode attach
+        while IFS=$'\037' read -r alias path slug mode attach; do
+          [[ -n "$path" ]] || continue
+          case "$seen_paths" in *" $path "*) continue ;; esac
+          seen_paths+="$path "
+          printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' \
+            "$alias" "$path" "" "$slug" "$mode" "$attach" "" "" "project" "" "0"
+        done < <(jq -r '.[]? | [.alias, .path, (.slug // ""), (.mode // "rw"), (.attach // "optional")] | join("\u001f")' "$state_file" 2>/dev/null || true)
+      fi
+    fi
+  fi
+  case "$seen_paths" in
+    *" docs/repo "*) ;;
+    *)
+      seen_paths+="docs/repo "
+      printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' \
+        "docs" "docs/repo" "${DOCS_REPO_URL:-}" "${docs_gh_repo:-}" "ro" "default" "" "${DOCS_PIN_FILE:-.github/docs-pin}" "project" "docs-fix" "1"
+      ;;
+  esac
+  case "$seen_paths" in
+    *" docs/fix "*) ;;
+    *)
+      printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' \
+        "docs-fix" "docs/fix" "${DOCS_REPO_URL:-}" "${docs_gh_repo:-}" "rw" "optional" "" "" "project" "" "1"
+      ;;
+  esac
 }
 
 slot_is_clean_for_reuse() {
@@ -189,7 +272,7 @@ slot_is_clean_for_reuse() {
     if facts_norepo "$dir"; then
       while IFS=$'\037' read -r _path _lbl _col _url _slug _ro; do
         docs_repo_is_clean "$dir" "$_path" "$_lbl" "$_col" "$_url" "$_slug" "$_ro" || return 1
-      done < <(slot_catalog_repos_iter)
+      done < <(slot_catalog_repos_iter "$dir")
       return 0
     fi
     ! facts_unreadable "$dir" || return 1
@@ -197,7 +280,7 @@ slot_is_clean_for_reuse() {
     [[ -z "$(facts_lines "$dir" stash)" ]] || return 1
     while IFS=$'\037' read -r _path _lbl _col _url _slug _ro; do
       docs_repo_is_clean "$dir" "$_path" "$_lbl" "$_col" "$_url" "$_slug" "$_ro" || return 1
-    done < <(slot_catalog_repos_iter)
+    done < <(slot_catalog_repos_iter "$dir")
     head_is_delivered "$dir"
     return
   fi
@@ -205,7 +288,7 @@ slot_is_clean_for_reuse() {
   if [[ ! -e "$dir/.git" ]]; then
     while IFS=$'\037' read -r _path _lbl _col _url _slug _ro; do
       docs_repo_is_clean "$dir" "$_path" "$_lbl" "$_col" "$_url" "$_slug" "$_ro" || return 1
-    done < <(slot_catalog_repos_iter)
+    done < <(slot_catalog_repos_iter "$dir")
     return 0
   fi
   git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 1
@@ -213,7 +296,7 @@ slot_is_clean_for_reuse() {
   [[ -z "$(git -C "$dir" stash list 2>/dev/null)" ]] || return 1
   while IFS=$'\037' read -r _path _lbl _col _url _slug _ro; do
     docs_repo_is_clean "$dir" "$_path" "$_lbl" "$_col" "$_url" "$_slug" "$_ro" || return 1
-  done < <(slot_catalog_repos_iter)
+  done < <(slot_catalog_repos_iter "$dir")
   head_is_delivered "$dir"
 }
 
@@ -265,7 +348,7 @@ slot_dirty_column() {
   while IFS=$'\037' read -r _path _lbl _col _url _slug _ro; do
     docs_repo_is_clean "$dir" "$_path" "$_lbl" "$_col" "$_url" "$_slug" "$_ro" || out="${out:+$out,}$DOCS_DIRTY_COLUMN"
     (( ${#DOCS_PRUNABLE_BRANCHES[@]} == 0 )) || all_prunable+=("${DOCS_PRUNABLE_BRANCHES[@]}")
-  done < <(slot_catalog_repos_iter)
+  done < <(slot_catalog_repos_iter "$dir")
   DOCS_PRUNABLE_BRANCHES=(${all_prunable[@]+"${all_prunable[@]}"})
 
   if (( has_repo )); then
@@ -335,10 +418,12 @@ slot_dirty_report() {
       [[ -z "$v" ]] || out+="  stashed:"$'\n'"$(printf '%s\n' "$v" | sed 's/^/    /')"$'\n'
     fi
   fi
-  local _path _lbl _col _url _slug _ro
+  local _path _lbl _col _url _slug _ro _rep_lbl
   while IFS=$'\037' read -r _path _lbl _col _url _slug _ro; do
-    docs_repo_is_clean "$dir" "$_path" "$_lbl" "$_col" "$_url" "$_slug" "$_ro" || out+="  $DOCS_DIRTY_REASON"$'\n'
-  done < <(slot_catalog_repos_iter)
+    _rep_lbl="$_col"
+    [[ "$_col" == docs || "$_col" == docsfix ]] && _rep_lbl="$_lbl"
+    docs_repo_is_clean "$dir" "$_path" "$_rep_lbl" "$_col" "$_url" "$_slug" "$_ro" || out+="  $DOCS_DIRTY_REASON"$'\n'
+  done < <(slot_catalog_repos_iter "$dir")
   if (( has_repo )); then
     if [[ -z "$(head_branch_of "$dir")" ]] && ! head_is_delivered "$dir"; then
       local tip
@@ -367,19 +452,84 @@ slot_dirty_report() {
 }
 
 reset_slot() {
-  local dir="$1" branch
-  branch=$(default_branch)
+  local dir="$1"
+  shift || true
+  local -a keep_aliases=("$@")
+  local sid branch
+  sid=$(slot_id_of "$dir")
+  branch=$(default_branch "$dir")
   echo "▸ resetting $dir to origin/$branch"
   apply_checkout_check_stat "$dir"
   forge_git -C "$dir" fetch --quiet origin || { echo "  ! could not fetch origin - resetting to the last fetched origin/$branch" >&2; forge_hint_for "$dir"; }
   git -C "$dir" checkout --quiet "$branch" --
   git -C "$dir" reset --quiet --hard "origin/$branch"
+  local excl_p
+  while IFS= read -r excl_p; do
+    [[ -n "$excl_p" ]] || continue
+    ensure_excluded "$dir" "/$excl_p"
+  done < <(slot_repos_all_present_paths "$sid" "${SLOT_REPOS_CATALOG:-}")
   if ! git -C "$dir" clean -fd --quiet; then
     echo "  ! git clean -fd left path(s) behind in $dir — see 'git -C $dir clean -n -d'" >&2
   fi
-  sync_docs_repo_to_pin "$dir" \
-    || echo "  ! could not fetch the docs pin into docs/repo — $DOCS_PIN_REASON, and anything that reads docs/repo will say so" >&2
-  guard_docs_repo_readonly "$dir"
+
+  local -a dropped_aliases=()
+  local alias path url slug mode attach rbranch pin_file auth rw_alias legacy_docs
+  local colprefix rep_lbl is_ro keep ka sub_branch
+  while IFS=$'\037' read -r alias path url slug mode attach rbranch pin_file auth rw_alias legacy_docs; do
+    [[ -n "$path" ]] || continue
+    [[ -f "$dir/$path/.git/HEAD" || -f "$dir/$path/.git" ]] || continue
+    [[ "$mode" == "ro" ]] && is_ro=1 || is_ro=0
+    colprefix="$alias"
+    rep_lbl="$alias"
+    if [[ "$legacy_docs" == "1" ]]; then
+      [[ "$alias" == "docs" ]] && { colprefix="docs"; rep_lbl="docs/repo"; }
+      [[ "$alias" == "docs-fix" ]] && { colprefix="docsfix"; rep_lbl="docs/fix"; }
+    fi
+    if ! docs_repo_is_clean "$dir" "$path" "$rep_lbl" "$colprefix" "$url" "$slug" "$is_ro"; then
+      echo "⚠ '$sid': skipping dirty sub-repo '$alias' ($path) during reset — $DOCS_DIRTY_REASON" >&2
+      continue
+    fi
+    keep=0
+    for ka in ${keep_aliases[@]+"${keep_aliases[@]}"}; do
+      [[ "$ka" == "$alias" ]] && { keep=1; break; }
+    done
+    if [[ "$attach" == "optional" ]] && (( ! keep )); then
+      rm -rf -- "$dir/$path"
+      dropped_aliases+=("$alias")
+      continue
+    fi
+    if [[ "$mode" == "rw" ]]; then
+      forge_git -C "$dir/$path" fetch --quiet origin || true
+      sub_branch="$rbranch"
+      [[ -n "$sub_branch" ]] || sub_branch=$(default_branch "$dir/$path")
+      if git -C "$dir/$path" show-ref --verify --quiet "refs/heads/$sub_branch"; then
+        git -C "$dir/$path" checkout --quiet "$sub_branch" --
+      else
+        git -C "$dir/$path" checkout --quiet -B "$sub_branch" "origin/$sub_branch"
+      fi
+      git -C "$dir/$path" reset --quiet --hard "origin/$sub_branch"
+      git -C "$dir/$path" clean -fd --quiet || true
+    else
+      if [[ -n "$pin_file" ]]; then
+        sync_repo_to_pin "$dir" "$path" "$pin_file" "$auth" \
+          || echo "  ! could not fetch pin into $path — anything that reads $path will say so" >&2
+      fi
+      guard_repo_readonly "$dir" "$path" "$alias" "$rw_alias" "$legacy_docs"
+    fi
+  done < <(slot_repos_union_tsv "$sid")
+
+  if (( ${#dropped_aliases[@]} > 0 )); then
+    local state_file; state_file=$(slot_repos_state_file_of "$sid")
+    if [[ -f "$state_file" || -f "$(lease_file_of "$sid")" ]]; then
+      local drop_json cur_state new_state
+      drop_json=$(jq -nc '$ARGS.positional' --args "${dropped_aliases[@]}")
+      cur_state=$(slot_repos_read_state "$sid")
+      new_state=$(printf '%s' "$cur_state" | jq -c --argjson drop "$drop_json" '[.[] | select(.alias as $a | ($drop | index($a)) == null)]')
+      [[ ! -f "$state_file" ]] || slot_repos_write_state "$sid" "$new_state"
+      slot_repos_sync_lease "$sid" "$new_state"
+    fi
+  fi
+
   apply_checkout_git_identity "$dir"
   local sha url
   sha=$(git -C "$dir" rev-parse --short HEAD)
@@ -818,7 +968,7 @@ slot_acquire_verdict() {
             return 1
           fi
         fi
-      done < <(slot_catalog_repos_iter)
+      done < <(slot_catalog_repos_iter "$check_target")
     else
       if ! slot_is_clean_for_reuse "$check_target"; then
         ACQUIRE_REASON="dirty:$(slot_dirty_column "$check_target")"
@@ -861,13 +1011,13 @@ slot_acquire_verdict() {
     local _path _lbl _col _url _slug _ro sub_dir
     while IFS=$'\037' read -r _path _lbl _col _url _slug _ro; do
       sub_dir="$check_dir/$_path"
-      if [[ -f "$sub_dir/.git/HEAD" ]] \
+      if [[ -f "$sub_dir/.git/HEAD" || -f "$sub_dir/.git" ]] \
          && { [[ -n "$(git -C "$sub_dir" status --porcelain 2>/dev/null)" ]] \
               || [[ -n "$(git -C "$sub_dir" stash list 2>/dev/null)" ]]; }; then
         ACQUIRE_REASON="dirty:${_col} uncommitted-or-stashed (fast: not delivery-checked)"
         return 1
       fi
-    done < <(slot_catalog_repos_iter)
+    done < <(slot_catalog_repos_iter "$check_dir")
   else
     if [[ -n "$check_dir" && -d "$check_dir" ]] && ! slot_is_clean_for_reuse "$check_dir"; then
       ACQUIRE_REASON="dirty:$(slot_dirty_column "$check_dir")"

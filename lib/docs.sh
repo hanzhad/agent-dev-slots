@@ -60,10 +60,19 @@ docs_repo_is_clean() {
       DOCS_DIRTY_COLUMN="$colprefix:unknown"
       return 2
     fi
-    if ! docs_origin_matches "$origin" "$expected_url"; then
-      DOCS_DIRTY_REASON="$label: origin is '$origin', not $expected_url — a drifted mirror can only answer for itself, not GitHub"
-      DOCS_DIRTY_COLUMN="$colprefix:unknown origin"
-      return 2
+    if [[ -n "$expected_url" ]]; then
+      if ! docs_origin_matches "$origin" "$expected_url"; then
+        DOCS_DIRTY_REASON="$label: origin is '$origin', not $expected_url — a drifted mirror can only answer for itself, not GitHub"
+        DOCS_DIRTY_COLUMN="$colprefix:unknown origin"
+        return 2
+      fi
+    elif [[ -n "$repo_slug" ]]; then
+      local actual_slug; actual_slug=$(repo_github_slug "$origin")
+      if [[ "$actual_slug" != "$repo_slug" ]]; then
+        DOCS_DIRTY_REASON="$label: origin is '$origin', not $repo_slug — a drifted mirror can only answer for itself, not GitHub"
+        DOCS_DIRTY_COLUMN="$colprefix:unknown origin"
+        return 2
+      fi
     fi
     local v n
     v=$(facts_lines "$df" status)
@@ -128,7 +137,7 @@ docs_repo_is_clean() {
     return 0
   fi
 
-  [[ -f "$docs/.git/HEAD" ]] || return 0
+  [[ -f "$docs/.git/HEAD" || -f "$docs/.git" ]] || return 0
 
   local origin
   origin=$(git -C "$docs" config --get remote.origin.url 2>/dev/null) || {
@@ -136,10 +145,19 @@ docs_repo_is_clean() {
     DOCS_DIRTY_COLUMN="$colprefix:unknown"
     return 2
   }
-  if ! docs_origin_matches "$origin" "$expected_url"; then
-    DOCS_DIRTY_REASON="$label: origin is '$origin', not $expected_url — a drifted mirror can only answer for itself, not GitHub"
-    DOCS_DIRTY_COLUMN="$colprefix:unknown origin"
-    return 2
+  if [[ -n "$expected_url" ]]; then
+    if ! docs_origin_matches "$origin" "$expected_url"; then
+      DOCS_DIRTY_REASON="$label: origin is '$origin', not $expected_url — a drifted mirror can only answer for itself, not GitHub"
+      DOCS_DIRTY_COLUMN="$colprefix:unknown origin"
+      return 2
+    fi
+  elif [[ -n "$repo_slug" ]]; then
+    local actual_slug; actual_slug=$(repo_github_slug "$origin")
+    if [[ "$actual_slug" != "$repo_slug" ]]; then
+      DOCS_DIRTY_REASON="$label: origin is '$origin', not $repo_slug — a drifted mirror can only answer for itself, not GitHub"
+      DOCS_DIRTY_COLUMN="$colprefix:unknown origin"
+      return 2
+    fi
   fi
 
   local v n
@@ -269,6 +287,29 @@ fetch_pinned_commit() {
   return 1
 }
 
+sync_repo_to_pin() {
+  local dir="$1" subpath="$2" pin_file="$3" auth="${4:-project}"
+  local repo="$dir/$subpath" pin head
+  [[ -f "$repo/.git/HEAD" || -f "$repo/.git" ]] || return 0
+  [[ -n "$pin_file" ]] || return 0
+  pin=$(git -C "$dir" show "origin/$(default_branch "$dir"):$pin_file" 2>/dev/null \
+    | grep -v '^[[:space:]]*#' | tr -d '[:space:]' || true)
+  if [[ -z "$pin" ]]; then
+    echo "  ! no $pin_file on origin/$(default_branch "$dir") — $subpath left where it is" >&2
+    return 0
+  fi
+  head=$(git -C "$repo" rev-parse HEAD 2>/dev/null) || head="nothing"
+  [[ "$head" == "$pin" ]] && return 0
+  if [[ -n "$(git -C "$repo" status --porcelain 2>/dev/null)" ]]; then
+    echo "  ! $subpath is off-pin (${head:0:12} != ${pin:0:12}) — not moved: $subpath has uncommitted changes" >&2
+    return 0
+  fi
+  echo "▸ moving $subpath to the pin (${pin:0:12})"
+  fetch_pinned_commit "$repo" "$pin" "$auth" || return 1
+  git -C "$repo" checkout --quiet --detach "$pin"
+  docs_repo_write_marker_pin "$repo" "$pin"
+}
+
 sync_docs_repo_to_pin() {
   local dir="$1" docs="$1/docs/repo" pin
   [[ -f "$docs/.git/HEAD" ]] || return 0
@@ -297,7 +338,7 @@ docs_repo_hook_script() {
 guard_repo_readonly() {
   local dir="$1" subpath="$2" alias="$3" rw_alias="${4:-}" legacy_docs="${5:-0}"
   local repo="$dir/$subpath" hooks h pushurl refusal
-  [[ -f "$repo/.git/HEAD" ]] || return 0
+  [[ -f "$repo/.git/HEAD" || -f "$repo/.git" ]] || return 0
   if [[ "$legacy_docs" == 1 || "$subpath" == docs/repo ]]; then
     pushurl="$DOCS_REPO_PUSHURL"
     refusal="$DOCS_REPO_REFUSAL"

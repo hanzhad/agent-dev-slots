@@ -6,13 +6,20 @@ rescue_bundle_path() {
 }
 
 prune_delivered_branches() {
-  local dir="$1" sid="$2" docs="$1/docs/repo"
-  local -a slot_prunable=() docs_prunable=()
+  local dir="$1" sid="$2"
+  local -a slot_prunable=() sub_prunable_paths=() sub_prunable_entries=()
   collect_branch_statuses "$dir"
   (( ${#PRUNABLE_BRANCHES[@]} == 0 )) || slot_prunable=("${PRUNABLE_BRANCHES[@]}")
-  docs_repo_is_clean "$dir" || true
-  (( ${#DOCS_PRUNABLE_BRANCHES[@]} == 0 )) || docs_prunable=("${DOCS_PRUNABLE_BRANCHES[@]}")
-  (( ${#slot_prunable[@]} + ${#docs_prunable[@]} > 0 )) || return 0
+  local _path _lbl _col _url _slug _ro _entry
+  while IFS=$'\037' read -r _path _lbl _col _url _slug _ro; do
+    [[ -f "$dir/$_path/.git/HEAD" || -f "$dir/$_path/.git" ]] || continue
+    docs_repo_is_clean "$dir" "$_path" "$_lbl" "$_col" "$_url" "$_slug" "$_ro" || true
+    for _entry in ${DOCS_PRUNABLE_BRANCHES[@]+"${DOCS_PRUNABLE_BRANCHES[@]}"}; do
+      sub_prunable_paths+=("$_path")
+      sub_prunable_entries+=("$_entry")
+    done
+  done < <(slot_catalog_repos_iter "$sid")
+  (( ${#slot_prunable[@]} + ${#sub_prunable_entries[@]} > 0 )) || return 0
 
   lock_acquire
   if [[ -f "$(lease_file_of "$sid")" || -f "$(parked_file_of "$sid")" ]]; then
@@ -26,12 +33,11 @@ prune_delivered_branches() {
       delete_delivered_branch "$dir" "$sid" checkout $entry || { lock_release; return 0; }
     done
   fi
-  if (( ${#docs_prunable[@]} > 0 )); then
-    for entry in "${docs_prunable[@]}"; do
-      # shellcheck disable=SC2086
-      delete_delivered_branch "$docs" "$sid" docs/repo $entry || { lock_release; return 0; }
-    done
-  fi
+  local i
+  for (( i = 0; i < ${#sub_prunable_entries[@]}; i++ )); do
+    # shellcheck disable=SC2086
+    delete_delivered_branch "$dir/${sub_prunable_paths[$i]}" "$sid" "${sub_prunable_paths[$i]}" ${sub_prunable_entries[$i]} || { lock_release; return 0; }
+  done
   lock_release
   return 0
 }
@@ -75,9 +81,14 @@ rescue_and_reset() {
     fi
   fi
 
-  if ! docs_repo_is_clean "$dir"; then
-    echo "⚠ '$sid' also has $DOCS_DIRTY_REASON — this rescue's bundle covers only $dir itself, not docs/repo; nothing below removes it, but check it by hand before the slot goes back out." >&2
-  fi
+  local _path _lbl _col _url _slug _ro _rep_lbl
+  while IFS=$'\037' read -r _path _lbl _col _url _slug _ro; do
+    _rep_lbl="$_col"
+    [[ "$_col" == docs || "$_col" == docsfix ]] && _rep_lbl="$_lbl"
+    if ! docs_repo_is_clean "$dir" "$_path" "$_rep_lbl" "$_col" "$_url" "$_slug" "$_ro"; then
+      echo "⚠ '$sid' also has $DOCS_DIRTY_REASON — this rescue's bundle covers only $dir itself, not $_path; nothing below removes it, but check it by hand before the slot goes back out." >&2
+    fi
+  done < <(slot_catalog_repos_iter "$sid")
 
   mkdir -p "$STATE/rescue"
   bundle="$(rescue_bundle_path "$sid")"

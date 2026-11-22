@@ -71,25 +71,51 @@ archive_partition_untracked() {
   done
 }
 
-archive_collect_host_dir() {
-  local dir="$1" tmp_dir="$2" sid="$3" project="$4" limit="$5"
+archive_collect_repo_host_dir() {
+  local dir="$1" out_dir="$2" tmp_dir="$3" sid="$4" project="$5" limit="$6"
+  local is_ro="${7:-0}" pin_file="${8:-}" root_dir="${9:-}"
   git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
+  repo_origin_url=$(git -C "$dir" config --get remote.origin.url 2>/dev/null || git -C "$dir" remote get-url origin 2>/dev/null || true)
+
+  local skip_head_unpushed=0
+  if (( is_ro )) && [[ -z "$(git -C "$dir" symbolic-ref --quiet --short HEAD 2>/dev/null || true)" ]]; then
+    local cur_head marker_pin root_pin=""
+    cur_head=$(git -C "$dir" rev-parse HEAD 2>/dev/null || true)
+    marker_pin=$(docs_repo_marker_pin "$dir" 2>/dev/null || true)
+    if [[ -n "$pin_file" && -n "$root_dir" ]]; then
+      root_pin=$(git -C "$root_dir" show "origin/$(default_branch "$root_dir"):$pin_file" 2>/dev/null | grep -v '^[[:space:]]*#' | tr -d '[:space:]' || true)
+    fi
+    if [[ -n "$cur_head" ]] && [[ "$cur_head" == "$marker_pin" || ( -n "$root_pin" && "$cur_head" == "$root_pin" ) ]]; then
+      skip_head_unpushed=1
+    fi
+  fi
+
   local has_unpushed=""
   if git -C "$dir" rev-parse --verify HEAD >/dev/null 2>&1; then
-    has_unpushed=$(git -C "$dir" log HEAD --branches --not --remotes -n 1 --format=%H 2>/dev/null || true)
-    if [[ -n "$has_unpushed" ]]; then
-      if ! git -C "$dir" bundle create "$tmp_dir/commits.bundle" HEAD --branches --not --remotes >/dev/null 2>&1; then
-        archive_fail_park "$tmp_dir" "$sid" "$project" "bundle create failed" "failed to create bundle for '$sid'"
-        return 1
+    if (( skip_head_unpushed )); then
+      has_unpushed=$(git -C "$dir" log --branches --not --remotes -n 1 --format=%H 2>/dev/null || true)
+      if [[ -n "$has_unpushed" ]]; then
+        if ! git -C "$dir" bundle create "$out_dir/commits.bundle" --branches --not --remotes >/dev/null 2>&1; then
+          archive_fail_park "$tmp_dir" "$sid" "$project" "bundle create failed" "failed to create bundle for '$sid'"
+          return 1
+        fi
+      fi
+    else
+      has_unpushed=$(git -C "$dir" log HEAD --branches --not --remotes -n 1 --format=%H 2>/dev/null || true)
+      if [[ -n "$has_unpushed" ]]; then
+        if ! git -C "$dir" bundle create "$out_dir/commits.bundle" HEAD --branches --not --remotes >/dev/null 2>&1; then
+          archive_fail_park "$tmp_dir" "$sid" "$project" "bundle create failed" "failed to create bundle for '$sid'"
+          return 1
+        fi
       fi
     fi
 
     if ! git -C "$dir" diff --quiet HEAD 2>/dev/null; then
-      if ! git -C "$dir" diff --binary HEAD > "$tmp_dir/changes.patch" 2>/dev/null; then
+      if ! git -C "$dir" diff --binary HEAD > "$out_dir/changes.patch" 2>/dev/null; then
         archive_fail_park "$tmp_dir" "$sid" "$project" "git diff failed" "failed to generate diff for '$sid'"
         return 1
       fi
-      [[ -s "$tmp_dir/changes.patch" ]] || rm -f "$tmp_dir/changes.patch"
+      [[ -s "$out_dir/changes.patch" ]] || rm -f "$out_dir/changes.patch"
     fi
   fi
 
@@ -127,7 +153,7 @@ archive_collect_host_dir() {
   archive_partition_untracked "$limit"
 
   if (( ${#included_files[@]} > 0 )); then
-    if ! tar -cf "$tmp_dir/new-files.tar" -C "$dir" "${included_files[@]}" 2>/dev/null; then
+    if ! tar -cf "$out_dir/new-files.tar" -C "$dir" "${included_files[@]}" 2>/dev/null; then
       archive_fail_park "$tmp_dir" "$sid" "$project" "tar create failed" "failed to create tar archive for '$sid'"
       return 1
     fi
@@ -148,35 +174,56 @@ archive_collect_host_dir() {
   done < <(git -C "$dir" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null || true)
 }
 
-archive_collect_volume() {
-  local tmp_dir="$1" sid="$2" project="$3" limit="$4"
-  local has_unpushed=""
-  if ! has_unpushed=$(slot_exec_stream "$sid" sh -c 'if git -c safe.directory="*" rev-parse --verify HEAD >/dev/null 2>&1; then git -c safe.directory="*" log HEAD --branches --not --remotes -n 1 --format=%H; fi' 2>/dev/null); then
-    archive_fail_park "$tmp_dir" "$sid" "$project" "bundle create failed" "failed to inspect commits for '$sid'"
-    return 1
-  fi
-  if [[ -n "$has_unpushed" ]]; then
-    if ! slot_exec_stream "$sid" sh -c 'git -c safe.directory="*" bundle create - HEAD --branches --not --remotes 2>/dev/null' > "$tmp_dir/commits.bundle"; then
-      archive_fail_park "$tmp_dir" "$sid" "$project" "bundle create failed" "failed to create bundle for '$sid'"
-      return 1
-    fi
-  fi
-
-  if ! slot_exec_stream "$sid" sh -c 'if git -c safe.directory="*" rev-parse --verify HEAD >/dev/null 2>&1; then git -c safe.directory="*" diff --binary HEAD; fi' > "$tmp_dir/changes.patch" 2>/dev/null; then
-    archive_fail_park "$tmp_dir" "$sid" "$project" "git diff failed" "failed to generate diff for '$sid'"
-    return 1
-  fi
-  [[ -s "$tmp_dir/changes.patch" ]] || rm -f "$tmp_dir/changes.patch"
+archive_collect_repo_volume() {
+  local subpath="$1" out_dir="$2" tmp_dir="$3" sid="$4" project="$5" limit="$6"
+  local is_ro="${7:-0}" pin_file="${8:-}"
 
   local probe_out
-  if ! probe_out=$(slot_exec_stream "$sid" sh -c '
+  if ! probe_out=$(slot_exec_stream "$sid" sh -s -- "$subpath" "$is_ro" "$pin_file" 2>/dev/null <<'PROBE'
     set -e
     command -v git >/dev/null
+    sub=$1 is_ro=$2 pin_file=$3
+    expected_pin=""
+    if [ "$is_ro" = 1 ] && [ -n "$pin_file" ] && [ -e .git ]; then
+      def=$(git -c safe.directory="*" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || true)
+      def=${def#origin/}
+      if [ -n "$def" ]; then
+        expected_pin=$( (git -c safe.directory="*" show "origin/$def:$pin_file" 2>/dev/null || true) | grep -v "^[[:space:]]*#" | tr -d "[:space:]" )
+      fi
+    fi
+    cd "$sub" 2>/dev/null || exit 0
+    [ -e .git ] || exit 0
     rc=0
     git -c safe.directory="*" rev-parse --git-dir >/dev/null 2>&1 || rc=$?
     if [ "$rc" -ne 0 ]; then
       [ "$rc" -eq 128 ] && exit 0
       exit "$rc"
+    fi
+    origin_u=$(git -c safe.directory="*" config --get remote.origin.url 2>/dev/null || git -c safe.directory="*" remote get-url origin 2>/dev/null || true)
+    printf "O\t%s\n" "$origin_u"
+    if git -c safe.directory="*" rev-parse --verify HEAD >/dev/null 2>&1; then
+      skip_head=0
+      if [ "$is_ro" = 1 ] && ! git -c safe.directory="*" symbolic-ref --quiet HEAD >/dev/null 2>&1; then
+        cur_head=$(git -c safe.directory="*" rev-parse HEAD 2>/dev/null || true)
+        gdir=$(git -c safe.directory="*" rev-parse --git-dir 2>/dev/null || true)
+        marker_pin=""
+        [ -n "$gdir" ] && [ -f "$gdir/slot-docs-pin" ] && marker_pin=$(cat "$gdir/slot-docs-pin" 2>/dev/null || true)
+        if [ -n "$cur_head" ] && { [ "$cur_head" = "$marker_pin" ] || { [ -n "$expected_pin" ] && [ "$cur_head" = "$expected_pin" ]; }; }; then
+          skip_head=1
+        fi
+      fi
+      if [ "$skip_head" = 1 ]; then
+        if [ -n "$(git -c safe.directory="*" log --branches --not --remotes -n 1 --format=%H 2>/dev/null || true)" ]; then
+          printf "H\tBRANCHES\n"
+        fi
+      else
+        if [ -n "$(git -c safe.directory="*" log HEAD --branches --not --remotes -n 1 --format=%H 2>/dev/null || true)" ]; then
+          printf "H\tHEAD\n"
+        fi
+      fi
+      if ! git -c safe.directory="*" diff --quiet HEAD 2>/dev/null; then
+        printf "D\t1\n"
+      fi
     fi
     git -c safe.directory="*" ls-files --others --exclude-standard | while IFS= read -r f; do
       [ -n "$f" ] || continue
@@ -201,15 +248,19 @@ archive_collect_volume() {
       [ -n "$b" ] || continue
       printf "B\t%s\n" "$b"
     done
-  ' 2>/dev/null); then
+PROBE
+  ); then
     archive_fail_park "$tmp_dir" "$sid" "$project" "archive probe failed" "failed to list files for '$sid'"
     return 1
   fi
 
-  local kind rest sz f
+  local kind rest sz f bundle_mode="" has_diff=0
   while IFS=$'\t' read -r kind rest; do
     [[ -n "$kind" ]] || continue
     case "$kind" in
+      O) repo_origin_url="$rest" ;;
+      H) bundle_mode="$rest" ;;
+      D) has_diff=1 ;;
       U)
         sz=${rest%%$'\t'*}
         f=${rest#*$'\t'}
@@ -229,14 +280,37 @@ archive_collect_volume() {
     esac
   done <<<"$probe_out"
 
+  if [[ -n "$bundle_mode" ]]; then
+    if ! slot_exec_stream "$sid" sh -c 'cd "$1" && if [ "$2" = BRANCHES ]; then git -c safe.directory="*" bundle create - --branches --not --remotes 2>/dev/null; else git -c safe.directory="*" bundle create - HEAD --branches --not --remotes 2>/dev/null; fi' sh "$subpath" "$bundle_mode" > "$out_dir/commits.bundle" 2>/dev/null; then
+      archive_fail_park "$tmp_dir" "$sid" "$project" "bundle create failed" "failed to create bundle for '$sid'"
+      return 1
+    fi
+  fi
+
+  if (( has_diff )); then
+    if ! slot_exec_stream "$sid" sh -c 'cd "$1" && git -c safe.directory="*" diff --binary HEAD' sh "$subpath" > "$out_dir/changes.patch" 2>/dev/null; then
+      archive_fail_park "$tmp_dir" "$sid" "$project" "git diff failed" "failed to generate diff for '$sid'"
+      return 1
+    fi
+    [[ -s "$out_dir/changes.patch" ]] || rm -f "$out_dir/changes.patch"
+  fi
+
   archive_partition_untracked "$limit"
 
   if (( ${#included_files[@]} > 0 )); then
-    if ! printf '%s\n' "${included_files[@]}" | slot_exec_stream "$sid" tar -cf - -T - > "$tmp_dir/new-files.tar" 2>/dev/null; then
+    if ! printf '%s\n' "${included_files[@]}" | slot_exec_stream "$sid" tar -C "$subpath" -cf - -T - > "$out_dir/new-files.tar" 2>/dev/null; then
       archive_fail_park "$tmp_dir" "$sid" "$project" "tar create failed" "failed to create tar archive for '$sid'"
       return 1
     fi
   fi
+}
+
+archive_collect_host_dir() {
+  archive_collect_repo_host_dir "$1" "$2" "$2" "$3" "$4" "$5" 0 "" "$1"
+}
+
+archive_collect_volume() {
+  archive_collect_repo_volume "." "$1" "$1" "$2" "$3" "$4" 0 ""
 }
 
 archive_and_clean_slot() {
@@ -297,6 +371,7 @@ archive_and_clean_slot() {
   local limit=${DEV_CONTAINER_ARCHIVE_SIZE_LIMIT:-52428800}
   local -a candidate_entries=() included_files=() omitted_items=() ignored_files=() branch_names=()
   local -A seen_candidates=()
+  local repo_origin_url=""
 
   if [[ -n "$dir" && -d "$dir" ]]; then
     archive_collect_host_dir "$dir" "$tmp_dir" "$sid" "$project" "$limit" || return 1
@@ -308,18 +383,6 @@ archive_and_clean_slot() {
   [[ -f "$tmp_dir/commits.bundle" ]] && has_commits=1
   [[ -f "$tmp_dir/changes.patch" && -s "$tmp_dir/changes.patch" ]] && has_patch=1
   [[ -f "$tmp_dir/new-files.tar" ]] && has_tar=1
-
-  if (( ! has_commits && ! has_patch && ! has_tar )); then
-    rm -rf "$tmp_dir"
-    echo "▸ slot '$name' has nothing to keep — deleting slot without archive"
-    if (( is_vol )); then
-      teardown_dir "" "$sid"
-    else
-      teardown_dir "$dir" "$sid"
-    fi
-    rm -f "$(lease_file_of "$sid")" "$(lease_token_file_of "$sid")" "$STATE/keys/$sid-"*
-    return 0
-  fi
 
   local ignored_json="[]"
   if (( ${#ignored_files[@]} > 0 )); then
@@ -334,6 +397,107 @@ archive_and_clean_slot() {
   local omitted_json="[]"
   if (( ${#omitted_items[@]} > 0 )); then
     omitted_json=$(printf '%s\n' "${omitted_items[@]}" | jq -s .)
+  fi
+
+  local -a repo_meta_items=()
+  local any_sub_archived=0
+  local -a sub_rows=()
+  local sub_row
+  while IFS= read -r sub_row; do
+    [[ -n "$sub_row" ]] && sub_rows+=("$sub_row")
+  done < <(slot_repos_union_tsv "$sid")
+
+  if (( ${#sub_rows[@]} > 0 )); then
+    local present_paths=" "
+    if [[ -n "$dir" && -d "$dir" ]]; then
+      for sub_row in "${sub_rows[@]}"; do
+        IFS=$'\037' read -r _ spath _ <<<"$sub_row"
+        if [[ -f "$dir/$spath/.git/HEAD" || -f "$dir/$spath/.git" ]]; then
+          present_paths+="$spath "
+        fi
+      done
+    else
+      local -a check_paths=()
+      for sub_row in "${sub_rows[@]}"; do
+        IFS=$'\037' read -r _ spath _ <<<"$sub_row"
+        check_paths+=("$spath")
+      done
+      local present_out=""
+      present_out=$(slot_exec_stream "$sid" sh -c 'for p in "$@"; do if [ -f "$p/.git/HEAD" ] || [ -f "$p/.git" ]; then printf "%s\n" "$p"; fi; done' sh "${check_paths[@]}" 2>/dev/null) || {
+        archive_fail_park "$tmp_dir" "$sid" "$project" "archive probe failed" "failed to inspect attached repos for '$sid'"
+        return 1
+      }
+      local pp
+      while IFS= read -r pp; do
+        [[ -n "$pp" ]] && present_paths+="$pp "
+      done <<<"$present_out"
+    fi
+
+    local alias path url slug mode attach rbranch pin_file auth rw_alias legacy_docs
+    for sub_row in "${sub_rows[@]}"; do
+      IFS=$'\037' read -r alias path url slug mode attach rbranch pin_file auth rw_alias legacy_docs <<<"$sub_row"
+      case "$present_paths" in
+        *" $path "*) ;;
+        *) continue ;;
+      esac
+      candidate_entries=(); included_files=(); omitted_items=(); ignored_files=(); branch_names=()
+      seen_candidates=(); repo_origin_url=""
+      local sub_out="$tmp_dir/repos/$alias"
+      mkdir -p "$sub_out"
+      local is_ro=0
+      [[ "$mode" == "ro" ]] && is_ro=1
+      if [[ -n "$dir" && -d "$dir" ]]; then
+        archive_collect_repo_host_dir "$dir/$path" "$sub_out" "$tmp_dir" "$sid" "$project" "$limit" "$is_ro" "$pin_file" "$dir" || return 1
+      else
+        archive_collect_repo_volume "$path" "$sub_out" "$tmp_dir" "$sid" "$project" "$limit" "$is_ro" "$pin_file" || return 1
+      fi
+      local -a sub_files=()
+      [[ -f "$sub_out/commits.bundle" ]] && sub_files+=("commits.bundle")
+      [[ -f "$sub_out/changes.patch" && -s "$sub_out/changes.patch" ]] && sub_files+=("changes.patch")
+      [[ -f "$sub_out/new-files.tar" ]] && sub_files+=("new-files.tar")
+      if (( ${#sub_files[@]} == 0 )); then
+        rm -rf "$sub_out"
+        rmdir "$tmp_dir/repos" 2>/dev/null || true
+        continue
+      fi
+      any_sub_archived=1
+      local sub_url="$url"
+      [[ -n "$sub_url" ]] || sub_url="$repo_origin_url"
+      local sub_branches_json="[]" sub_ignored_json="[]" sub_omitted_json="[]" sub_files_json="[]"
+      (( ${#branch_names[@]} == 0 )) || sub_branches_json=$(printf '%s\n' "${branch_names[@]}" | jq -R . | jq -s .)
+      (( ${#ignored_files[@]} == 0 )) || sub_ignored_json=$(printf '%s\n' "${ignored_files[@]}" | jq -R . | jq -s .)
+      (( ${#omitted_items[@]} == 0 )) || sub_omitted_json=$(printf '%s\n' "${omitted_items[@]}" | jq -s .)
+      sub_files_json=$(printf '%s\n' "${sub_files[@]}" | jq -R . | jq -s .)
+      local sub_meta
+      sub_meta=$(jq -n \
+        --arg alias "$alias" \
+        --arg path "$path" \
+        --arg url "$sub_url" \
+        --arg mode "$mode" \
+        --argjson branches "$sub_branches_json" \
+        --argjson ignored "$sub_ignored_json" \
+        --argjson omitted "$sub_omitted_json" \
+        --argjson files "$sub_files_json" \
+        '{alias: $alias, path: $path, url: $url, mode: $mode, branches: $branches, ignored: $ignored, omitted: $omitted, files: $files}')
+      repo_meta_items+=("$sub_meta")
+    done
+  fi
+
+  if (( ! has_commits && ! has_patch && ! has_tar && ! any_sub_archived )); then
+    rm -rf "$tmp_dir"
+    echo "▸ slot '$name' has nothing to keep — deleting slot without archive"
+    if (( is_vol )); then
+      teardown_dir "" "$sid"
+    else
+      teardown_dir "$dir" "$sid"
+    fi
+    rm -f "$(lease_file_of "$sid")" "$(lease_token_file_of "$sid")" "$STATE/keys/$sid-"*
+    return 0
+  fi
+
+  local repos_json="[]"
+  if (( ${#repo_meta_items[@]} > 0 )); then
+    repos_json=$(printf '%s\n' "${repo_meta_items[@]}" | jq -s .)
   fi
 
   local root="${repo_root:-}"
@@ -356,8 +520,9 @@ archive_and_clean_slot() {
     --argjson branches "$branches_json" \
     --argjson ignored "$ignored_json" \
     --argjson omitted "$omitted_json" \
+    --argjson repos "$repos_json" \
     --argjson created_at "$created_at" \
-    '{project: $project, lease: $lease, repo_root: $repo_root, origin: $origin, default_branch: $default_branch, branches: $branches, ignored: $ignored, omitted: $omitted, created_at: $created_at}' \
+    '{project: $project, lease: $lease, repo_root: $repo_root, origin: $origin, default_branch: $default_branch, branches: $branches, ignored: $ignored, omitted: $omitted, repos: $repos, created_at: $created_at}' \
     > "$tmp_dir/meta.json"; then
     archive_fail_park "$tmp_dir" "$sid" "$project" "meta.json write failed" "failed to write meta.json for '$sid'"
     return 1

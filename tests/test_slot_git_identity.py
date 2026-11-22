@@ -2,7 +2,7 @@ import os
 import subprocess
 
 import test_provision
-from harness import project_env_text
+from harness import REPO_ROOT, SCRIPT_REL, project_env_text
 from test_provision import ProvisionCase, text
 
 NAME = "Demo Slot Bot"
@@ -110,9 +110,47 @@ class InTheContainer(IdentityCase):
         name = self.acquire()
         self.assertEqual(self.config_values(name, "user.name"), [NAME])
         self.assertEqual(self.config_values(name, "user.email"), [EMAIL])
+        self.assertEqual(self.config_values(name, "tag.gpgsign"), ["true"])
 
-    def test_without_it_provisioning_sets_no_identity(self):
+    def test_without_slot_git_name_provisioning_uses_slot_env_identity(self):
         self.project("token")
         name = self.acquire()
+        self.assertEqual(self.config_values(name, "user.name"), ["demo-agent"])
+        self.assertEqual(self.config_values(name, "user.email"), ["demo-agent@example.com"])
+        self.assertEqual(self.config_values(name, "tag.gpgsign"), ["true"])
+
+    def test_in_app_mode_without_slot_git_name_provisioning_sets_app_bot_identity(self):
+        self.project("app")
+        name = self.acquire()
+        self.assertEqual(self.config_values(name, "user.name"), ["demo-agent[bot]"])
+        self.assertEqual(
+            self.config_values(name, "user.email"),
+            ["424242+demo-agent[bot]@users.noreply.github.com"],
+        )
+        self.assertEqual(self.config_values(name, "tag.gpgsign"), ["true"])
+
+    def test_without_any_env_or_project_identity_provisioning_leaves_system_identity_unset(self):
+        self.project("token")
+        name = self.acquire()
+        env_file = self.harness.env_path(name)
+        with open(env_file, encoding="utf-8") as handle:
+            kept = [
+                line for line in handle.read().splitlines()
+                if not line.startswith(("GIT_USER_NAME=", "GIT_USER_EMAIL="))
+            ]
+        with open(env_file, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(kept) + "\n")
+        env = self.harness._env(None)
+        env["DEV_CONTAINER_LIB"] = "1"
+        res = subprocess.run(
+            ["bash", "-c", '. "$1"; provision_slot "" "$2"', "test", self.harness.script, self.sid(name)],
+            cwd=self.harness.tmp,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+        self.assertEqual(res.returncode, 0, text(res))
         self.assertEqual(self.config_values(name, "user.name"), [])
         self.assertEqual(self.config_values(name, "user.email"), [])
+        self.assertEqual(self.config_values(name, "tag.gpgsign"), ["true"])

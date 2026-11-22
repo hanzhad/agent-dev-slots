@@ -93,6 +93,30 @@ class SessionLimitIdSpelling(DevContainerTestCase):
         self.acquire_ok("second", "x")
         self.assert_refused("third", "x")
 
+    def test_zero_session_limit_pauses_only_that_session(self):
+        self.write_limits({"default": 2, "sessions": {UUID: 0}})
+
+        self.assert_refused("first", UUID)
+        self.assert_refused("second", PREFIXED)
+        self.acquire_ok("other", "other-session")
+
+    def test_negative_session_limit_clamps_to_zero_and_refuses(self):
+        self.write_limits({"default": 2, "sessions": {PREFIXED: -4}})
+
+        self.assert_refused("first", UUID)
+        self.assert_refused("second", PREFIXED)
+
+    def test_negative_default_limit_clamps_to_zero_and_refuses(self):
+        self.write_limits({"default": -2})
+
+        self.assert_refused("first", UUID)
+
+    def test_session_limit_above_twenty_clamps_to_twenty_and_allows_acquires(self):
+        self.write_limits({"default": 1, "sessions": {UUID: 25}})
+
+        self.acquire_ok("first", UUID)
+        self.acquire_ok("second", PREFIXED)
+
 
 if __name__ == "__main__":
     unittest.main()

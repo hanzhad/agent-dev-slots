@@ -13,6 +13,7 @@ from harness import (
     DevContainerHarness,
     DevContainerTestCase,
     PROJECT_PREFIX,
+    engine_source_lines,
     project_env_text,
     wait_until,
 )
@@ -112,108 +113,114 @@ class MachineMaxZeroGlobalPause(ProjectLimitsTestCase):
         self.assertEqual(self.lease_files(), [])
 
 
-class ProjectLevelSlotLimits(ProjectLimitsTestCase):
+class TwoTierSessionAndMachineLimits(ProjectLimitsTestCase):
 
-    def test_project_default_allows_same_session_up_to_limit_and_refuses_third(self):
-        self.write_limits({"machine_max": 20, "project_default": 2})
-
-        first = self.harness.run_acquire(holder="h1", owner="Agent [u1]")
-        self.assertEqual(first.returncode, 0, first.stderr.decode())
-
-        second = self.harness.run_acquire(holder="h2", owner="Agent [u1]")
-        self.assertEqual(second.returncode, 0, second.stderr.decode())
-        self.assertNotEqual(
-            self.harness.acquired_slot_name(first),
-            self.harness.acquired_slot_name(second),
-        )
-
-        third = self.harness.run_acquire(holder="h3", owner="Agent [u1]")
-        stderr = third.stderr.decode()
-        self.assertEqual(third.returncode, 2, stderr)
-        self.assertIn("demo", stderr)
-        self.assertIn("2", stderr)
-        self.assertIn("limits.json", stderr)
-
-    def test_per_project_override_caps_demo_while_other_uses_project_default(self):
-        other = self.make_second_project("other")
-        self.write_limits(
-            {"machine_max": 20, "project_default": 4, "projects": {"demo": 1}}
-        )
-
-        demo_first = self.harness.run_acquire(holder="d1", owner="Agent [u1]")
-        self.assertEqual(demo_first.returncode, 0, demo_first.stderr.decode())
-
-        demo_second = self.harness.run_acquire(holder="d2", owner="Agent [u2]")
-        demo_err = demo_second.stderr.decode()
-        self.assertEqual(demo_second.returncode, 2, demo_err)
-        self.assertIn("demo", demo_err)
-        self.assertIn("limits.json", demo_err)
-
-        other_first = other.run_acquire(holder="o1", owner="Agent [u1]")
-        self.assertEqual(other_first.returncode, 0, other_first.stderr.decode())
-        self.assertTrue(self.acquired_id(other_first).startswith("other-"))
-
-        other_second = other.run_acquire(holder="o2", owner="Agent [u1]")
-        self.assertEqual(other_second.returncode, 0, other_second.stderr.decode())
-        self.assertTrue(self.acquired_id(other_second).startswith("other-"))
-
-    def test_per_project_pause_zero_refuses_demo_while_other_succeeds(self):
-        other = self.make_second_project("other")
-        self.write_limits({"machine_max": 20, "projects": {"demo": 0}})
-
-        demo_res = self.harness.run_acquire(holder="d1", owner="Agent [u1]")
-        demo_err = demo_res.stderr.decode()
-        self.assertEqual(demo_res.returncode, 2, demo_err)
-        self.assertIn("demo", demo_err)
-        self.assertIn("limits.json", demo_err)
-
-        other_res = other.run_acquire(holder="o1", owner="Agent [u1]")
-        self.assertEqual(other_res.returncode, 0, other_res.stderr.decode())
-        self.assertTrue(self.acquired_id(other_res).startswith("other-"))
-
-    def test_as_bracketed_ref_still_required_with_project_limits_and_shared_across_sessions(self):
-        self.write_limits({"machine_max": 20, "project_default": 1})
-
-        missing_as = self.harness.run_acquire(holder="h0")
-        self.assertNotEqual(missing_as.returncode, 0, missing_as.stdout.decode())
-        self.assertIn("--as", missing_as.stderr.decode())
-
-        dash_owner = self.harness.run_acquire(holder="h0", owner="-")
-        self.assertNotEqual(dash_owner.returncode, 0, dash_owner.stdout.decode())
-        self.assertIn("--as", dash_owner.stderr.decode())
-
-        first = self.harness.run_acquire(holder="h1", owner="Agent [u1]")
-        self.assertEqual(first.returncode, 0, first.stderr.decode())
-
-        second = self.harness.run_acquire(holder="h2", owner="Other [u2]")
-        self.assertEqual(second.returncode, 2, second.stderr.decode())
-
-    def test_explicit_sessions_entry_enforced_while_legacy_default_session_key_is_ignored(self):
-        self.write_limits(
-            {
-                "default": 1,
-                "machine_max": 20,
-                "project_default": 3,
-                "sessions": {"u1": 1},
-            }
-        )
+    def test_session_default_and_per_session_override(self):
+        self.write_limits({"machine_max": 20, "default": 1, "sessions": {"u1": 2}})
 
         u1_first = self.harness.run_acquire(holder="h1", owner="Agent [u1]")
         self.assertEqual(u1_first.returncode, 0, u1_first.stderr.decode())
-
         u1_second = self.harness.run_acquire(holder="h2", owner="Agent [u1]")
-        self.assertEqual(u1_second.returncode, 4, u1_second.stderr.decode())
+        self.assertEqual(u1_second.returncode, 0, u1_second.stderr.decode())
+        u1_third = self.harness.run_acquire(holder="h3", owner="Agent [u1]")
+        self.assertEqual(u1_third.returncode, 4, u1_third.stderr.decode())
 
-        u2_first = self.harness.run_acquire(holder="h3", owner="Agent [u2]")
+        u2_first = self.harness.run_acquire(holder="h4", owner="Agent [u2]")
         self.assertEqual(u2_first.returncode, 0, u2_first.stderr.decode())
-        u2_second = self.harness.run_acquire(holder="h4", owner="Agent [u2]")
-        self.assertEqual(u2_second.returncode, 0, u2_second.stderr.decode())
+        u2_second = self.harness.run_acquire(holder="h5", owner="Agent [u2]")
+        self.assertEqual(u2_second.returncode, 4, u2_second.stderr.decode())
 
-        u2_third = self.harness.run_acquire(holder="h5", owner="Agent [u2]")
-        self.assertEqual(u2_third.returncode, 2, u2_third.stderr.decode())
+    def test_session_zero_pauses_session_with_clean_message_when_zero_held(self):
+        self.write_limits({"machine_max": 20, "default": 2, "sessions": {"u1": 0}})
+
+        u1_res = self.harness.run_acquire(holder="h1", owner="Agent [u1]")
+        u1_err = u1_res.stderr.decode()
+        self.assertEqual(u1_res.returncode, 4, u1_err)
+        self.assertIn("limits.json", u1_err)
+        self.assertIn("u1", u1_err)
+
+        u2_res = self.harness.run_acquire(holder="h2", owner="Agent [u2]")
+        self.assertEqual(u2_res.returncode, 0, u2_res.stderr.decode())
+
+        self.write_limits({"machine_max": 20, "default": 0})
+        u2_paused = self.harness.run_acquire(holder="h3", owner="Agent [u2]")
+        self.assertEqual(u2_paused.returncode, 4, u2_paused.stderr.decode())
+
+    def test_session_limits_clamp_to_zero_through_twenty(self):
+        self.write_limits({"machine_max": 20, "default": -2, "sessions": {"u1": 25}})
+
+        u2_neg = self.harness.run_acquire(holder="h1", owner="Agent [u2]")
+        self.assertEqual(u2_neg.returncode, 4, u2_neg.stderr.decode())
+
+        u1_first = self.harness.run_acquire(holder="h2", owner="Agent [u1]")
+        self.assertEqual(u1_first.returncode, 0, u1_first.stderr.decode())
+        u1_second = self.harness.run_acquire(holder="h3", owner="Agent [u1]")
+        self.assertEqual(u1_second.returncode, 0, u1_second.stderr.decode())
+
+        self.write_limits({"machine_max": 20, "default": 2, "sessions": {"u1": -5}})
+        u1_neg = self.harness.run_acquire(holder="h4", owner="Agent [u1]")
+        self.assertEqual(u1_neg.returncode, 4, u1_neg.stderr.decode())
+
+    def test_missing_bracketed_ref_exits_four_even_under_wait(self):
+        self.write_limits({"machine_max": 20, "default": 1})
+
+        for owner in (None, "-", "plain owner"):
+            args = ["acquire", "--for", "h0", "--wait", "--timeout", "5s"]
+            if owner is not None:
+                args.extend(["--as", owner])
+            res = self.harness.run(*args)
+            self.assertEqual(res.returncode, 4, f"owner={owner!r}: {res.stderr.decode()}")
+            self.assertIn("[<ref>]", res.stderr.decode())
+
+    def test_machine_max_and_session_limits_are_independent(self):
+        # Sum of session limits (2 + 2 = 4) exceeds machine_max (2);
+        # session limits are never summed or compared against machine_max.
+        self.write_limits({"machine_max": 2, "sessions": {"u1": 2, "u2": 2}})
+
+        u1_first = self.harness.run_acquire(holder="h1", owner="Agent [u1]")
+        self.assertEqual(u1_first.returncode, 0, u1_first.stderr.decode())
+        u1_second = self.harness.run_acquire(holder="h2", owner="Agent [u1]")
+        self.assertEqual(u1_second.returncode, 0, u1_second.stderr.decode())
+
+        # u2 has used 0/2 of its session cap, so machine_max (exit 2) blocks it, not session_cap (exit 4).
+        u2_blocked = self.harness.run_acquire(holder="h3", owner="Agent [u2]")
+        self.assertEqual(u2_blocked.returncode, 2, u2_blocked.stderr.decode())
+
+    def test_legacy_projects_and_project_default_keys_are_ignored(self):
+        other = self.make_second_project("other")
+        self.write_limits(
+            {
+                "machine_max": 20,
+                "project_default": 1,
+                "projects": {"demo": 0, "other": 0},
+                "default": 1,
+                "sessions": {"u1": 2},
+            }
+        )
+
+        u1_first = self.harness.run_acquire(holder="d1", owner="Agent [u1]")
+        self.assertEqual(u1_first.returncode, 0, u1_first.stderr.decode())
+        u1_second = self.harness.run_acquire(holder="d2", owner="Agent [u1]")
+        self.assertEqual(u1_second.returncode, 0, u1_second.stderr.decode())
+        u1_third = self.harness.run_acquire(holder="d3", owner="Agent [u1]")
+        self.assertEqual(u1_third.returncode, 4, u1_third.stderr.decode())
+
+        other_u2 = other.run_acquire(holder="o1", owner="Agent [u2]")
+        self.assertEqual(other_u2.returncode, 0, other_u2.stderr.decode())
+        self.assertTrue(self.acquired_id(other_u2).startswith("other-"))
+        other_u2_second = other.run_acquire(holder="o2", owner="Agent [u2]")
+        self.assertEqual(other_u2_second.returncode, 4, other_u2_second.stderr.decode())
+
+    def test_no_project_cap_or_project_default_symbols_in_bin_or_lib(self):
+        offenders = [
+            line
+            for line in engine_source_lines()
+            if "project_cap" in line or "project_default" in line
+        ]
+        self.assertEqual(offenders, [], "\n".join(offenders))
 
 
-class ReservationAndWaitWakeup(ProjectLimitsTestCase):
+class SessionWaitAndLiveness(ProjectLimitsTestCase):
 
     @staticmethod
     def _read_text(path):
@@ -222,14 +229,14 @@ class ReservationAndWaitWakeup(ProjectLimitsTestCase):
         with open(path, encoding="utf-8") as handle:
             return handle.read()
 
-    def _spawn_waiter(self, holder="waiter", timeout="15s"):
+    def _spawn_waiter(self, holder="waiter", owner="Agent [u1]", timeout="15s"):
         log = os.path.join(self.harness.tmp, f"{holder}.log")
         proc = self.harness.spawn(
             "acquire",
             "--for",
             holder,
             "--as",
-            "Agent [u1]",
+            owner,
             "--wait",
             "--timeout",
             timeout,
@@ -260,117 +267,113 @@ class ReservationAndWaitWakeup(ProjectLimitsTestCase):
             message=lambda: f"waiter never logged {needle!r}:\n{self._read_text(log)}",
         )
 
-    def test_live_reservation_file_with_repo_root_counts_against_project_limit(self):
-        self.write_limits({"machine_max": 20, "projects": {"demo": 1}})
-        demo_root = os.path.realpath(self.harness.fixture_repo)
+    def test_wait_queues_on_session_cap_and_wakes_on_release(self):
+        self.write_limits({"machine_max": 20, "default": 1})
+        first = self.harness.run_acquire(holder="h1", owner="Agent [u1]")
+        self.assertEqual(first.returncode, 0, first.stderr.decode())
+        held = self.harness.acquired_slot_name(first)
+
+        proc, log = self._spawn_waiter(holder="wait-rel", owner="Agent [u1]", timeout="15s")
+        self._wait_until_waiting_logged(proc, log, needle="limits.json")
+        self.assertIsNone(proc.poll(), self._read_text(log))
+
+        rel = self.harness.run("release", held, "--for", "h1")
+        self.assertEqual(rel.returncode, 0, rel.stderr.decode())
+
+        rc = proc.wait(timeout=20)
+        self.assertEqual(rc, 0, self._read_text(log))
+
+    def test_wait_wakes_on_session_pause_zero_to_one_with_pinned_mtime(self):
+        pinned_mtime = 1700000000.0
+        self.write_limits({"machine_max": 20, "sessions": {"u1": 0}}, mtime=pinned_mtime)
+        proc, log = self._spawn_waiter(holder="wait-pause", owner="Agent [u1]", timeout="15s")
+
+        self._wait_until_waiting_logged(proc, log, needle="limits.json")
+        self.assertIsNone(proc.poll(), self._read_text(log))
+
+        self.write_limits({"machine_max": 20, "sessions": {"u1": 1}}, mtime=pinned_mtime)
+
+        rc = proc.wait(timeout=20)
+        self.assertEqual(rc, 0, self._read_text(log))
+        self.assertTrue(os.path.isfile(self.harness.lease_path("slot-1")))
+
+    def test_wait_wakes_on_session_cap_increase_with_pinned_mtime(self):
+        pinned_mtime = 1700000100.0
+        self.write_limits({"machine_max": 20, "default": 1}, mtime=pinned_mtime)
+        first = self.harness.run_acquire(holder="h1", owner="Agent [u1]")
+        self.assertEqual(first.returncode, 0, first.stderr.decode())
+
+        proc, log = self._spawn_waiter(holder="wait-bump", owner="Agent [u1]", timeout="15s")
+        self._wait_until_waiting_logged(proc, log, needle="limits.json")
+        self.assertIsNone(proc.poll(), self._read_text(log))
+
+        self.write_limits({"machine_max": 20, "default": 2}, mtime=pinned_mtime)
+
+        rc = proc.wait(timeout=20)
+        self.assertEqual(rc, 0, self._read_text(log))
+
+    def test_wait_on_session_cap_times_out_with_exit_three(self):
+        self.write_limits({"machine_max": 20, "sessions": {"u1": 0}})
+        res = self.harness.run(
+            "acquire", "--for", "wait-timeout", "--as", "Agent [u1]", "--wait", "--timeout", "1s"
+        )
+        self.assertEqual(res.returncode, 3, res.stderr.decode())
+
+    def test_expired_ephemeral_lease_does_not_wedge_session_cap(self):
+        since = 1700000000
+        self.harness.set_now(since)
+        self.write_limits({"machine_max": 20, "default": 1})
+
+        first = self.harness.run("acquire", "--ephemeral", "--for", "eph-1", "--as", "Agent [u1]")
+        self.assertEqual(first.returncode, 0, first.stderr.decode())
+
+        self.harness.set_now(since + 901)
+        second = self.harness.run_acquire(holder="h2", owner="Agent [u1]")
+        self.assertEqual(second.returncode, 0, second.stderr.decode())
+
+    def test_expired_idle_lease_does_not_wedge_session_cap(self):
+        since = 1700000000
+        self.harness.set_now(since)
+        self.write_limits({"machine_max": 20, "idle_limit": 60, "default": 1})
+
+        first = self.harness.run_acquire(holder="idle-1", owner="Agent [u1]")
+        self.assertEqual(first.returncode, 0, first.stderr.decode())
+
+        self.harness.set_now(since + 61)
+        second = self.harness.run_acquire(holder="h2", owner="Agent [u1]")
+        self.assertEqual(second.returncode, 0, second.stderr.decode())
+
+    def test_dead_reservation_does_not_wedge_session_cap(self):
+        self.write_limits({"machine_max": 20, "default": 1})
+        dead = subprocess.Popen(["true"])
+        dead.wait()
         res_path = self.harness.lease_path("slot-1")
         os.makedirs(os.path.dirname(res_path), exist_ok=True)
         with open(res_path, "w", encoding="utf-8") as handle:
             json.dump(
                 {
-                    "holder": "inflight-holder",
+                    "holder": "dead-holder",
                     "owner": "Agent [u1]",
                     "project": f"{PROJECT_PREFIX}-slot-1",
                     "since": self.harness.now_epoch(),
                     "key": "",
                     "ssh_port": 0,
                     "setup": "creating",
-                    "pid": os.getpid(),
+                    "pid": dead.pid,
                     "boot_id": "boot-res-test",
-                    "repo_root": demo_root,
                 },
                 handle,
             )
 
-        result = self.harness.run(
+        res = self.harness.run(
             "acquire",
             "--for",
-            "concurrent-holder",
+            "live-holder",
             "--as",
-            "Agent [u2]",
+            "Agent [u1]",
             port_overrides={"DEV_CONTAINER_BOOT_ID": "boot-res-test"},
         )
-
-        stderr = result.stderr.decode()
-        self.assertEqual(result.returncode, 2, stderr)
-        self.assertIn("demo", stderr)
-
-    def test_write_reservation_records_repo_root_and_blocks_concurrent_same_project_acquire(self):
-        self.write_limits({"machine_max": 20, "projects": {"demo": 1}})
-        self.harness.hold_compose_up("slot-1")
-        self.addCleanup(self.harness.let_compose_up_go, "slot-1")
-
-        first_log = os.path.join(self.harness.tmp, "inflight-1.log")
-        first = self.harness.spawn(
-            "acquire", "--for", "inflight-1", "--as", "Agent [u1]", log=first_log
-        )
-
-        def cleanup_first():
-            self.harness.let_compose_up_go("slot-1")
-            if first.poll() is None:
-                first.kill()
-            first.wait(timeout=30)
-
-        self.addCleanup(cleanup_first)
-        self.harness.wait_until_compose_up_held("slot-1", timeout=30)
-
-        res_path = self.harness.lease_path("slot-1")
-        self.assertTrue(os.path.isfile(res_path), "reservation file missing during create_slot")
-        with open(res_path, encoding="utf-8") as handle:
-            res_data = json.load(handle)
-        self.assertIn(res_data.get("setup"), ("create", "creating"))
-        self.assertEqual(
-            res_data.get("repo_root"),
-            os.path.realpath(self.harness.fixture_repo),
-        )
-
-        concurrent = self.harness.run_acquire(holder="inflight-2", owner="Agent [u2]")
-        self.assertEqual(concurrent.returncode, 2, concurrent.stderr.decode())
-
-        self.harness.let_compose_up_go("slot-1")
-        rc = first.wait(timeout=30)
-        self.assertEqual(rc, 0, self._read_text(first_log))
-
-    def test_wait_wakes_and_succeeds_when_machine_max_updated_from_zero_to_one(self):
-        self.write_limits({"machine_max": 0})
-        proc, log = self._spawn_waiter(holder="wait-global", timeout="15s")
-
-        self._wait_until_waiting_logged(proc, log, needle="limits.json")
-        self.assertNotIn("using 1", self._read_text(log))
-        self.assertIsNone(proc.poll(), self._read_text(log))
-
-        self.write_limits({"machine_max": 1})
-
-        rc = proc.wait(timeout=20)
-        self.assertEqual(rc, 0, self._read_text(log))
-        self.assertTrue(os.path.isfile(self.harness.lease_path("slot-1")))
-
-    def test_wait_wakes_and_succeeds_when_project_pause_updated_from_zero_to_one(self):
-        self.write_limits({"machine_max": 20, "projects": {"demo": 0}})
-        proc, log = self._spawn_waiter(holder="wait-proj", timeout="15s")
-
-        self._wait_until_waiting_logged(proc, log, needle="limits.json")
-        self.assertIsNone(proc.poll(), self._read_text(log))
-
-        self.write_limits({"machine_max": 20, "projects": {"demo": 1}})
-
-        rc = proc.wait(timeout=20)
-        self.assertEqual(rc, 0, self._read_text(log))
-        self.assertTrue(os.path.isfile(self.harness.lease_path("slot-1")))
-
-    def test_wait_wakes_when_limits_json_content_changes_with_identical_mtime(self):
-        pinned_mtime = 1700000000.0
-        self.write_limits({"machine_max": 0}, mtime=pinned_mtime)
-        proc, log = self._spawn_waiter(holder="wait-same-mtime", timeout="15s")
-
-        self._wait_until_waiting_logged(proc, log, needle="limits.json")
-        self.assertIsNone(proc.poll(), self._read_text(log))
-
-        self.write_limits({"machine_max": 1}, mtime=pinned_mtime)
-
-        rc = proc.wait(timeout=20)
-        self.assertEqual(rc, 0, self._read_text(log))
-        self.assertTrue(os.path.isfile(self.harness.lease_path("slot-1")))
+        self.assertEqual(res.returncode, 0, res.stderr.decode())
 
 
 if __name__ == "__main__":

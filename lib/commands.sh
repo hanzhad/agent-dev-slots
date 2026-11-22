@@ -186,7 +186,7 @@ cmd_release() {
   local check_target; check_target=$(slot_check_target "$dir" "$sid")
   if (( ! force && ! discard && ! is_ephemeral )); then
     [[ "$check_target" == "$sid" ]] && facts_reset "$sid"
-    if [[ -n "$check_target" ]] && { [[ "$check_target" != /* ]] || [[ -d "$check_target/.git" ]]; } && ! slot_is_clean_for_teardown "$check_target"; then
+    if [[ -n "$check_target" ]] && ! slot_is_clean_for_teardown "$check_target"; then
       {
         echo "refusing to release '$sid' — it holds work that exists nowhere else:"
         slot_dirty_report "$check_target"
@@ -1245,7 +1245,7 @@ cmd_down() {
   if (( ! force )) && [[ "$check_target" == "$sid" ]]; then
     facts_reset "$sid"
   fi
-  if [[ -n "$check_target" ]] && { [[ "$check_target" != /* ]] || [[ -d "$check_target/.git" ]]; } && (( ! force )) && ! slot_is_clean_for_teardown "$check_target"; then
+  if [[ -n "$check_target" ]] && (( ! force )) && ! slot_is_clean_for_teardown "$check_target"; then
     {
       echo "refusing to remove '$sid' — it holds work that exists nowhere else:"
       slot_dirty_report "$check_target"

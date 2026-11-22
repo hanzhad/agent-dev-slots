@@ -342,6 +342,9 @@ collect_branch_statuses() {
   PRUNABLE_BRANCHES=()
   if target_is_facts "$dir"; then
     [[ -n "$facts_sid" ]] || facts_sid="$dir"
+    if facts_norepo "$dir"; then
+      return 0
+    fi
     if facts_unreadable "$dir"; then
       UNKNOWN_COUNT=1
       BRANCH_REPORTS+=("could not read repository facts from '$facts_sid'")
@@ -365,6 +368,14 @@ collect_branch_statuses() {
     done < <(facts_lines "$dir" branch)
     return 0
   fi
+  if [[ -d "$dir" && ! -e "$dir/.git" ]]; then
+    return 0
+  fi
+  if [[ ! -d "$dir" ]] || ! git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
+    UNKNOWN_COUNT=1
+    BRANCH_REPORTS+=("could not read git repository at '$dir'")
+    return 0
+  fi
   while IFS= read -r b; do
     [[ -n "$b" ]] || continue
     if branch_delivery_status "$dir" "$b"; then
@@ -385,6 +396,7 @@ collect_branch_statuses() {
 head_is_delivered() {
   local dir="$1" head_branch
   if target_is_facts "$dir"; then
+    facts_norepo "$dir" && return 0
     facts_unreadable "$dir" && return 2
     head_branch=$(head_branch_of "$dir")
     if [[ -n "$head_branch" ]]; then
@@ -397,6 +409,12 @@ head_is_delivered() {
     reach=$(fact "$dir" headreach)
     [[ "$reach" == 1 ]]
     return
+  fi
+  if [[ -d "$dir" && ! -e "$dir/.git" ]]; then
+    return 0
+  fi
+  if [[ ! -d "$dir" ]] || ! git -C "$dir" rev-parse --git-dir >/dev/null 2>&1; then
+    return 2
   fi
   head_branch=$(head_branch_of "$dir")
   if [[ -n "$head_branch" ]]; then

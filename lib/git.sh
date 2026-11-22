@@ -23,6 +23,7 @@ head_branch_of() {
   if target_is_facts "$1"; then
     fact "$1" head | cut -f1
   else
+    [[ -e "$1/.git" ]] || return 0
     git -C "$1" symbolic-ref --quiet --short HEAD 2>/dev/null || true
   fi
 }
@@ -46,6 +47,7 @@ slot_worktrees_of() {
     done < <(facts_lines "$dir" worktree)
     return 0
   fi
+  [[ -e "$dir/.git" ]] || return 0
   while IFS= read -r line; do
     [[ "$line" == worktree\ * ]] || continue
     wt=${line#worktree }

@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import time
 import unittest
@@ -460,6 +461,64 @@ class TestVolumeLifecycle(RealEngineCase):
         self.assertFalse(os.path.exists(os.path.join(self.state, "leases", f"{sid1}.json")))
         self.assertFalse(os.path.exists(os.path.join(self.state, "parked", f"{sid1}.json")))
         self.assertFalse(os.path.exists(os.path.join(self.state, "rescue", key, "slot-1")))
+
+    def test_non_git_real_volume_slot_release_down_park_and_list_acquirable(self):
+        checkout, _cdir, origin, proj_prefix, key = self._create_project("vlnogitgate")
+
+        def drop_git(seed):
+            shutil.rmtree(os.path.join(seed, ".git"))
+
+        def corrupt_git(seed):
+            shutil.rmtree(os.path.join(seed, ".git"))
+            os.makedirs(os.path.join(seed, ".git"))
+
+        # 1. Leased non-git vol:* slot -> release --for removes volume and lease
+        sid1, vol1 = self._seed_volume_slot(
+            checkout, origin, proj_prefix, 1, holder="nogit-rel", setup_fn=drop_git, running=True
+        )
+        released = self._in_engine(checkout, "release", "slot-1", "--for", "nogit-rel")
+        self.assertEqual(released.returncode, 0, released.stdout + released.stderr)
+        self.assertFalse(self._volume_exists(vol1))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "leases", f"{sid1}.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "rescue", key, "slot-1")))
+
+        # 2. Unleased non-git vol:* slot -> list shows clean + acquirable, down removes volume
+        _sid2, vol2 = self._seed_volume_slot(
+            checkout, origin, proj_prefix, 2, holder=None, setup_fn=drop_git, running=False
+        )
+        listed = self._in_engine(checkout, "list")
+        self.assertEqual(listed.returncode, 0, listed.stdout + listed.stderr)
+        rows = {line.split()[0]: line for line in listed.stdout.splitlines() if line.split()}
+        self.assertIn("slot-2", rows, listed.stdout)
+        self.assertIn("clean", rows["slot-2"])
+        self.assertIn("acquirable", rows["slot-2"])
+        self.assertNotIn("unreadable", rows["slot-2"])
+
+        down_clean = self._in_engine(checkout, "down", "slot-2")
+        self.assertEqual(down_clean.returncode, 0, down_clean.stdout + down_clean.stderr)
+        self.assertFalse(self._volume_exists(vol2))
+
+        # 3. Leased non-git vol:* slot -> park releases instead of parking
+        sid3, vol3 = self._seed_volume_slot(
+            checkout, origin, proj_prefix, 3, holder="nogit-park", setup_fn=drop_git, running=False
+        )
+        parked = self._in_engine(checkout, "park", "slot-3")
+        self.assertEqual(parked.returncode, 0, parked.stdout + parked.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.state, "leases", f"{sid3}.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "parked", f"{sid3}.json")))
+        down3 = self._in_engine(checkout, "down", "slot-3")
+        self.assertEqual(down3.returncode, 0, down3.stdout + down3.stderr)
+        self.assertFalse(self._volume_exists(vol3))
+
+        # 4. Corrupt .git on real vol:* slot -> blocks release and reports unreadable
+        sid4, vol4 = self._seed_volume_slot(
+            checkout, origin, proj_prefix, 4, holder="corrupt-rel", setup_fn=corrupt_git, running=False
+        )
+        refused = self._in_engine(checkout, "release", "slot-4", "--for", "corrupt-rel")
+        self.assertNotEqual(refused.returncode, 0, refused.stdout + refused.stderr)
+        self.assertIn("unreadable", refused.stderr)
+        self.assertTrue(self._volume_exists(vol4))
+        self.assertTrue(os.path.isfile(os.path.join(self.state, "leases", f"{sid4}.json")))
 
 
 if __name__ == "__main__":

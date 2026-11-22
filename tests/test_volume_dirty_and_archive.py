@@ -425,9 +425,34 @@ class TestVolumeFactsPureCore(unittest.TestCase):
                 "norepo\n",
                 {},
                 0,
+                0,
+                "acquirable",
+                None,
+            ),
+            (
+                "facts_norepo_fast",
+                "norepo\n",
+                {},
+                1,
+                0,
+                "acquirable",
+                None,
+            ),
+            (
+                "facts_norepo_dirty_docs_fix",
+                "norepo\nclone\tdocs/fix\n",
+                {
+                    "docs_fix_facts": self._facts(
+                        head=("fix-wip", tip2),
+                        headreach=0,
+                        origin="https://example.invalid/demo.docs.git",
+                        branches=[("fix-wip", tip2, 0, 0, 0, "plus", 1, 0, 0)],
+                    ),
+                },
+                0,
                 1,
                 None,
-                None,
+                "dirty:docsfix:",
             ),
             (
                 "facts_error",
@@ -435,7 +460,16 @@ class TestVolumeFactsPureCore(unittest.TestCase):
                 {},
                 0,
                 1,
+                "unreadable:facts",
                 None,
+            ),
+            (
+                "facts_error_fast",
+                "error\tcontainer failed\n",
+                {},
+                1,
+                1,
+                "unreadable:facts",
                 None,
             ),
             (
@@ -1106,6 +1140,128 @@ class TestVolumeDirtyChecksWithoutStubState(_NoStubStateVolumeCase):
         self.assertEqual(brief_list.returncode, 0, brief_list.stderr.decode())
         row_brief = next(l for l in brief_list.stdout.decode().splitlines() if l.split()[:1] == [s_dirty])
         self.assertEqual(row_brief.split()[-2:], ["-", "-"])
+
+    def test_non_repo_volume_and_host_slots_are_clean_and_acquirable_while_corrupt_git_blocks(self):
+        # 1. Non-git vol:* slot -> release --for succeeds and removes volume/lease
+        s_rel = self.acquire_vol("nogit-rel", with_docs=False)
+        shutil.rmtree(os.path.join(self.harness.slot_dir(s_rel), ".git"))
+        rel_res = self.run_dc("release", s_rel, "--for", "nogit-rel", with_docs=False)
+        self.assertEqual(rel_res.returncode, 0, rel_res.stdout.decode() + rel_res.stderr.decode())
+        self.assertFalse(self.harness.volume_exists(s_rel))
+        self.assertFalse(os.path.exists(self.harness.lease_path(s_rel)))
+        self.assertEqual(self._rescue_files(), [])
+
+        # 2. Unleased built non-git vol:* slot -> list shows clean + acquirable, down succeeds
+        s_list = self.acquire_vol("nogit-list", with_docs=False)
+        shutil.rmtree(os.path.join(self.harness.slot_dir(s_list), ".git"))
+        self.free_lease(s_list)
+        for list_args in (("list",), ("list", "--fast")):
+            listed = self.run_dc(*list_args, with_docs=False)
+            self.assertEqual(listed.returncode, 0, listed.stderr.decode())
+            row = next(l for l in listed.stdout.decode().splitlines() if l.split()[:1] == [s_list])
+            self.assertIn("acquirable", row, f"{list_args}: {row}")
+            if "--fast" not in list_args:
+                self.assertIn("clean", row, f"{list_args}: {row}")
+
+        down_ok = self.run_dc("down", s_list, with_docs=False)
+        self.assertEqual(down_ok.returncode, 0, down_ok.stdout.decode() + down_ok.stderr.decode())
+        self.assertFalse(self.harness.volume_exists(s_list))
+
+        # 3. Leased non-git vol:* slot -> park releases instead of parking
+        s_park = self.acquire_vol("nogit-park", with_docs=False)
+        shutil.rmtree(os.path.join(self.harness.slot_dir(s_park), ".git"))
+        park_res = self.run_dc("park", s_park, with_docs=False)
+        self.assertEqual(park_res.returncode, 0, park_res.stdout.decode() + park_res.stderr.decode())
+        self.assertFalse(os.path.exists(self.harness.lease_path(s_park)))
+        self.assertFalse(os.path.exists(self.harness.parked_path(s_park)))
+        self.run_dc("down", s_park, with_docs=False)
+
+        # 4. Corrupt .git on vol:* slot -> unreadable blocks release, down, and list
+        s_bad = self.acquire_vol("corrupt-git", with_docs=False)
+        v_bad = self.harness.slot_dir(s_bad)
+        shutil.rmtree(os.path.join(v_bad, ".git"))
+        os.makedirs(os.path.join(v_bad, ".git"))
+
+        rel_bad = self.run_dc("release", s_bad, "--for", "corrupt-git", with_docs=False)
+        self.assertNotEqual(rel_bad.returncode, 0, rel_bad.stdout.decode() + rel_bad.stderr.decode())
+        self.assertIn("unreadable", rel_bad.stderr.decode())
+        self.assertTrue(self.harness.volume_exists(s_bad))
+        self.assertTrue(os.path.isfile(self.harness.lease_path(s_bad)))
+
+        self.free_lease(s_bad)
+        listed_bad = self.run_dc("list", with_docs=False)
+        self.assertEqual(listed_bad.returncode, 0, listed_bad.stderr.decode())
+        row_bad = next(l for l in listed_bad.stdout.decode().splitlines() if l.split()[:1] == [s_bad])
+        self.assertIn("unreadable", row_bad)
+        self.assertIn("unreadable:facts", row_bad)
+
+        down_bad = self.run_dc("down", s_bad, with_docs=False)
+        self.assertNotEqual(down_bad.returncode, 0, down_bad.stdout.decode() + down_bad.stderr.decode())
+        self.assertTrue(self.harness.volume_exists(s_bad))
+        self.run_dc("down", s_bad, "--force", with_docs=False)
+
+        # 5. Parity: host-dir slot without .git vs host-dir slot with corrupt .git
+        host_clean = os.path.join(self.harness.slots_dir, "slot-91")
+        host_bad = os.path.join(self.harness.slots_dir, "slot-92")
+        for idx, (hname, hdir, corrupt) in enumerate((("slot-91", host_clean, False), ("slot-92", host_bad, True))):
+            os.makedirs(os.path.join(hdir, "docs", "repo", ".git"), exist_ok=True)
+            os.makedirs(os.path.join(hdir, ".devcontainer"), exist_ok=True)
+            with open(os.path.join(hdir, ".devcontainer", ".slot-holder"), "w", encoding="utf-8") as f:
+                f.write("holder=host-nogit\n")
+            if corrupt:
+                os.makedirs(os.path.join(hdir, ".git"), exist_ok=True)
+            sid_h = f"{PROJECT_PREFIX}-{hname}"
+            with open(os.path.join(self.harness.state_dir, "ports", f"{sid_h}.ports"), "w", encoding="utf-8") as f:
+                f.write(f"SSH_PORT={43100 + idx}\nNOVNC_PORT={43110 + idx}\nVITE_DEV_PORT={43120 + idx}\n")
+            with open(os.path.join(self.harness.state_dir, "env", f"{sid_h}.env"), "w", encoding="utf-8") as f:
+                f.write("GIT_USER_NAME=demo-agent\nGIT_USER_EMAIL=demo-agent@example.com\n")
+
+        env = self.harness._env(None)
+        env.pop("DOCKER_STUB_STATE", None)
+        env["TEST_DOCKER_STORE"] = self.harness.docker_state
+        env["TEST_DOCKER_BASE"] = os.path.join(self.harness.stub_bin, "docker-base")
+        env["DEV_CONTAINER_LIB"] = "1"
+        probe = (
+            '. "$0"\n'
+            'slot_is_clean_for_teardown "$1" && echo "CLEAN_OK" || echo "CLEAN_FAIL"\n'
+            'echo "COL=$(slot_dirty_column "$1")"\n'
+            'slot_acquire_verdict "$1" "$2" 0 >/dev/null && echo "VERDICT=0:$ACQUIRE_REASON" || echo "VERDICT=1:$ACQUIRE_REASON"\n'
+        )
+        res_clean = subprocess.run(
+            ["bash", "-c", probe, self.harness.script, host_clean, f"{PROJECT_PREFIX}-slot-91"],
+            cwd=self.harness.tmp,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+        out_clean = res_clean.stdout.decode()
+        self.assertEqual(res_clean.returncode, 0, res_clean.stderr.decode())
+        self.assertIn("CLEAN_OK", out_clean)
+        self.assertIn("COL=clean", out_clean)
+        self.assertIn("VERDICT=0:acquirable", out_clean)
+
+        res_bad = subprocess.run(
+            ["bash", "-c", probe, self.harness.script, host_bad, f"{PROJECT_PREFIX}-slot-92"],
+            cwd=self.harness.tmp,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+        out_bad = res_bad.stdout.decode()
+        self.assertEqual(res_bad.returncode, 0, res_bad.stderr.decode())
+        self.assertIn("CLEAN_FAIL", out_bad)
+        self.assertIn("COL=unreadable", out_bad)
+        self.assertIn("VERDICT=1:unreadable:git", out_bad)
+
+        # CLI down on host-dir without .git succeeds, while corrupt .git refuses
+        down_host_bad = self.run_dc("down", "slot-92", with_docs=False)
+        self.assertNotEqual(down_host_bad.returncode, 0, down_host_bad.stdout.decode() + down_host_bad.stderr.decode())
+        self.assertTrue(os.path.isdir(host_bad))
+        down_host_ok = self.run_dc("down", "slot-91", with_docs=False)
+        self.assertEqual(down_host_ok.returncode, 0, down_host_ok.stdout.decode() + down_host_ok.stderr.decode())
+        self.assertFalse(os.path.exists(host_clean))
 
 
 class TestVolumeRescueArchiveWithoutStubState(_NoStubStateVolumeCase):

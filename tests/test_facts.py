@@ -413,6 +413,29 @@ class TestFactsUnreadable(FactsTestCase):
         res_ok = self.run_bash('rc=0; printf "branch\\tmain\\nhead\\t1234\\n" | facts_unreadable || rc=$?; exit "$rc"')
         self.assertEqual(res_ok.returncode, 1, "facts_unreadable should not match valid facts from pipe")
 
+    def test_facts_norepo_and_facts_error_distinguish_missing_repo_from_failure(self):
+        res_nr = self.run_bash('rc=0; printf "norepo\\n" | facts_norepo || rc=$?; exit "$rc"')
+        self.assertEqual(res_nr.returncode, 0, "facts_norepo should match norepo from pipe")
+        res_nr_err = self.run_bash('rc=0; printf "error\\tcontainer died\\n" | facts_norepo || rc=$?; exit "$rc"')
+        self.assertEqual(res_nr_err.returncode, 1, "facts_norepo must not match error from pipe")
+        res_err = self.run_bash('rc=0; printf "error\\tcontainer died\\n" | facts_error || rc=$?; exit "$rc"')
+        self.assertEqual(res_err.returncode, 0, "facts_error should match error from pipe")
+        res_err_nr = self.run_bash('rc=0; printf "norepo\\n" | facts_error || rc=$?; exit "$rc"')
+        self.assertEqual(res_err_nr.returncode, 1, "facts_error must not match norepo from pipe")
+
+        name_nr, sid_nr, dir_nr = self._make_slot("slot-fnr")
+        shutil.rmtree(os.path.join(dir_nr, ".git"), ignore_errors=True)
+        self.run_bash('facts_of "$@"', sid_nr)
+        self.assertEqual(self.run_bash('rc=0; facts_norepo "$@" || rc=$?; exit "$rc"', sid_nr).returncode, 0)
+        self.assertEqual(self.run_bash('rc=0; facts_error "$@" || rc=$?; exit "$rc"', sid_nr).returncode, 1)
+
+        name_bad, sid_bad, dir_bad = self._make_slot("slot-fbad")
+        shutil.rmtree(os.path.join(dir_bad, ".git"), ignore_errors=True)
+        os.makedirs(os.path.join(dir_bad, ".git"), exist_ok=True)
+        self.run_bash('facts_of "$@"', sid_bad)
+        self.assertEqual(self.run_bash('rc=0; facts_norepo "$@" || rc=$?; exit "$rc"', sid_bad).returncode, 1)
+        self.assertEqual(self.run_bash('rc=0; facts_error "$@" || rc=$?; exit "$rc"', sid_bad).returncode, 0)
+
 
 class TestFactAndFactsLines(FactsTestCase):
 
@@ -631,6 +654,15 @@ class TestFactsScripts(FactsTestCase):
         self.assertEqual(res.returncode, 0, res.stderr.decode())
         out = res.stdout.decode()
         self.assertIn("norepo", out)
+
+    def test_facts_script_emits_error_for_corrupt_git_dir(self):
+        bad_dir = os.path.join(self.harness.tmp, "corrupt-repo")
+        os.makedirs(os.path.join(bad_dir, ".git"), exist_ok=True)
+        script = 'cd "$1" && sh -c "$FACTS_SCRIPT" sh .'
+        res = self.run_bash(script, bad_dir)
+        self.assertEqual(res.returncode, 0, res.stderr.decode())
+        out = res.stdout.decode()
+        self.assertTrue(out.startswith("error\t"), out)
 
 
 if __name__ == "__main__":

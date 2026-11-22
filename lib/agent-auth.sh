@@ -47,6 +47,7 @@ require_agent_auth() {
   refuse_legacy_auth_names
   preflight_reset
   credential_problems "$repo_root" "$FORGE_AUTH" "$FORGE_AUTH_FILE"
+  app_repos_problems "$repo_root" "$FORGE_AUTH" "$FORGE_AUTH_FILE" "${origin_url:-}"
   (( ${#PF_WHAT[@]} == 0 )) || preflight_fail
 }
 

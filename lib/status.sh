@@ -52,9 +52,14 @@ status_slots_json() {
     lease_is_ephemeral "$f" && is_ephemeral=true
     raw_lim=$(lease_field "$f" idle_limit 2>/dev/null || true)
     [[ "$raw_lim" =~ ^[1-9][0-9]*$ ]] && lease_idle_limit="$raw_lim"
-    local allowed_json slot_hosts_json
+    local allowed_json slot_hosts_json repos_json="[]"
     allowed_json=$(slot_allowed_hosts "$sid" | allow_hosts_json_array)
     slot_hosts_json=$(slot_extra_hosts "$sid" | allow_hosts_json_array)
+    if [[ -f "$STATE/repos/$sid.json" ]]; then
+      repos_json=$(jq -c 'if type == "array" then . else [] end' "$STATE/repos/$sid.json" 2>/dev/null || echo "[]")
+    else
+      repos_json=$(jq -c '.repos // []' "$f" 2>/dev/null || echo "[]")
+    fi
     local obj
     obj=$(jq -n \
       --arg slot "$sid" \
@@ -67,7 +72,8 @@ status_slots_json() {
       --argjson slot_hosts "$slot_hosts_json" \
       --argjson ephemeral "$is_ephemeral" \
       --argjson idle_limit "$lease_idle_limit" \
-      '{slot: $slot, project: $project, holder: $holder, repo_root: (if $repo_root == "" then null else $repo_root end), last_activity: $last_activity, last_activity_timestamp: $last_activity, ports: $ports, allowed_hosts: $allowed, slot_hosts: $slot_hosts, ephemeral: $ephemeral, idle_limit: $idle_limit}')
+      --argjson repos "$repos_json" \
+      '{slot: $slot, project: $project, holder: $holder, repo_root: (if $repo_root == "" then null else $repo_root end), last_activity: $last_activity, last_activity_timestamp: $last_activity, ports: $ports, allowed_hosts: $allowed, slot_hosts: $slot_hosts, ephemeral: $ephemeral, idle_limit: $idle_limit, repos: $repos}')
     slot_objs+=("$obj")
   done
 

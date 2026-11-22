@@ -55,6 +55,17 @@ git -C docs/repo config --local remote.origin.pushurl "$pushurl"'
 clone_docs_repo_in_volume() {
   local proj="$1"
   docs_repo_configured || return 0
+  if declare -F clone_repos_in_volume >/dev/null 2>&1; then
+    local cat_json def_json excludes_nl=""
+    cat_json=$(slot_repos_catalog_json)
+    def_json=$(printf '%s' "$cat_json" | jq -c '[.repos[] | select(.attach == "default")]')
+    excludes_nl=$(slot_repos_paths_nl "$cat_json")
+    clone_repos_in_volume "$proj" "$def_json" "$excludes_nl" || {
+      remove_slot_volume "$proj" || true
+      die "could not set up docs/repo in the volume of '$proj' — the reason is above this line."
+    }
+    return 0
+  fi
   echo "▸ cloning the docs repository into docs/repo"
   forge_container_env "$DOCS_REPO_URL" || die "the forge credential for '$proj' could not be produced — the reason is above this line."
   (

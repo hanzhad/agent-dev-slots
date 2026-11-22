@@ -109,6 +109,13 @@ forge_git() {
   )
 }
 
+forge_container_env_none() {
+  FORGE_CONTAINER_ENV=(--env=GIT_TERMINAL_PROMPT=0 --env=GIT_ASKPASS=/bin/false)
+  FORGE_CONTAINER_ENV+=("--env=GIT_CONFIG_KEY_0=safe.directory" "--env=GIT_CONFIG_VALUE_0=*")
+  FORGE_CONTAINER_ENV+=("--env=GIT_CONFIG_KEY_1=credential.$FORGE_HOST_ORIGIN.helper" "--env=GIT_CONFIG_VALUE_1=")
+  FORGE_CONTAINER_ENV+=("--env=GIT_CONFIG_COUNT=2")
+}
+
 # The docker arguments that give a container the same git credential forge_git
 # gives the host, in FORGE_CONTAINER_ENV. Only the name travels for the secret
 # (--env=FORGE_HOST_SECRET): docker reads the value from its own environment, so

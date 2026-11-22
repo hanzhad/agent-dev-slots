@@ -58,7 +58,14 @@ slot_worktrees_of() {
 
 apply_docs_clone_git_identity() {
   local dir="$1" name="$2" email="$3" sub d
-  for sub in docs/repo docs/fix; do
+  local -a subs=()
+  if declare -F slot_repos_all_present_paths >/dev/null 2>&1; then
+    mapfile -t subs < <(slot_repos_all_present_paths "$dir" "${SLOT_REPOS_CATALOG:-}")
+  else
+    subs=(docs/repo docs/fix)
+  fi
+  for sub in ${subs[@]+"${subs[@]}"}; do
+    [[ -n "$sub" ]] || continue
     d="$dir/$sub"
     git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || continue
     git -C "$d" config --local user.name "$name"
@@ -67,6 +74,7 @@ apply_docs_clone_git_identity() {
     git -C "$d" config --local user.signingkey /home/node/.ssh/container_signing.pub
     git -C "$d" config --local commit.gpgsign true
     git -C "$d" config --local tag.gpgsign true
+    git -C "$d" config --local core.checkStat minimal
   done
 }
 
@@ -107,6 +115,7 @@ apply_checkout_git_identity() {
     git -C "$target" config --local user.signingkey /home/node/.ssh/container_signing.pub
     git -C "$target" config --local commit.gpgsign true
     git -C "$target" config --local tag.gpgsign true
+    git -C "$target" config --local core.checkStat minimal
     if [[ -n "$email" ]]; then
       git -C "$target" config --local user.email "$email"
     else
@@ -119,8 +128,15 @@ apply_checkout_git_identity() {
       echo "  ! GIT_USER_EMAIL unset in .env — this checkout's local user.name is set, but" >&2
       echo "    a host-side 'git commit' in here will still fail without an email." >&2
     }
+    local -a subs=()
+    if declare -F slot_repos_all_present_paths >/dev/null 2>&1; then
+      mapfile -t subs < <(slot_repos_all_present_paths "$sid" "${SLOT_REPOS_CATALOG:-}")
+    else
+      subs=(docs/repo docs/fix)
+    fi
     slot_sh "$sid" sh -c \
-      'set -e; for repo in . docs/repo docs/fix; do [ -e "$repo/.git" ] || continue; git -C "$repo" config --local user.name "$1"; [ -z "$2" ] || git -C "$repo" config --local user.email "$2"; git -C "$repo" config --local gpg.format ssh; git -C "$repo" config --local user.signingkey /home/node/.ssh/container_signing.pub; git -C "$repo" config --local commit.gpgsign true; git -C "$repo" config --local tag.gpgsign true; done' sh "$name" "$email" || die "could not set the git identity inside '$sid' — the reason is above this line."
+      'set -e; gname=$1; gemail=$2; shift 2; for repo in "$@"; do [ -e "$repo/.git" ] || continue; git -C "$repo" config --local user.name "$gname"; [ -z "$gemail" ] || git -C "$repo" config --local user.email "$gemail"; git -C "$repo" config --local gpg.format ssh; git -C "$repo" config --local user.signingkey /home/node/.ssh/container_signing.pub; git -C "$repo" config --local commit.gpgsign true; git -C "$repo" config --local tag.gpgsign true; git -C "$repo" config --local core.checkStat minimal; done' \
+      sh "$name" "$email" "." ${subs[@]+"${subs[@]}"} || die "could not set the git identity inside '$sid' — the reason is above this line."
   fi
   echo "▸ synced this checkout's local git identity to '$name' (from $env_file)"
 }
@@ -136,8 +152,17 @@ default_branch() {
 }
 
 apply_checkout_check_stat() {
-  local dir="$1" repo
-  for repo in "$dir" "$dir/docs/repo"; do
+  local dir="$1" repo sub
+  local -a repos=("$dir") subs=()
+  if declare -F slot_repos_all_present_paths >/dev/null 2>&1; then
+    mapfile -t subs < <(slot_repos_all_present_paths "$dir" "${SLOT_REPOS_CATALOG:-}")
+  else
+    subs=(docs/repo docs/fix)
+  fi
+  for sub in ${subs[@]+"${subs[@]}"}; do
+    [[ -n "$sub" ]] && repos+=("$dir/$sub")
+  done
+  for repo in "${repos[@]}"; do
     git --git-dir="$repo/.git" rev-parse --git-dir >/dev/null 2>&1 || continue
     git --git-dir="$repo/.git" config --local core.checkStat minimal
   done

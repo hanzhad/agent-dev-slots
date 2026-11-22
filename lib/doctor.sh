@@ -82,6 +82,7 @@ doctor_credential() {
   [[ -f "$repo_root/project.env" && -n "$FORGE_AUTH" ]] || return 0
   preflight_reset
   credential_problems "$repo_root" "$FORGE_AUTH" "$FORGE_AUTH_FILE"
+  app_repos_problems "$repo_root" "$FORGE_AUTH" "$FORGE_AUTH_FILE" "${origin_url:-}"
   (( ! live )) || credential_live_problems "$repo_root" "$FORGE_AUTH" "$FORGE_AUTH_FILE"
   if (( ${#PF_WHAT[@]} == 0 )); then
     doctor_ok "credential file $FORGE_AUTH_FILE: present, private, holds what FORGE_AUTH=$FORGE_AUTH needs"

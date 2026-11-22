@@ -10,6 +10,7 @@ RUN sed 's/#.*//' /tmp/tools.txt | xargs apk add --no-cache && rm /tmp/tools.txt
 COPY bin /opt/dev-container/bin
 COPY lib /opt/dev-container/lib
 COPY templates /opt/dev-container/templates
+COPY image/toolbox /opt/dev-container/toolbox
 RUN ln -s /opt/dev-container/bin/dev-container /usr/local/bin/dev-container
 
 ENTRYPOINT ["/sbin/tini", "--"]

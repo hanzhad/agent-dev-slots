@@ -191,9 +191,9 @@ workspace_of_project() {
 }
 
 # The services of a `config --format json` on stdin that mount the checkout at
-# /workspace, sorted and space-joined.
+# /workspace (excluding engine-managed toolbox sidecars), sorted and space-joined.
 workspace_services_of() {
-  jq -r '[.services // {} | to_entries[] | select(any(.value.volumes[]?; .target == "/workspace")) | .key] | sort | join(" ")'
+  jq -r '[.services // {} | to_entries[] | select((if (.value.labels | type) == "object" then .value.labels["dev-container.role"] else null end) != "toolbox") | select(any(.value.volumes[]?; .target == "/workspace")) | .key] | sort | join(" ")'
 }
 
 container_service_of() {

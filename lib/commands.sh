@@ -50,6 +50,11 @@ cmd_acquire() {
   fi
   require_agent_auth
   owner=$(resolve_session_owner "$owner")
+  ACQUIRE_SESSION_REF=$(session_owner_ref "$owner" || true)
+  if [[ -f "$STATE/limits.json" && -z "$ACQUIRE_SESSION_REF" ]]; then
+    echo "refused: $STATE/limits.json is set, so acquire needs --as \"<name> [<ref>]\" — copy your own address from ListAgents (a subagent passes its dispatcher's). Got: '$owner'." >&2
+    exit 4
+  fi
   if [[ -n "$timeout_seconds" ]]; then
     (( wait )) || die "--timeout only applies to --wait"
     deadline=$(( $(now_epoch) + timeout_seconds ))
@@ -64,16 +69,13 @@ cmd_acquire() {
     activity_refresh
     lock_acquire
     local ok=0 seen=""
-    if ! check_session_slot_limit "$owner"; then
-      lock_release
-      exit 4
-    fi
-    seen=$(lease_state_signature)
     try_acquire_once && ok=1
     if (( ok )); then
       write_reservation "$(lease_file_of "$ACQUIRED_ID")" "$ACQUIRE_SETUP" "$holder" "$owner" "$repo_root" "$ephemeral" "$eph_idle_limit"
       allow_hosts_store "$ACQUIRED_ID"
       WAIT_DEADLINE=0
+    else
+      seen=$(lease_state_signature)
     fi
     lock_release
     if (( ok )); then
@@ -88,12 +90,17 @@ cmd_acquire() {
       resync_node_modules "$slot_name" "$ACQUIRED_DIR" "$ACQUIRED_ID" || true
       return 0
     fi
+    if [[ "$ACQUIRE_BLOCKED" == missing_ref ]]; then
+      echo "refused: $STATE/limits.json is set, so acquire needs --as \"<name> [<ref>]\" — copy your own address from ListAgents (a subagent passes its dispatcher's). Got: '$owner'." >&2
+      exit 4
+    fi
     if (( ! wait )); then
       local cap_report
-      if [[ "$ACQUIRE_BLOCKED" == memory ]]; then
+      if [[ "$ACQUIRE_BLOCKED" == session_cap ]]; then
+        session_cap_report "$ACQUIRE_SESSION_REF" >&2 || true
+        exit 4
+      elif [[ "$ACQUIRE_BLOCKED" == memory ]]; then
         echo "acquire refuses: $MEMORY_REASON." >&2
-      elif [[ "$ACQUIRE_BLOCKED" == project_cap ]] && cap_report=$(project_cap_report); then
-        echo "$cap_report" >&2
       elif cap_report=$(machine_cap_report); then
         echo "$cap_report" >&2
       else
@@ -103,7 +110,7 @@ cmd_acquire() {
       echo "run 'acquire --wait --for $holder' (e.g. in the background) to wait for one" >&2
       exit 2
     fi
-    local leased p_used wait_key wait_limit=30
+    local leased s_used wait_key wait_limit=30
     if [[ "$ACQUIRE_BLOCKED" == memory ]]; then
       wait_key="memory/$MEMORY_FLOOR"
       wait_limit=3
@@ -112,13 +119,13 @@ cmd_acquire() {
         echo "▸ waiting for memory: $MEMORY_REASON" >&2
         last_leased="$wait_key"
       fi
-    elif [[ "$ACQUIRE_BLOCKED" == project_cap ]]; then
+    elif [[ "$ACQUIRE_BLOCKED" == session_cap ]]; then
       WAIT_NOTE=""
-      project_cap_load
-      p_used=$(project_in_use)
-      wait_key="project:$SLOT_PROJECT_PREFIX:$p_used/$PROJECT_CAP"
+      session_cap_load "$ACQUIRE_SESSION_REF"
+      s_used=$(session_in_use "$ACQUIRE_SESSION_REF")
+      wait_key="session:$ACQUIRE_SESSION_REF:$s_used/$SESSION_CAP"
       if [[ "$wait_key" != "$last_leased" ]]; then
-        echo "▸ waiting for a free slot for project '$SLOT_PROJECT_PREFIX' ($p_used/$PROJECT_CAP live; cap in $STATE/limits.json)"
+        echo "▸ waiting for a free slot for session [$ACQUIRE_SESSION_REF] ($s_used/$SESSION_CAP live; cap in $STATE/limits.json)" >&2
         last_leased="$wait_key"
       fi
     else

@@ -186,36 +186,84 @@ resolve_session_owner() {
   echo "$name [$CLAUDE_CODE_HOST_SESSION_ID]"
 }
 
-check_session_slot_limit() {
-  local owner="$1" limits="$STATE/limits.json"
-  [[ -f "$limits" ]] || return 0
-  local ref=""
-  [[ "$owner" =~ \[([^][]+)\]$ ]] && ref="${BASH_REMATCH[1]}"
-  if [[ -z "$ref" ]]; then
-    echo "refused: $limits is set, so acquire needs --as \"<name> [<ref>]\" — copy your own address from ListAgents (a subagent passes its dispatcher's). Got: '$owner'." >&2
-    return 1
+session_owner_ref() {
+  local owner="$1"
+  if [[ "$owner" =~ \[([^][]+)\]$ ]]; then
+    printf '%s\n' "${BASH_REMATCH[1]}"
+    return 0
   fi
-  local limit
+  return 1
+}
+
+session_cap_load() {
+  local ref="$1" limits="$STATE/limits.json" raw=""
+  SESSION_CAP=""
+  [[ -f "$limits" && -n "$ref" ]] || return 0
   # A harness may spell the same session with or without a leading local_, so
   # the lookup compares ids with that prefix stripped on both sides. A key that
   # equals the caller's id exactly wins; otherwise the key in the other spelling.
-  limit=$(jq -r --arg ref "$ref" --arg bare "${ref#local_}" '
-    (.sessions // {}) as $s
-    | (if (has("project_default") or has("projects")) then null else .default end) as $dflt
-    | ($s[$ref] // ([$s | to_entries[] | select((.key | sub("^local_"; "")) == $bare) | .value] | first) // $dflt) // empty' "$limits")
-  [[ -n "$limit" ]] || return 0
+  raw=$(jq -r --arg ref "$ref" --arg bare "${ref#local_}" '
+    if (type != "object") then ""
+    else
+      (if (.sessions | type) == "object" then .sessions else {} end) as $s
+      | ([$s | to_entries[] | select((.key | sub("^local_"; "")) == $bare)] | first) as $alt
+      | if ($ref != "" and ($s | has($ref))) then
+          ($s[$ref] | if type == "number" then tostring else "not-a-number" end)
+        elif ($bare != "" and ($alt != null)) then
+          ($alt.value | if type == "number" then tostring else "not-a-number" end)
+        elif has("default") then
+          (.default | if type == "number" then tostring else "not-a-number" end)
+        else
+          ""
+        end
+    end' "$limits" 2>/dev/null) || raw=""
+  [[ -n "$raw" ]] || return 0
+  if [[ "$raw" =~ ^-?[0-9]+$ ]]; then
+    if (( raw < 0 )); then
+      SESSION_CAP=0
+    elif (( raw > SLOT_INDEX_CEILING )); then
+      SESSION_CAP=$SLOT_INDEX_CEILING
+    else
+      SESSION_CAP=$raw
+    fi
+  fi
+  return 0
+}
+
+session_in_use() {
+  local ref="$1" f lease_ref count=0
+  for f in "$STATE"/leases/*.json; do
+    [[ -f "$f" ]] || continue
+    lease_is_live "$f" || continue
+    lease_ref=""
+    [[ "$(lease_owner_field "$f")" =~ \[([^][]+)\]$ ]] && lease_ref="${BASH_REMATCH[1]}"
+    [[ -n "$lease_ref" && "${lease_ref#local_}" == "${ref#local_}" ]] || continue
+    count=$((count + 1))
+  done
+  echo "$count"
+}
+
+session_cap_report() {
+  local ref="$1"
+  session_cap_load "$ref"
+  [[ -n "$SESSION_CAP" ]] || return 1
   local f lease_ref held=0 held_ids=""
   for f in "$STATE"/leases/*.json; do
     [[ -f "$f" ]] || continue
+    lease_is_live "$f" || continue
     lease_ref=""
-    [[ "$(lease_owner_field "$f")" =~ [[]([^][]+)[]]$ ]] && lease_ref="${BASH_REMATCH[1]}"
+    [[ "$(lease_owner_field "$f")" =~ \[([^][]+)\]$ ]] && lease_ref="${BASH_REMATCH[1]}"
     [[ -n "$lease_ref" && "${lease_ref#local_}" == "${ref#local_}" ]] || continue
     held=$((held + 1))
     held_ids+="${held_ids:+, }$(basename "$f" .json)"
   done
-  (( held >= limit )) || return 0
-  echo "refused: session [$ref] (CLAUDE_CODE_HOST_SESSION_ID when set, else the --as ref) holds $held slot(s) ($held_ids) and its limit is $limit (from $limits). Release one, or ask the owner to raise the limit in limits.json; never acquire under another name." >&2
-  return 1
+  (( held >= SESSION_CAP )) || return 1
+  if (( held == 0 )); then
+    echo "refused: session [$ref] (CLAUDE_CODE_HOST_SESSION_ID when set, else the --as ref) is paused (limit is $SESSION_CAP in $STATE/limits.json); holds 0 slot(s)."
+  else
+    echo "refused: session [$ref] (CLAUDE_CODE_HOST_SESSION_ID when set, else the --as ref) holds $held slot(s) ($held_ids) and its limit is $SESSION_CAP (from $STATE/limits.json). Release one, or ask the owner to raise the limit in limits.json; never acquire under another name."
+  fi
+  return 0
 }
 
 write_reservation() {
@@ -341,73 +389,6 @@ machine_cap_report() {
   for f in "$STATE"/leases/*.json; do
     [[ -f "$f" ]] || continue
     lease_is_live "$f" || continue
-    echo "  $(basename "$f" .json): $(lease_field "$f" holder)"
-  done
-  return 0
-}
-
-project_cap_load() {
-  local limits="$STATE/limits.json" raw=""
-  PROJECT_CAP=""
-  [[ -f "$limits" ]] || return 0
-  raw=$(jq -r --arg lbl "${SLOT_PROJECT_PREFIX:-}" --arg pe "${PE_PROJECT:-}" '
-    if (type != "object") then ""
-    else
-      (if ((.projects | type) == "object") then .projects else {} end) as $p
-      | if ($lbl != "" and ($p | has($lbl))) then ($p[$lbl] | if type == "number" then tostring else "not-a-number" end)
-        elif ($pe != "" and $pe != $lbl and ($p | has($pe))) then ($p[$pe] | if type == "number" then tostring else "not-a-number" end)
-        elif has("project_default") then (.project_default | if type == "number" then tostring else "not-a-number" end)
-        else ""
-        end
-    end' "$limits" 2>/dev/null) || raw=""
-  [[ -n "$raw" ]] || return 0
-  if [[ "$raw" =~ ^-?[0-9]+$ ]]; then
-    if (( raw < 0 )); then
-      PROJECT_CAP=0
-    elif (( raw > SLOT_INDEX_CEILING )); then
-      PROJECT_CAP=$SLOT_INDEX_CEILING
-    else
-      PROJECT_CAP=$raw
-    fi
-  fi
-  return 0
-}
-
-lease_is_this_projects() {
-  local f="$1" lroot mine theirs
-  lroot=$(lease_field "$f" repo_root 2>/dev/null) || lroot=""
-  if [[ -n "$lroot" ]]; then
-    [[ "$lroot" == "$repo_root" ]] && return 0
-    mine=$(project_canonical_root "$repo_root")
-    theirs=$(project_canonical_root "$lroot")
-    [[ "$mine" == "$theirs" ]]
-    return
-  fi
-  [[ "$(basename "$f" .json)" == "${SLOT_PROJECT_PREFIX}-slot-"* ]]
-}
-
-project_in_use() {
-  local f count=0
-  for f in "$STATE"/leases/*.json; do
-    [[ -f "$f" ]] || continue
-    lease_is_live "$f" || continue
-    lease_is_this_projects "$f" || continue
-    count=$((count + 1))
-  done
-  echo "$count"
-}
-
-project_cap_report() {
-  project_cap_load
-  [[ -n "$PROJECT_CAP" ]] || return 1
-  local used; used=$(project_in_use)
-  (( used >= PROJECT_CAP )) || return 1
-  echo "acquire refuses: $used/$PROJECT_CAP live slots for project '$SLOT_PROJECT_PREFIX'; the cap is projects.$SLOT_PROJECT_PREFIX / project_default in $STATE/limits.json."
-  local f
-  for f in "$STATE"/leases/*.json; do
-    [[ -f "$f" ]] || continue
-    lease_is_live "$f" || continue
-    lease_is_this_projects "$f" || continue
     echo "  $(basename "$f" .json): $(lease_field "$f" holder)"
   done
   return 0

@@ -1534,5 +1534,275 @@ class TestForgeAppPreflightAndDoctor(MultiRepoIntegrationBase):
         self.assertEqual(doc.returncode, 0, output_of(doc))
 
 
+class TestNonGithubCatalogCleanlinessAndIter(MultiRepoIntegrationBase):
+    """slot_catalog_repos_iter field preservation when slug is empty (non-GitHub URLs)."""
+
+    @staticmethod
+    def _read_if_exists(path):
+        if not os.path.exists(path):
+            return ""
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+
+    def test_slot_catalog_repos_iter_preserves_empty_slug_for_non_github_urls_and_fallback(self):
+        self.build_project(repos_catalog={"version": 1, "repos": []}, origin_url="https://github.com/acme/primary.git")
+        catalog = {
+            "version": 1,
+            "repos": [
+                {"alias": "x", "path": "vendor/x", "url": "https://gitlab.example/acme/x.git", "mode": "ro", "attach": "default"},
+                {"alias": "y", "path": "vendor/y", "url": "https://github.com/acme/y.git", "mode": "rw", "attach": "default"},
+            ],
+        }
+        env = self.harness._env(None)
+        env["DEV_CONTAINER_LIB"] = "1"
+        env.pop("DOCS_REPO_URL", None)
+        res = subprocess.run(
+            [
+                "bash",
+                "-c",
+                (
+                    '. "$1"\n'
+                    'SLOT_REPOS_CATALOG="$2"\n'
+                    'slot_catalog_repos_iter\n'
+                ),
+                "test",
+                os.path.join(self.harness.fixture_repo, SCRIPT_REL),
+                json.dumps(catalog),
+            ],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=15,
+        )
+        self.assertEqual(res.returncode, 0, output_of(res))
+        lines = res.stdout.decode().splitlines()
+        self.assertEqual(len(lines), 2, lines)
+        fields_x = lines[0].split("\x1f")
+        fields_y = lines[1].split("\x1f")
+        self.assertEqual(fields_x, ["vendor/x", "vendor/x", "x", "https://gitlab.example/acme/x.git", "", "1"])
+        self.assertEqual(fields_y, ["vendor/y", "vendor/y", "y", "https://github.com/acme/y.git", "acme/y", "0"])
+
+        # Fallback branch when SLOT_REPOS_CATALOG is empty and docs_gh_repo is empty
+        fb = subprocess.run(
+            [
+                "bash",
+                "-c",
+                (
+                    '. "$1"\n'
+                    'SLOT_REPOS_CATALOG=""\n'
+                    'DOCS_REPO_URL="https://gitlab.example/acme/x.git"\n'
+                    'docs_gh_repo=""\n'
+                    'slot_catalog_repos_iter\n'
+                ),
+                "test",
+                os.path.join(self.harness.fixture_repo, SCRIPT_REL),
+            ],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=15,
+        )
+        self.assertEqual(fb.returncode, 0, output_of(fb))
+        fb_lines = fb.stdout.decode().splitlines()
+        self.assertEqual(len(fb_lines), 2, fb_lines)
+        self.assertEqual(fb_lines[0].split("\x1f"), ["docs/repo", "docs/repo", "docs", "https://gitlab.example/acme/x.git", "", "1"])
+        self.assertEqual(fb_lines[1].split("\x1f"), ["docs/fix", "docs/fix", "docsfix", "https://gitlab.example/acme/x.git", "", "0"])
+
+        # Also verify bash consumer IFS=$'\037' read parses _slug="" and _ro="1" identically
+        bash_read = subprocess.run(
+            [
+                "bash",
+                "-c",
+                (
+                    '. "$1"\n'
+                    'SLOT_REPOS_CATALOG="$2"\n'
+                    'while IFS=$\x27\\037\x27 read -r _path _lbl _col _url _slug _ro; do\n'
+                    '  printf "PATH=%s SLUG=[%s] RO=[%s]\\n" "$_path" "$_slug" "$_ro"\n'
+                    'done < <(slot_catalog_repos_iter)\n'
+                ),
+                "test",
+                os.path.join(self.harness.fixture_repo, SCRIPT_REL),
+                json.dumps(catalog),
+            ],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=15,
+        )
+        self.assertEqual(bash_read.returncode, 0, output_of(bash_read))
+        self.assertEqual(
+            bash_read.stdout.decode().splitlines(),
+            ["PATH=vendor/x SLUG=[] RO=[1]", "PATH=vendor/y SLUG=[acme/y] RO=[0]"],
+        )
+
+    def test_non_github_ro_catalog_repo_keeps_readonly_note_and_never_passes_bogus_slug_to_gh(self):
+        bare_url, _ = self.make_bare_repo("gitlab-x")
+        gitlab_url = "https://gitlab.example/acme/x.git"
+        self.map_url(gitlab_url, bare_url)
+        catalog = {
+            "version": 1,
+            "repos": [
+                {"alias": "x", "path": "vendor/x", "url": gitlab_url, "mode": "ro", "attach": "default"},
+            ],
+        }
+        self.build_project(repos_catalog=catalog, origin_url="https://github.com/acme/primary.git")
+
+        gh_log = os.path.join(self.harness.tmp, "gh-calls.log")
+        self.harness._write_stub(
+            "gh",
+            "#!/usr/bin/env bash\n"
+            f'printf "%s\\n" "$*" >> "{gh_log}"\n'
+            "echo '[]'\n",
+        )
+
+        acq = self.run_engine("acquire", "--for", "gitlab-check")
+        self.assertEqual(acq.returncode, 0, output_of(acq))
+        name = self.harness.acquired_slot_name(acq)
+        x_dir = os.path.join(self.harness.slot_dir(name), "vendor", "x")
+
+        subprocess.run(
+            [self.harness.real_git_bin, "-C", x_dir, "checkout", "-q", "-b", "wip-x"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        with open(os.path.join(x_dir, "local.txt"), "w", encoding="utf-8") as handle:
+            handle.write("unpushed\n")
+        subprocess.run(
+            [
+                self.harness.real_git_bin, "-C", x_dir,
+                "-c", "core.hooksPath=/dev/null",
+                "-c", "commit.gpgsign=false",
+                "-c", "user.name=fixture",
+                "-c", "user.email=fixture@example.com",
+                "add", "local.txt",
+            ],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        subprocess.run(
+            [
+                self.harness.real_git_bin, "-C", x_dir,
+                "-c", "core.hooksPath=/dev/null",
+                "-c", "commit.gpgsign=false",
+                "-c", "user.name=fixture",
+                "-c", "user.email=fixture@example.com",
+                "commit", "-q", "-m", "wip",
+            ],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+
+        listed = self.run_engine("list")
+        self.assertEqual(listed.returncode, 0, output_of(listed))
+        self.assertIn("x:1 unpushed", listed.stdout.decode())
+        self.assertEqual(self._read_if_exists(gh_log), "")
+
+        rel = self.run_engine("release", name, "--for", "gitlab-check")
+        self.assertNotEqual(rel.returncode, 0, output_of(rel))
+        err = rel.stderr.decode()
+        self.assertIn("vendor/x", err)
+        self.assertIn("vendor/x is read-only", err)
+        self.assertEqual(self._read_if_exists(gh_log), "")
+
+    def test_facts_backed_cleanliness_for_non_github_ro_catalog_repo(self):
+        gitlab_url = "https://gitlab.example/acme/x.git"
+        catalog = {
+            "version": 1,
+            "repos": [
+                {"alias": "x", "path": "vendor/x", "url": gitlab_url, "mode": "ro", "attach": "default"},
+            ],
+        }
+        self.build_project(repos_catalog=catalog, origin_url="https://github.com/acme/primary.git")
+        gh_log = os.path.join(self.harness.tmp, "gh-facts-calls.log")
+        self.harness._write_stub(
+            "gh",
+            "#!/usr/bin/env bash\n"
+            f'printf "%s\\n" "$*" >> "{gh_log}"\n'
+            "echo '[]'\n",
+        )
+        scratch = os.path.join(self.harness.tmp, "facts-scratch")
+        sid = f"{PROJECT_PREFIX}-slot-7"
+        os.makedirs(os.path.join(scratch, "facts"), exist_ok=True)
+        os.makedirs(os.path.join(scratch, "spec"), exist_ok=True)
+        os.makedirs(os.path.join(self.harness.state_dir, "ports"), exist_ok=True)
+        os.makedirs(os.path.join(self.harness.state_dir, "env"), exist_ok=True)
+        with open(os.path.join(scratch, "spec", sid), "w", encoding="utf-8") as handle:
+            handle.write(f"vol:{sid}-workspace\n")
+        with open(os.path.join(self.harness.state_dir, "ports", f"{sid}.ports"), "w", encoding="utf-8") as handle:
+            handle.write("SSH_PORT=42016\n")
+        with open(os.path.join(self.harness.state_dir, "env", f"{sid}.env"), "w", encoding="utf-8") as handle:
+            handle.write("GIT_USER_NAME=demo-agent\nGIT_USER_EMAIL=demo-agent@example.com\n")
+
+        sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        tip2 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        with open(os.path.join(scratch, "facts", sid), "w", encoding="utf-8") as handle:
+            handle.write(
+                f"origin\thttps://github.com/acme/primary.git\ndefault\tmain\nuser\tdemo-agent\n"
+                f"status\nstash\nhead\tmain\t{sha}\nheadreach\t1\nclone\tvendor/x\n"
+                f"branch\tmain\t{sha}\t1\t0\t1\tclean\t0\t0\t0\n"
+            )
+        with open(os.path.join(scratch, "facts", f"{sid}__vendor_x"), "w", encoding="utf-8") as handle:
+            handle.write(
+                f"origin\t{gitlab_url}\ndefault\tmain\nuser\tdemo-agent\n"
+                f"status\nstash\nhead\twip-x\t{tip2}\nheadreach\t0\n"
+                f"branch\twip-x\t{tip2}\t0\t0\t0\tplus\t1\t0\t0\n"
+            )
+
+        env = self.harness._env(None)
+        env.update({"DEV_CONTAINER_LIB": "1", "SCRATCH": scratch})
+        env.pop("DOCS_REPO_URL", None)
+        res = subprocess.run(
+            [
+                "bash",
+                "-c",
+                (
+                    '. "$1"\n'
+                    'clean_rc=0\n'
+                    'slot_is_clean_for_reuse "$2" || clean_rc=$?\n'
+                    'echo "CLEAN_RC=$clean_rc"\n'
+                    'echo "COL=$(slot_dirty_column "$2")"\n'
+                    'echo "REPORT_START"\n'
+                    'slot_dirty_report "$2"\n'
+                    'echo "REPORT_END"\n'
+                    'v_rc=0\n'
+                    'slot_acquire_verdict "" "$2" 0 >/dev/null || v_rc=$?\n'
+                    'echo "VERDICT=$v_rc:$ACQUIRE_REASON"\n'
+                ),
+                "test",
+                os.path.join(self.harness.fixture_repo, SCRIPT_REL),
+                sid,
+            ],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=15,
+        )
+        out = res.stdout.decode()
+        self.assertEqual(res.returncode, 0, out + res.stderr.decode())
+        self.assertIn("CLEAN_RC=1", out)
+        self.assertIn("COL=x:1 unpushed", out)
+        self.assertIn("vendor/x is read-only", out)
+        self.assertIn("VERDICT=1:dirty:x:1 unpushed", out)
+        self.assertEqual(self._read_if_exists(gh_log), "")
+
+        # Also verify facts_norepo branch on slot_is_clean_for_reuse
+        with open(os.path.join(scratch, "facts", sid), "w", encoding="utf-8") as handle:
+            handle.write("norepo\nclone\tvendor/x\n")
+        nr_res = subprocess.run(
+            [
+                "bash",
+                "-c",
+                '. "$1"; rc=0; slot_is_clean_for_reuse "$2" || rc=$?; echo "NR_RC=$rc"',
+                "test",
+                os.path.join(self.harness.fixture_repo, SCRIPT_REL),
+                sid,
+            ],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=15,
+        )
+        self.assertEqual(nr_res.returncode, 0, output_of(nr_res))
+        self.assertIn("NR_RC=1", nr_res.stdout.decode())
+        self.assertEqual(self._read_if_exists(gh_log), "")
+
+
 if __name__ == "__main__":
     unittest.main()

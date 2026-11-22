@@ -154,7 +154,7 @@ branch_check_pr_json() {
 }
 
 branch_delivery_status() {
-  local dir="$1" branch="$2" repo_slug="${3:-$gh_repo}" tip
+  local dir="$1" branch="$2" repo_slug="${3-$gh_repo}" tip
   local facts_sid="${4:-}" facts_sub="${5:-.}"
   BRANCH_REPORT=""
 
@@ -189,7 +189,8 @@ branch_delivery_status() {
     # the label is not read: it is a cache miss, and the verdict is derived again.
     cache_key="${PROJECT_KEY:-$SLOT_PROJECT_PREFIX}-${branch//\//_}-${tip}"
   else
-    cache_key="${repo_slug//\//_}-${branch//\//_}-${tip}"
+    cache_key="${repo_slug:-no-slug}"
+    cache_key="${cache_key//\//_}-${branch//\//_}-${tip}"
   fi
   local cache="$STATE/delivered/$cache_key"
   local closed_cache="$STATE/closed/$cache_key"

@@ -29,7 +29,7 @@ docs_repo_marker_pin() {
 
 docs_repo_is_clean() {
   local dir="$1" subpath="${2:-docs/repo}" label="${3:-docs/repo}" colprefix="${4:-docs}"
-  local expected_url="${5:-$DOCS_REPO_URL}" repo_slug="${6:-$docs_gh_repo}" is_ro="${7:-}"
+  local expected_url="${5-$DOCS_REPO_URL}" repo_slug="${6-$docs_gh_repo}" is_ro="${7:-}"
   if [[ -z "$is_ro" ]]; then
     [[ "$subpath" == docs/repo ]] && is_ro=1 || is_ro=0
   fi
@@ -289,7 +289,7 @@ sync_docs_repo_to_pin() {
 }
 
 DOCS_REPO_PUSHURL="read-only://docs-repo-is-read-only--clone-docs-fix"
-DOCS_REPO_REFUSAL="docs/repo is read-only; clone $docs_gh_repo into docs/fix and make the change there, on a branch off its default branch"
+DOCS_REPO_REFUSAL="docs/repo is read-only; clone ${docs_gh_repo:-$DOCS_REPO_URL} into docs/fix and make the change there, on a branch off its default branch"
 DOCS_REPO_HOOKS=".git/slot-readonly-hooks"
 docs_repo_hook_script() {
   printf '#!/bin/sh\ncat >&2 <<'\''MSG'\''\n%s\nMSG\nexit 1\n' "${1:-$DOCS_REPO_REFUSAL}"

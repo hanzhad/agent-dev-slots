@@ -261,7 +261,7 @@ fi
 
 DOCS_REPO_URL=${DOCS_REPO_URL:-https://github.com/example/demo.docs.git}
 docs_gh_repo=$(repo_github_slug "$DOCS_REPO_URL")
-[[ -n "$docs_gh_repo" ]] || docs_gh_repo=$(echo "$DOCS_REPO_URL" | sed -E 's#^(https://|ssh://)?(git@)?github\.com[:/]##; s#\.git$##')
+[[ -n "$docs_gh_repo" ]] || [[ "$DOCS_REPO_URL" != /* ]] || docs_gh_repo="${DOCS_REPO_URL%.git}"
 SLOT_REPOS_CATALOG=$(slot_repos_catalog_json "$repo_root" "${SLOT_REPOS_FILE:-}" "${DOCS_REPO_URL:-}" "${DOCS_PIN_FILE:-.github/docs-pin}" "${COMPOSE_DIR:-$DEFAULT_COMPOSE_DIR}")
 slots_dir=$(dirname "$repo_root")/dev-containers
 

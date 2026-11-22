@@ -76,16 +76,27 @@ printf "%s\n" "$entries" | while IFS="$SEP" read -r alias path url mode rbranch 
       if [ "$head" != "$pin" ]; then
         echo "▸ moving $path to pin ($pinfile)"
         if ! git -C "$path" cat-file -e "$pin^{commit}" 2>/dev/null; then
+          fetch_err=""
           if [ "$depth" = "full" ]; then
-            git -C "$path" fetch --quiet origin "$pin" \
-              || echo "  ! could not fetch pin into $path" >&2
+            fetch_err=$(git -C "$path" fetch --quiet origin "$pin" 2>&1) || true
           else
-            git -C "$path" fetch --quiet --depth 1 origin "$pin" \
-              || echo "  ! could not fetch pin into $path" >&2
+            fetch_err=$(git -C "$path" fetch --quiet --depth 1 origin "$pin" 2>&1) || true
+          fi
+          if ! git -C "$path" cat-file -e "$pin^{commit}" 2>/dev/null \
+             && [ "$(git -C "$path" rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+            fetch_err=$(git -C "$path" fetch --quiet --unshallow origin 2>&1) || true
+          fi
+          if ! git -C "$path" cat-file -e "$pin^{commit}" 2>/dev/null; then
+            fetch_err=$(git -C "$path" fetch --quiet origin "+refs/heads/*:refs/remotes/origin/*" "+refs/tags/*:refs/tags/*" 2>&1) || true
           fi
         fi
-        if git -C "$path" checkout --quiet --detach "$pin"; then
-          echo "$pin" >"$(git -C "$path" rev-parse --absolute-git-dir)/slot-docs-pin"
+        if git -C "$path" cat-file -e "$pin^{commit}" 2>/dev/null; then
+          if git -C "$path" checkout --quiet --detach "$pin"; then
+            echo "$pin" >"$(git -C "$path" rev-parse --absolute-git-dir)/slot-docs-pin"
+          fi
+        else
+          [ -z "${fetch_err:-}" ] || printf "%s\n" "$fetch_err" >&2
+          echo "  ! could not fetch pin into $path" >&2
         fi
       fi
     fi
@@ -174,14 +185,21 @@ clone_repos_in_dir() {
     [[ -n "$alias" ]] || continue
     [[ ! -e "$target_dir/$path/.git" ]] || continue
     mkdir -p "$(dirname "$target_dir/$path")"
+    local clone_url="$url"
+    if [[ "$depth" != "full" && "$url" == /* ]]; then
+      clone_url="file://$url"
+    fi
     clone_args=(clone --quiet)
     [[ "$depth" == "full" ]] || clone_args+=(--depth "$depth")
     [[ -z "$rbranch" ]] || clone_args+=(--branch "$rbranch")
-    clone_args+=(-- "$url" "$target_dir/$path")
+    clone_args+=(-- "$clone_url" "$target_dir/$path")
     if [[ "$auth" == "none" ]]; then
-      GIT_TERMINAL_PROMPT=0 git "${clone_args[@]}" || return 1
+      GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false git -c "credential.${FORGE_HOST_ORIGIN}.helper=" "${clone_args[@]}" || return 1
     else
       forge_git "${clone_args[@]}" || return 1
+    fi
+    if [[ "$clone_url" != "$url" ]]; then
+      git -C "$target_dir/$path" remote set-url origin "$url"
     fi
     ensure_excluded "$target_dir" "/$path"
     if [[ -n "$pinfile" ]]; then
@@ -192,13 +210,12 @@ clone_repos_in_dir() {
       if [[ -n "$pin" ]]; then
         head=$(git -C "$target_dir/$path" rev-parse HEAD 2>/dev/null || echo nothing)
         if [[ "$head" != "$pin" ]]; then
-          if ! git -C "$target_dir/$path" cat-file -e "$pin^{commit}" 2>/dev/null; then
-            local -a df=()
-            [[ "$depth" == "full" ]] || df=(--depth 1)
-            forge_git -C "$target_dir/$path" fetch --quiet ${df[@]+"${df[@]}"} origin "$pin" || true
-          fi
-          if git -C "$target_dir/$path" checkout --quiet --detach "$pin"; then
-            docs_repo_write_marker_pin "$target_dir/$path" "$pin"
+          if fetch_pinned_commit "$target_dir/$path" "$pin" "$auth"; then
+            if git -C "$target_dir/$path" checkout --quiet --detach "$pin"; then
+              docs_repo_write_marker_pin "$target_dir/$path" "$pin"
+            fi
+          else
+            echo "  ! could not fetch pin into $path" >&2
           fi
         fi
       fi

@@ -151,6 +151,17 @@ if [[ "${1:-}" == clone ]]; then
   exec "$real_git" "${c_args[@]}" "${args[@]}"
 fi
 
+if [[ "${TEST_GIT_REJECT_SHA_FETCH:-0}" == "1" ]]; then
+  is_fetch=0
+  for arg in "$@"; do
+    [[ "$arg" == "fetch" ]] && is_fetch=1
+    if (( is_fetch )) && [[ "$arg" =~ ^[0-9a-f]{40}$ ]]; then
+      echo "error: Server does not allow request for unadvertised object $arg" >&2
+      exit 128
+    fi
+  done
+fi
+
 if [[ -n "${GIT_STUB_CALL_LOG:-}" ]]; then
   printf 'GIT_OPTIONAL_LOCKS=%s %s\n' "${GIT_OPTIONAL_LOCKS:-}" "$*" >> "$GIT_STUB_CALL_LOG"
 fi
@@ -918,6 +929,139 @@ class TestAcquireAndAttachCatalogRepos(MultiRepoIntegrationBase):
         unleased = self.run_engine("attach", name, "--repo", "tools")
         self.assertNotEqual(unleased.returncode, 0, output_of(unleased))
         self.assertNotIn("Usage:", unleased.stderr.decode(errors="replace"))
+
+    def test_acquire_pinned_shallow_repo_falls_back_when_server_rejects_unadvertised_sha(self):
+        specs_url, specs_info = self.make_bare_repo("specs", commits=("s1", "s2", "s3"))
+        alt_url, alt_info = self.make_bare_repo("alt", commits=("a1", "a2"), extra_branch="side")
+        pinned_main = specs_info["shas"][0]
+        pinned_branch = alt_info["branch_sha"]
+        catalog = {
+            "version": 1,
+            "repos": [
+                {
+                    "alias": "specs",
+                    "path": "deps/specs",
+                    "url": specs_url,
+                    "mode": "ro",
+                    "attach": "default",
+                    "pin_file": ".github/specs-pin",
+                    "depth": 1,
+                },
+                {
+                    "alias": "alt",
+                    "path": "deps/alt",
+                    "url": alt_url,
+                    "mode": "ro",
+                    "attach": "default",
+                    "pin_file": ".github/alt-pin",
+                    "auth": "none",
+                    "depth": 1,
+                },
+            ],
+        }
+        self.build_project(
+            repos_catalog=catalog,
+            pin_files={
+                ".github/specs-pin": f"{pinned_main}\n",
+                ".github/alt-pin": f"{pinned_branch}\n",
+            },
+        )
+        res = self.run_engine("acquire", "--for", "worker", extra_env={"TEST_GIT_REJECT_SHA_FETCH": "1"})
+        out = output_of(res)
+        self.assertEqual(res.returncode, 0, out)
+        self.assertNotIn("unadvertised object", out)
+        self.assertNotIn("could not fetch pin", out)
+        name = self.harness.acquired_slot_name(res)
+        slot_dir = self.harness.slot_dir(name)
+        self.assertEqual(self.real_git(os.path.join(slot_dir, "deps", "specs"), "rev-parse", "HEAD"), pinned_main)
+        self.assertEqual(self.real_git(os.path.join(slot_dir, "deps", "alt"), "rev-parse", "HEAD"), pinned_branch)
+
+        # Also exercise host-side directory clone (`clone_repos_in_dir`) & `sync_docs_repo_to_pin`
+        dir_clone = os.path.join(self.harness.tmp, "dir-slot")
+        subprocess.run([self.harness.real_git_bin, "clone", "-q", self.harness.fixture_repo, dir_clone], check=True)
+        self.real_git(dir_clone, "remote", "set-url", "origin", self.real_git(self.harness.fixture_repo, "remote", "get-url", "origin"))
+        self.real_git(dir_clone, "fetch", "-q", "origin")
+        env = self.harness._env(None)
+        env.update(
+            {
+                "DEV_CONTAINER_LIB": "1",
+                "DEV_CONTAINER_CALLER_PWD": self.harness.fixture_repo,
+                "TEST_GIT_REJECT_SHA_FETCH": "1",
+                "TEST_GIT_URL_MAP": self.url_map_file,
+            }
+        )
+        env.pop("DOCS_REPO_URL", None)
+        lib_res = subprocess.run(
+            [
+                "bash",
+                "-c",
+                '. "$1"; clone_repos_in_dir "$2" "$3"',
+                "test",
+                os.path.join(self.harness.fixture_repo, SCRIPT_REL),
+                dir_clone,
+                json.dumps(catalog["repos"]),
+            ],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+        lib_out = output_of(lib_res)
+        self.assertEqual(lib_res.returncode, 0, lib_out)
+        self.assertNotIn("unadvertised object", lib_out)
+        self.assertNotIn("could not fetch pin", lib_out)
+        self.assertEqual(self.real_git(os.path.join(dir_clone, "deps", "specs"), "rev-parse", "HEAD"), pinned_main)
+        self.assertEqual(self.real_git(os.path.join(dir_clone, "deps", "alt"), "rev-parse", "HEAD"), pinned_branch)
+
+        docs_clone = os.path.join(dir_clone, "docs", "repo")
+        os.makedirs(os.path.dirname(docs_clone), exist_ok=True)
+        subprocess.run(
+            [self.harness.real_git_bin, "clone", "-q", "--depth", "1", "file://" + specs_info["bare"], docs_clone],
+            check=True,
+        )
+        self.assertEqual(self.real_git(docs_clone, "rev-parse", "HEAD"), specs_info["shas"][-1])
+        sync_env = dict(env, DOCS_PIN_FILE=".github/specs-pin")
+        sync_res = subprocess.run(
+            [
+                "bash",
+                "-c",
+                '. "$1"; sync_docs_repo_to_pin "$2"',
+                "test",
+                os.path.join(self.harness.fixture_repo, SCRIPT_REL),
+                dir_clone,
+            ],
+            env=sync_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+        sync_out = output_of(sync_res)
+        self.assertEqual(sync_res.returncode, 0, sync_out)
+        self.assertNotIn("unadvertised object", sync_out)
+        self.assertEqual(self.real_git(docs_clone, "rev-parse", "HEAD"), pinned_main)
+
+    def test_acquire_after_release_clones_newly_requested_optional_repo(self):
+        catalog, info = self._standard_catalog()
+        pinned_sha = info["specs"]["shas"][0]
+        self.build_project(
+            repos_catalog=catalog,
+            pin_files={".github/specs-pin": f"{pinned_sha}\n"},
+        )
+        acq1 = self.run_engine("acquire", "--for", "worker-1")
+        self.assertEqual(acq1.returncode, 0, output_of(acq1))
+        name1 = self.harness.acquired_slot_name(acq1)
+        rel = self.run_engine("release", name1, "--for", "worker-1")
+        self.assertEqual(rel.returncode, 0, output_of(rel))
+
+        acq2 = self.run_engine("acquire", "--for", "worker-2", "--repo", "tools")
+        self.assertEqual(acq2.returncode, 0, output_of(acq2))
+        name2 = self.harness.acquired_slot_name(acq2)
+        slot_dir = self.harness.slot_dir(name2)
+        self.assertTrue(os.path.isdir(os.path.join(slot_dir, "extras", "tools", ".git")))
+        self.assertEqual(self.real_git(os.path.join(slot_dir, "extras", "tools"), "symbolic-ref", "--short", "HEAD"), "v2")
+        with open(self.harness.lease_path(name2), encoding="utf-8") as handle:
+            aliases = {r["alias"] for r in json.load(handle).get("repos", [])}
+        self.assertEqual(aliases, {"specs", "notes", "tools"})
 
 
 class TestBatchedHelperCloningAndCredentials(MultiRepoIntegrationBase):

@@ -235,6 +235,40 @@ docs_repo_off_pin() {
   return 0
 }
 
+fetch_pinned_commit_git() {
+  local repo_dir="$1" auth="$2"
+  shift 2
+  if [[ "$auth" == "none" ]]; then
+    GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/bin/false git -C "$repo_dir" -c "credential.${FORGE_HOST_ORIGIN}.helper=" "$@"
+  else
+    forge_git -C "$repo_dir" "$@"
+  fi
+}
+
+fetch_pinned_commit() {
+  local repo_dir="$1" pin="$2" auth="${3:-project}"
+  git -C "$repo_dir" cat-file -e "$pin^{commit}" 2>/dev/null && return 0
+  local err_file
+  err_file=$(mktemp)
+  local -a depth=()
+  [[ "$(git -C "$repo_dir" rev-parse --is-shallow-repository 2>/dev/null)" == true ]] && depth=(--depth 1)
+  fetch_pinned_commit_git "$repo_dir" "$auth" fetch --quiet ${depth[@]+"${depth[@]}"} origin "$pin" 2>"$err_file" || true
+  if ! git -C "$repo_dir" cat-file -e "$pin^{commit}" 2>/dev/null \
+     && [[ "$(git -C "$repo_dir" rev-parse --is-shallow-repository 2>/dev/null)" == true ]]; then
+    fetch_pinned_commit_git "$repo_dir" "$auth" fetch --quiet --unshallow origin 2>"$err_file" || true
+  fi
+  if ! git -C "$repo_dir" cat-file -e "$pin^{commit}" 2>/dev/null; then
+    fetch_pinned_commit_git "$repo_dir" "$auth" fetch --quiet origin "+refs/heads/*:refs/remotes/origin/*" "+refs/tags/*:refs/tags/*" 2>"$err_file" || true
+  fi
+  if git -C "$repo_dir" cat-file -e "$pin^{commit}" 2>/dev/null; then
+    rm -f "$err_file"
+    return 0
+  fi
+  [[ ! -s "$err_file" ]] || cat "$err_file" >&2
+  rm -f "$err_file"
+  return 1
+}
+
 sync_docs_repo_to_pin() {
   local dir="$1" docs="$1/docs/repo" pin
   [[ -f "$docs/.git/HEAD" ]] || return 0
@@ -249,11 +283,7 @@ sync_docs_repo_to_pin() {
     return 0
   fi
   echo "▸ moving docs/repo to the docs pin — $DOCS_PIN_REASON"
-  if ! git -C "$docs" cat-file -e "$pin^{commit}" 2>/dev/null; then
-    local -a depth=()
-    [[ "$(git -C "$docs" rev-parse --is-shallow-repository 2>/dev/null)" == true ]] && depth=(--depth 1)
-    forge_git -C "$docs" fetch --quiet ${depth[@]+"${depth[@]}"} origin "$pin" || return 1
-  fi
+  fetch_pinned_commit "$docs" "$pin" project || return 1
   git -C "$docs" checkout --quiet --detach "$pin"
   docs_repo_write_marker_pin "$docs" "$pin"
 }

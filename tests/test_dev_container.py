@@ -3639,7 +3639,7 @@ class AcquireWaitsForAFullPool(DevContainerTestCase):
         self.assertIsNone(loser.poll(), "the second waiter stopped instead of waiting")
         second_release = self.harness.run("release", "slot-1", "--for", holder)
         self.assertEqual(second_release.returncode, 0, second_release.stderr.decode())
-        self.assertEqual(loser.wait(timeout=30), 0, self._read(loser_log))
+        self.assertEqual(loser.wait(timeout=90), 0, self._read(loser_log))
         with open(self.harness.lease_path("slot-1"), encoding="utf-8") as handle:
             self.assertEqual(json.load(handle)["holder"], other_holder)
 

@@ -307,13 +307,14 @@ compose_running() {
 
 slot_sh() {
   local sid="$1"; shift
-  local name dir ws="/workspace"
+  local name dir ws="/workspace" svc
   name=$(slot_name_of "$sid")
   dir="$slots_dir/$name"
+  svc=$(container_service_of "$dir" "$sid" 2>/dev/null) || svc=app
   if compose_running "$sid"; then
-    COMPOSE_BASE_ONLY=1 slot_compose "$dir" "$sid" exec -T -u"${CONTAINER_USER:-node}" -w"$ws" app "$@"
+    COMPOSE_BASE_ONLY=1 slot_compose "$dir" "$sid" exec -T -u"${CONTAINER_USER:-node}" -w"$ws" "$svc" "$@"
   else
-    COMPOSE_BASE_ONLY=1 slot_compose "$dir" "$sid" run --rm --no-deps -T -u"${CONTAINER_USER:-node}" -w"$ws" app "$@"
+    COMPOSE_BASE_ONLY=1 slot_compose "$dir" "$sid" run --rm --no-deps -T -u"${CONTAINER_USER:-node}" -w"$ws" "$svc" "$@"
   fi
 }
 

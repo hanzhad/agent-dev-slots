@@ -10,12 +10,13 @@ die() {
 
 usage_text() {
   cat <<USAGE
-Usage: $CALLER acquire --for <holder> [--as '<name> [<ref>]'] [--ephemeral] [--toolbox] [--allow-host <host>[,<host>]]... [--wait [--timeout <duration>]] [--refresh]
+Usage: $CALLER acquire --for <holder> [--as '<name> [<ref>]'] [--ephemeral] [--toolbox] [--repo <alias>[,<alias>]...] [--all-repos] [--allow-host <host>[,<host>]]... [--wait [--timeout <duration>]] [--refresh]
+       $CALLER attach <slot> --repo <alias>[,<alias>]... [--for <holder>] — clone optional catalog repositories into a live leased slot without restarting it
        $CALLER release <slot> --for <holder> [--discard] — <holder> must match the lease's own holder; --discard tears down dirty slots without rescue; 'evict' takes a slot that isn't yours; wipes the slot (containers, volumes, directory) once everything in it is delivered
        $CALLER park <slot>            — give back the lease on a slot that is NOT reuse-clean, without pretending it's free
        $CALLER park <slot> --clear    — remove that mark; does not touch the slot itself
        $CALLER list [--brief] [--fast]
-       $CALLER project <dir> — print the keys of <dir>/project.env, the file that connects a project
+       $CALLER project <dir> [--json] — print the keys of <dir>/project.env, or normalized catalog JSON with --json
        $CALLER adopt [<dir>] [--template | --no-template] — connect a project checkout: write project.env and the .devcontainer/README.md and AGENTS.md; reports a credential file that is not ready
        $CALLER migrate-names [--dry-run] [<dir>] — rename the old AGENT_* credential names (and the modes container-env, github-app) to the FORGE_* ones in the project.env of <dir> and in the credential file it names; prints the names it changes, never a value; --dry-run writes nothing; refuses a setting given under both names
        $CALLER migrate-identity [--dry-run] — move this project's tokens, signing key, rescue directory and live-run lock from the names of its label to the names of its key; refuses while a lease for the project exists and never overwrites; --dry-run prints the moves and changes nothing

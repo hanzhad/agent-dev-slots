@@ -56,11 +56,36 @@ source "$lib_dir/status.sh"
 source "$lib_dir/allow-hosts.sh"
 # shellcheck source=../lib/migrate-names.sh
 source "$lib_dir/migrate-names.sh"
+# shellcheck source=../lib/repos.sh
+source "$lib_dir/repos.sh"
 
 if [[ "${1:-}" == project ]]; then
-  [[ $# -eq 2 ]] || die "Usage: $CALLER project <dir>"
-  read_project_env "$2"
-  check_project_env "$2/project.env" "$PE_DEFAULT_BRANCH" "$PE_SLOT_PORTS" "${PE_SLOT_MOUNT_DIRS:-}" "${PE_SLOT_OVERLAYS:-}" "${PE_SLOT_ENV_KEYS:-}" "${PE_SLOT_MEMORY_LIMIT:-}"
+  shift
+  proj_dir="" proj_json=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --json) proj_json=1 ;;
+      -*) die "Usage: $CALLER project <dir> [--json]" ;;
+      *) [[ -z "$proj_dir" ]] || die "Usage: $CALLER project <dir> [--json]"; proj_dir="$1" ;;
+    esac
+    shift
+  done
+  [[ -n "$proj_dir" ]] || die "Usage: $CALLER project <dir> [--json]"
+  read_project_env "$proj_dir"
+  check_project_env "$proj_dir/project.env" "$PE_DEFAULT_BRANCH" "$PE_SLOT_PORTS" "${PE_SLOT_MOUNT_DIRS:-}" "${PE_SLOT_OVERLAYS:-}" "${PE_SLOT_ENV_KEYS:-}" "${PE_SLOT_MEMORY_LIMIT:-}" "$proj_dir" 1
+  if (( proj_json )); then
+    canon_root=$(project_canonical_root "$proj_dir")
+    proj_key=$(project_key_of "$proj_dir")
+    cat_json=$(slot_repos_catalog_json "$proj_dir" "${PE_SLOT_REPOS_FILE:-}" "${PE_DOCS_REPO_URL:-}" "${PE_DOCS_PIN_FILE:-.github/docs-pin}" "${PE_COMPOSE_DIR:-$DEFAULT_COMPOSE_DIR}")
+    jq -n \
+      --arg project "$PE_PROJECT" \
+      --arg project_key "$proj_key" \
+      --arg root "$canon_root" \
+      --arg default_branch "$PE_DEFAULT_BRANCH" \
+      --argjson catalog "$cat_json" \
+      '{version: 1, project: $project, project_key: $project_key, root: $root, default_branch: $default_branch, repos: $catalog.repos}'
+    exit 0
+  fi
   for key in $PROJECT_ENV_KEYS; do
     var="PE_$key"
     [[ -z "${!var+x}" ]] || printf '%s=%s\n' "$key" "${!var}"
@@ -162,6 +187,10 @@ fi
 
 self_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
+if [[ "${DEV_CONTAINER_LIB:-}" == 1 && -z "${DEV_CONTAINER_CALLER_PWD:-}" ]]; then
+  return 0
+fi
+
 # The checkout this acts on is the directory the caller was in, seen at the same
 # path here, and it must sit under the one projects root the engine was installed with.
 caller_pwd=${DEV_CONTAINER_CALLER_PWD:-}
@@ -172,6 +201,7 @@ common_dir=$(git -C "$caller_pwd" rev-parse --path-format=absolute --git-common-
 repo_root=$(dirname "$common_dir")
 outside_root "$repo_root" strict
 DOCS_PIN_FILE=${DOCS_PIN_FILE:-.github/docs-pin}
+SLOT_REPOS_FILE=""
 COMPOSE_DIR=${COMPOSE_DIR:-$DEFAULT_COMPOSE_DIR}
 COMPOSE_FILES=${COMPOSE_FILES:-docker-compose.yml}
 SECRETS_OVERLAY=${SECRETS_OVERLAY:-docker-compose.secrets.yml}
@@ -219,17 +249,20 @@ fi
 resolve_project_identity "$repo_root" "${PE_PROJECT:-}"
 project_label="$repo_root/project.env"
 [[ -f "$project_label" ]] || project_label="the environment"
-check_project_env "$project_label" "$DEFAULT_BRANCH" "$SLOT_PORT_NAMES" "$SLOT_MOUNT_DIRS" "$SLOT_OVERLAYS" "$SLOT_ENV_KEYS" "${PE_SLOT_MEMORY_LIMIT:-}"
+check_project_env "$project_label" "$DEFAULT_BRANCH" "$SLOT_PORT_NAMES" "$SLOT_MOUNT_DIRS" "$SLOT_OVERLAYS" "$SLOT_ENV_KEYS" "${PE_SLOT_MEMORY_LIMIT:-}" "$repo_root"
 read -r PRIMARY_PORT _ <<<"$SLOT_PORT_NAMES"
 if origin_url=$(git -C "$repo_root" remote get-url origin 2>/dev/null); then
-  gh_repo=$(echo "$origin_url" | sed -E 's#^(https://|ssh://)?(git@)?github\.com[:/]##; s#\.git$##')
+  gh_repo=$(repo_github_slug "$origin_url")
+  [[ -n "$gh_repo" ]] || gh_repo=$(echo "$origin_url" | sed -E 's#^(https://|ssh://)?(git@)?github\.com[:/]##; s#\.git$##')
 else
   origin_url="$repo_root"
   gh_repo=""
 fi
 
 DOCS_REPO_URL=${DOCS_REPO_URL:-https://github.com/example/demo.docs.git}
-docs_gh_repo=$(echo "$DOCS_REPO_URL" | sed -E 's#^(https://|ssh://)?(git@)?github\.com[:/]##; s#\.git$##')
+docs_gh_repo=$(repo_github_slug "$DOCS_REPO_URL")
+[[ -n "$docs_gh_repo" ]] || [[ "$DOCS_REPO_URL" != /* ]] || docs_gh_repo="${DOCS_REPO_URL%.git}"
+SLOT_REPOS_CATALOG=$(slot_repos_catalog_json "$repo_root" "${SLOT_REPOS_FILE:-}" "${DOCS_REPO_URL:-}" "${DOCS_PIN_FILE:-.github/docs-pin}" "${COMPOSE_DIR:-$DEFAULT_COMPOSE_DIR}")
 slots_dir=$(dirname "$repo_root")/dev-containers
 
 if [[ "$(basename "$(dirname "$repo_root")")" == dev-containers ]]; then
@@ -254,6 +287,8 @@ source "$lib_dir/git.sh"
 source "$lib_dir/docs.sh"
 # shellcheck source=../lib/docs-volume.sh
 source "$lib_dir/docs-volume.sh"
+# shellcheck source=../lib/repos-volume.sh
+source "$lib_dir/repos-volume.sh"
 # shellcheck source=../lib/delivery.sh
 source "$lib_dir/delivery.sh"
 # shellcheck source=../lib/agent-auth.sh
@@ -298,6 +333,7 @@ trap '(( LOCK_HELD )) && lock_release; (( AGENT_TOKEN_LOCK_HELD )) && rm -f "$AG
 if [[ "${DEV_CONTAINER_LIB:-}" != 1 ]]; then
 case "$verb" in
   acquire) cmd_acquire "$@" ;;
+  attach) cmd_attach "$@" ;;
   release) cmd_release "$@" ;;
   park) cmd_park "$@" ;;
   renew) cmd_renew "$@" ;;

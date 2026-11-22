@@ -36,11 +36,22 @@ else
   if [ "$head" != "$pin" ]; then
     echo "▸ moving docs/repo to the docs pin"
     if ! git -C docs/repo cat-file -e "$pin^{commit}" 2>/dev/null; then
-      git -C docs/repo fetch --quiet --depth 1 origin "$pin" \
-        || echo "  ! could not fetch the docs pin into docs/repo, and anything that reads docs/repo will say so" >&2
+      fetch_err=$(git -C docs/repo fetch --quiet --depth 1 origin "$pin" 2>&1) || true
+      if ! git -C docs/repo cat-file -e "$pin^{commit}" 2>/dev/null \
+         && [ "$(git -C docs/repo rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+        fetch_err=$(git -C docs/repo fetch --quiet --unshallow origin 2>&1) || true
+      fi
+      if ! git -C docs/repo cat-file -e "$pin^{commit}" 2>/dev/null; then
+        fetch_err=$(git -C docs/repo fetch --quiet origin "+refs/heads/*:refs/remotes/origin/*" "+refs/tags/*:refs/tags/*" 2>&1) || true
+      fi
     fi
-    if git -C docs/repo checkout --quiet --detach "$pin"; then
-      echo "$pin" >"$(git -C docs/repo rev-parse --absolute-git-dir)/slot-docs-pin"
+    if git -C docs/repo cat-file -e "$pin^{commit}" 2>/dev/null; then
+      if git -C docs/repo checkout --quiet --detach "$pin"; then
+        echo "$pin" >"$(git -C docs/repo rev-parse --absolute-git-dir)/slot-docs-pin"
+      fi
+    else
+      [ -z "${fetch_err:-}" ] || printf "%s\n" "$fetch_err" >&2
+      echo "  ! could not fetch the docs pin into docs/repo, and anything that reads docs/repo will say so" >&2
     fi
   fi
 fi
@@ -55,6 +66,17 @@ git -C docs/repo config --local remote.origin.pushurl "$pushurl"'
 clone_docs_repo_in_volume() {
   local proj="$1"
   docs_repo_configured || return 0
+  if declare -F clone_repos_in_volume >/dev/null 2>&1; then
+    local cat_json def_json excludes_nl=""
+    cat_json=$(slot_repos_catalog_json)
+    def_json=$(printf '%s' "$cat_json" | jq -c '[.repos[] | select(.attach == "default")]')
+    excludes_nl=$(slot_repos_paths_nl "$cat_json")
+    clone_repos_in_volume "$proj" "$def_json" "$excludes_nl" || {
+      remove_slot_volume "$proj" || true
+      die "could not set up docs/repo in the volume of '$proj' — the reason is above this line."
+    }
+    return 0
+  fi
   echo "▸ cloning the docs repository into docs/repo"
   forge_container_env "$DOCS_REPO_URL" || die "the forge credential for '$proj' could not be produced — the reason is above this line."
   (

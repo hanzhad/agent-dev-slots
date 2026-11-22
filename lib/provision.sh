@@ -39,6 +39,7 @@ PROVISION_SCRIPT+='git config --system --replace-all "credential.https://github.
 PROVISION_SCRIPT+='git config --system --replace-all gpg.format ssh; '
 PROVISION_SCRIPT+='git config --system --replace-all user.signingkey "$dir/container_signing"; '
 PROVISION_SCRIPT+='git config --system --replace-all commit.gpgsign true; '
+PROVISION_SCRIPT+='git config --system --replace-all tag.gpgsign true; '
 PROVISION_SCRIPT+='if [ -n "$gname" ]; then git config --system --replace-all user.name "$gname"; else git config --system --unset-all user.name || true; fi; '
 PROVISION_SCRIPT+='if [ -n "$gemail" ]; then git config --system --replace-all user.email "$gemail"; else git config --system --unset-all user.email || true; fi'
 
@@ -46,10 +47,17 @@ PROVISION_SCRIPT+='if [ -n "$gemail" ]; then git config --system --replace-all u
 # its project id. Returns 1 with the reason and the exact fix on stderr; the
 # callers decide what that stops.
 provision_slot() {
-  local dir="$1" sid="$2" name key user svc
+  local dir="$1" sid="$2" name key user svc env_file gname="" gemail=""
   [[ -n "$FORGE_AUTH" ]] || return 0
   name=$(slot_name_of "$sid")
   user=${CONTAINER_USER:-node}
+  env_file=$(slot_env_file_of "$sid")
+  if [[ -f "$env_file" ]]; then
+    gname=$(env_value "$env_file" GIT_USER_NAME)
+    gemail=$(env_value "$env_file" GIT_USER_EMAIL)
+  fi
+  [[ -n "$gname" ]] || gname=${SLOT_GIT_NAME:-}
+  [[ -n "$gemail" ]] || gemail=${SLOT_GIT_EMAIL:-}
 
   key=$(ensure_signing_key "$STATE" "$SLOT_PROJECT_PREFIX") || {
     echo "provision: '$name' has no signing key to install — the reason is above." >&2
@@ -60,7 +68,7 @@ provision_slot() {
     return 1
   }
   slot_compose "$dir" "$sid" exec -T -u root "$svc" \
-    sh -c "$PROVISION_SCRIPT" dev-container-provision "/home/$user" "$user" "$(cat "$key.pub")" "$PROVISION_GIT_HELPER" "${SLOT_GIT_NAME:-}" "${SLOT_GIT_EMAIL:-}" <"$key" || {
+    sh -c "$PROVISION_SCRIPT" dev-container-provision "/home/$user" "$user" "$(cat "$key.pub")" "$PROVISION_GIT_HELPER" "$gname" "$gemail" <"$key" || {
     echo "provision: could not install the git credentials and the signing key into '$name' (the reason is above). Is its container running? Fix that, then '$CALLER restart $name' runs this again." >&2
     return 1
   }

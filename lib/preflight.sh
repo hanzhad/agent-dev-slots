@@ -85,6 +85,56 @@ credential_problems() {
   fi
 }
 
+# app_repos_problems ROOT MODE REL — when MODE == app, statically verify every
+# auth == "project" catalog repo shares the primary repo's GitHub owner and
+# appears in FORGE_APP_REPOS. Appends to PF_WHAT/PF_FIX.
+app_repos_problems() {
+  local root="$1" mode="$2" rel="$3" origin="${4:-${origin_url:-}}"
+  [[ "$mode" == app ]] || return 0
+  declare -F slot_repos_catalog_json >/dev/null 2>&1 || return 0
+  local file="$root/$rel"
+  [[ -f "$file" ]] || return 0
+  local app_repos
+  app_repos=$(cred_value "$file" FORGE_APP_REPOS)
+
+  local primary_origin="" primary_slug="" primary_owner=""
+  primary_origin=$(git -C "$root" config --get remote.origin.url 2>/dev/null || true)
+  [[ -n "$primary_origin" ]] || primary_origin="$origin"
+  if [[ -n "$primary_origin" ]]; then
+    primary_slug=$(repo_github_slug "$primary_origin")
+    [[ -z "$primary_slug" ]] || primary_owner="${primary_slug%%/*}"
+  fi
+
+  local catalog alias path url auth slug repo_owner repo_name tok found
+  catalog=$(slot_repos_catalog_json "$root") || return 0
+  while IFS=$'\t' read -r alias path url auth; do
+    [[ -n "$alias" && "$auth" == "project" ]] || continue
+    slug=$(repo_github_slug "$url")
+    [[ -n "$slug" ]] || continue
+    repo_owner="${slug%%/*}"
+    repo_name="${slug#*/}"
+    if [[ -n "$primary_owner" && "$repo_owner" != "$primary_owner" ]]; then
+      preflight_problem \
+        "FORGE_AUTH=app: catalog repo '$alias' ($url) belongs to GitHub owner '$repo_owner', which differs from primary repository owner '$primary_owner'" \
+        "use a repository under '$primary_owner' for '$alias', set \"auth\": \"none\" on '$alias' if it is public and read-only, or switch to FORGE_AUTH=token."
+    fi
+    if [[ -n "$app_repos" ]]; then
+      found=0
+      for tok in $app_repos; do
+        if [[ "$tok" == "$repo_name" || "$tok" == "$slug" ]]; then
+          found=1
+          break
+        fi
+      done
+      if (( ! found )); then
+        preflight_problem \
+          "FORGE_AUTH=app: catalog repo '$alias' ($repo_name) is missing from FORGE_APP_REPOS in $rel" \
+          "add '$repo_name' to FORGE_APP_REPOS in $rel (and grant the GitHub App installation access to it), or set \"auth\": \"none\" on '$alias' if it is public and read-only."
+      fi
+    fi
+  done < <(printf '%s' "$catalog" | jq -r '.repos[] | [.alias, .path, .url, (.auth // "project")] | @tsv')
+}
+
 # The sentence the exact message of an invisible path ends with.
 engine_outside_phrase() {
   printf 'outside what the engine container can see (it mounts %s)' "$(engine_visible_summary)"

@@ -11,7 +11,7 @@ cd "$sub" 2>/dev/null || { echo norepo; exit 0; }
 if [ ! -e .git ]; then
   echo norepo
   if [ "$sub" = . ]; then
-    for c in docs/repo docs/fix; do
+    for c in ${5:-docs/repo docs/fix}; do
       [ ! -f "$c/.git/HEAD" ] || printf "clone%s%s\n" "$T" "$c"
     done
   fi
@@ -54,7 +54,7 @@ printf "user%s%s\n" "$T" "$(git config user.name 2>/dev/null || true)"
 cdir=${4:-'"$DEFAULT_COMPOSE_DIR"'}
 [ ! -s "$cdir/.slot-ports" ] || printf "ports%s1\n" "$T"
 [ ! -s "$cdir/.slot-ports" ] || sed "s/^/slotport$T/" "$cdir/.slot-ports"
-for c in docs/repo docs/fix; do
+for c in ${5:-docs/repo docs/fix}; do
   [ ! -f "$c/.git/HEAD" ] || printf "clone%s%s\n" "$T" "$c"
 done
 if [ -f docs/repo/.git/HEAD ]; then
@@ -156,7 +156,11 @@ facts_of() {
       fetch=skip
       echo "⚠ '$sid' is leased — not fetching origin while it may be in use; delivered/held verdicts are only as fresh as its last fetch" >&2
     fi
-    if ! slot_sh "$sid" sh -c "$FACTS_SCRIPT" sh "$sub" "$fetch" "$DEFAULT_BRANCH" "$COMPOSE_DIR" >"$f.tmp" 2>"$f.err"; then
+    local extra_paths=""
+    if declare -F slot_repos_all_present_paths >/dev/null 2>&1; then
+      extra_paths=$(slot_repos_all_present_paths "$sid" "${SLOT_REPOS_CATALOG:-}" | tr '\n' ' ')
+    fi
+    if ! slot_sh "$sid" sh -c "$FACTS_SCRIPT" sh "$sub" "$fetch" "$DEFAULT_BRANCH" "$COMPOSE_DIR" "$extra_paths" >"$f.tmp" 2>"$f.err"; then
       echo "⚠ could not read '$sid' ($sub): its container would not run — $(tail -1 "$f.err" 2>/dev/null)" >&2
       echo error >"$f.tmp"
     elif grep -q "^fetch"$'	'"failed" "$f.tmp"; then

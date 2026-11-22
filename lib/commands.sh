@@ -8,8 +8,10 @@ no_term_refusal() {
 }
 
 cmd_acquire() {
-  local holder="" wait=0 owner="-" timeout_seconds="" deadline=0 refresh=0 ephemeral=0 eph_idle_limit="" toolbox=0
+  local holder="" wait=0 owner="-" timeout_seconds="" deadline=0 refresh=0 ephemeral=0 eph_idle_limit="" toolbox=0 all_repos=0
+  COLLECTED_REPO_ALIASES=()
   ALLOW_HOSTS_REQUESTED=()
+  ACQUIRE_SELECTED_REPOS_JSON=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --for) shift; [[ $# -gt 0 ]] || die "--for needs a value"; holder="$1"; reject_duration_as_holder "$holder" ;;
@@ -17,6 +19,14 @@ cmd_acquire() {
       --refresh) refresh=1 ;;
       --ephemeral) ephemeral=1 ;;
       --toolbox) toolbox=1 ;;
+      --all-repos) all_repos=1 ;;
+      --repo)
+        shift; [[ $# -gt 0 ]] || die "--repo needs a value"
+        slot_repos_collect_aliases "$1"
+        ;;
+      --repo=*)
+        slot_repos_collect_aliases "${1#--repo=}"
+        ;;
       --ttl|--ttl=*) no_term_refusal "--ttl" ;;
       --as) shift; [[ $# -gt 0 ]] || die "--as needs a value"; owner="$1" ;;
       --allow-host) shift; [[ $# -gt 0 ]] || die "--allow-host needs a value"; allow_hosts_collect "$1" ;;
@@ -26,6 +36,9 @@ cmd_acquire() {
     shift
   done
   [[ -n "$holder" ]] || die "acquire needs --for <holder>"
+  local catalog="${SLOT_REPOS_CATALOG:-$(slot_repos_catalog_json)}"
+  ACQUIRE_SELECTED_REPOS_JSON=$(slot_repos_select_for_acquire "$catalog" "$all_repos" ${COLLECTED_REPO_ALIASES[@]+"${COLLECTED_REPO_ALIASES[@]}"})
+  slot_repos_check_untracked "$repo_root" "$catalog"
   (( ephemeral )) && eph_idle_limit="$EPHEMERAL_IDLE_LIMIT_DEFAULT"
   if [[ "${AUTO_ADOPTED:-0}" == "1" ]]; then
     if ! ( cmd_doctor >/dev/null 2>&1 ); then
@@ -1286,6 +1299,85 @@ cmd_install() {
   build_slot_image "$dir" "$sid" "$refresh"
 }
 
+
+cmd_attach() {
+  local name="" for_holder=""
+  COLLECTED_REPO_ALIASES=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo)
+        shift; [[ $# -gt 0 ]] || die "--repo needs a value"
+        slot_repos_collect_aliases "$1"
+        ;;
+      --repo=*)
+        slot_repos_collect_aliases "${1#--repo=}"
+        ;;
+      --for)
+        shift; [[ $# -gt 0 ]] || die "attach: --for needs a value"; for_holder="$1"
+        ;;
+      -*) die "unknown flag to attach: $1" ;;
+      *)
+        [[ -z "$name" ]] || die "attach takes one slot name: got '$name' and '$1'"
+        name="$1"
+        ;;
+    esac
+    shift
+  done
+  [[ -n "$name" ]] || die "attach needs a slot name: $CALLER attach <slot> --repo <alias>[,<alias>]... [--for <holder>]"
+  valid_name "$name"
+  (( ${#COLLECTED_REPO_ALIASES[@]} > 0 )) || die "attach requires --repo <alias>[,<alias>]..."
+  name="${name#"${SLOT_PROJECT_PREFIX}-"}"
+
+  local catalog="${SLOT_REPOS_CATALOG:-$(slot_repos_catalog_json)}"
+  local requested_json
+  requested_json=$(slot_repos_select_for_attach "$catalog" "${COLLECTED_REPO_ALIASES[@]}")
+
+  local sid dir="$slots_dir/$name"
+  sid=$(slot_id_of "$name")
+  if ! slot_exists "$sid"; then
+    if foreign_slot_exists "$name"; then
+      die "'$name': not this project's own slot."
+    fi
+    die "no slot directory at $dir — 'attach' only acts on a slot that already exists."
+  fi
+  [[ -d "$dir" ]] || dir=""
+  slot_is_ours "$sid" || die "'$name': not this project's own slot."
+
+  local lease; lease=$(lease_file_of "$sid")
+  [[ -f "$lease" ]] || die "'$sid' has no lease — 'attach' requires an active lease."
+  local holder; holder=$(lease_field "$lease" holder)
+  if [[ -n "$for_holder" && "$for_holder" != "$holder" ]]; then
+    die "refusing to attach to '$sid' — it is leased to '$holder', not '$for_holder'."
+  fi
+
+  compose_running "$dir" "$sid" || die "'$sid' has no running containers — '$CALLER restart $name' brings them back."
+
+  slot_repos_check_untracked "$repo_root" "$requested_json"
+
+  local existing_state to_clone_json excludes_nl
+  existing_state=$(slot_repos_read_state "$sid")
+  to_clone_json=$(jq -nc --argjson req "$requested_json" --argjson ex "$existing_state" '
+    ($ex | map(.alias)) as $have
+    | [$req[] | select(.alias as $a | ($have | index($a)) == null)]
+  ')
+  excludes_nl=$(slot_repos_paths_nl "$catalog")
+
+  if (( $(printf '%s' "$to_clone_json" | jq 'length') > 0 )); then
+    if [[ -n "$dir" ]]; then
+      clone_repos_in_dir "$dir" "$to_clone_json" || die "could not attach repository into '$sid' — the reason is above this line."
+      apply_checkout_check_stat "$dir"
+    else
+      clone_repos_in_volume "$sid" "$to_clone_json" "$excludes_nl" || die "could not attach repository into '$sid' — the reason is above this line."
+    fi
+    apply_checkout_git_identity "${dir:-$sid}"
+  fi
+
+  local requested_state merged_state
+  requested_state=$(slot_repos_to_state_entries "$requested_json")
+  merged_state=$(slot_repos_merge_state "$sid" "$requested_state")
+  slot_repos_sync_lease "$sid" "$merged_state"
+  echo "▸ attached repository alias(es) to '$sid'"
+}
 
 cmd_clean() {
   local all=0 slot_name=""

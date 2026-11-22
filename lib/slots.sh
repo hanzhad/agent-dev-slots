@@ -127,8 +127,12 @@ slot_looks_complete() {
   local sid="${2:-$(slot_id_of "$dir")}"
   [[ -s "$(slot_ports_file "$sid")" ]] || return 1
   [[ -f "$(slot_env_file_of "$sid")" || ( -n "$dir" && -f "$dir/$COMPOSE_DIR/.env" ) ]] || return 1
-  if [[ -n "$dir" && -d "$dir" ]]; then
-    [[ -e "$dir/docs/repo/.git" ]] || return 1
+  if [[ -n "$dir" && -d "$dir" && -n "${SLOT_REPOS_CATALOG:-}" ]]; then
+    local path
+    while IFS= read -r path; do
+      [[ -n "$path" ]] || continue
+      [[ -e "$dir/$path/.git" ]] || return 1
+    done < <(printf '%s' "$SLOT_REPOS_CATALOG" | jq -r '.repos[] | select(.attach == "default") | .path')
   fi
   return 0
 }
@@ -138,8 +142,14 @@ slot_unbuilt_reason() {
   local sid="${2:-$(slot_id_of "$dir")}"
   slot_looks_complete "$dir" "$sid" && return 1
   local missing=""
-  if [[ -n "$dir" && -d "$dir" && ! -e "$dir/docs/repo/.git" ]]; then
-    missing="${missing:+$missing, }docs/repo (the docs clone is missing)"
+  if [[ -n "$dir" && -d "$dir" && -n "${SLOT_REPOS_CATALOG:-}" ]]; then
+    local path
+    while IFS= read -r path; do
+      [[ -n "$path" ]] || continue
+      if [[ ! -e "$dir/$path/.git" ]]; then
+        missing="${missing:+$missing, }$path (the repository clone is missing)"
+      fi
+    done < <(printf '%s' "$SLOT_REPOS_CATALOG" | jq -r '.repos[] | select(.attach == "default") | .path')
   fi
   [[ -s "$(slot_ports_file "$sid")" ]] || missing="${missing:+$missing, }recorded ports"
   [[ -f "$(slot_env_file_of "$sid")" || ( -n "$dir" && -f "$dir/$COMPOSE_DIR/.env" ) ]] \
@@ -147,34 +157,63 @@ slot_unbuilt_reason() {
   echo "its creation never finished — missing $missing. Remove it with 'down $(slot_name_of "$sid") --force' and acquire again."
 }
 
+slot_catalog_repos_iter() {
+  local cat="${SLOT_REPOS_CATALOG:-}"
+  if [[ -n "$cat" ]] && [[ "$(printf '%s' "$cat" | jq -r '.repos | length' 2>/dev/null || echo 0)" -gt 0 ]]; then
+    local alias path url mode legacy_docs slug is_ro colprefix
+    while IFS=$'\037' read -r alias path url mode legacy_docs; do
+      [[ -n "$alias" ]] || continue
+      slug=$(repo_github_slug "$url")
+      if [[ -z "$slug" && "$legacy_docs" == "1" && "$url" == /* ]]; then
+        slug="${docs_gh_repo:-}"
+      fi
+      [[ "$mode" == "ro" ]] && is_ro=1 || is_ro=0
+      case "$alias" in
+        docs) colprefix="docs" ;;
+        docs-fix) colprefix="docsfix" ;;
+        *) colprefix="$alias" ;;
+      esac
+      printf '%s\037%s\037%s\037%s\037%s\037%s\n' "$path" "$path" "$colprefix" "$url" "$slug" "$is_ro"
+    done < <(printf '%s' "$cat" | jq -r '.repos[] | [.alias, .path, .url, .mode, (if .legacy_docs then "1" else "0" end)] | join("\u001f")')
+  else
+    printf '%s\037%s\037%s\037%s\037%s\037%s\n' "docs/repo" "docs/repo" "docs" "${DOCS_REPO_URL:-}" "${docs_gh_repo:-}" "1"
+    printf '%s\037%s\037%s\037%s\037%s\037%s\n' "docs/fix" "docs/fix" "docsfix" "${DOCS_REPO_URL:-}" "${docs_gh_repo:-}" "0"
+  fi
+}
+
 slot_is_clean_for_reuse() {
   local dir="$1"
+  local _path _lbl _col _url _slug _ro
   if target_is_facts "$dir"; then
     facts_of "$dir" >/dev/null
     if facts_norepo "$dir"; then
-      docs_repo_is_clean "$dir" || return 1
-      docs_repo_is_clean "$dir" docs/fix docs/fix docsfix || return 1
+      while IFS=$'\037' read -r _path _lbl _col _url _slug _ro; do
+        docs_repo_is_clean "$dir" "$_path" "$_lbl" "$_col" "$_url" "$_slug" "$_ro" || return 1
+      done < <(slot_catalog_repos_iter)
       return 0
     fi
     ! facts_unreadable "$dir" || return 1
     [[ -z "$(facts_lines "$dir" status)" ]] || return 1
     [[ -z "$(facts_lines "$dir" stash)" ]] || return 1
-    docs_repo_is_clean "$dir" || return 1
-    docs_repo_is_clean "$dir" docs/fix docs/fix docsfix || return 1
+    while IFS=$'\037' read -r _path _lbl _col _url _slug _ro; do
+      docs_repo_is_clean "$dir" "$_path" "$_lbl" "$_col" "$_url" "$_slug" "$_ro" || return 1
+    done < <(slot_catalog_repos_iter)
     head_is_delivered "$dir"
     return
   fi
   [[ -d "$dir" ]] || return 1
   if [[ ! -e "$dir/.git" ]]; then
-    docs_repo_is_clean "$dir" || return 1
-    docs_repo_is_clean "$dir" docs/fix docs/fix docsfix || return 1
+    while IFS=$'\037' read -r _path _lbl _col _url _slug _ro; do
+      docs_repo_is_clean "$dir" "$_path" "$_lbl" "$_col" "$_url" "$_slug" "$_ro" || return 1
+    done < <(slot_catalog_repos_iter)
     return 0
   fi
   git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 1
   [[ -z "$(git -C "$dir" status --porcelain 2>/dev/null)" ]] || return 1
   [[ -z "$(git -C "$dir" stash list 2>/dev/null)" ]] || return 1
-  docs_repo_is_clean "$dir" || return 1
-  docs_repo_is_clean "$dir" docs/fix docs/fix docsfix || return 1
+  while IFS=$'\037' read -r _path _lbl _col _url _slug _ro; do
+    docs_repo_is_clean "$dir" "$_path" "$_lbl" "$_col" "$_url" "$_slug" "$_ro" || return 1
+  done < <(slot_catalog_repos_iter)
   head_is_delivered "$dir"
 }
 
@@ -221,11 +260,13 @@ slot_dirty_column() {
   n=$(printf '%s' "$stash_out" | grep -c . || true)
   (( n > 0 )) && out="${out:+$out,}stash:$n"
 
-  docs_repo_is_clean "$dir" || out="${out:+$out,}$DOCS_DIRTY_COLUMN"
-  local docs_repo_prunable=("${DOCS_PRUNABLE_BRANCHES[@]}")
-  docs_repo_is_clean "$dir" docs/fix docs/fix docsfix || out="${out:+$out,}$DOCS_DIRTY_COLUMN"
-  local docs_fix_prunable=("${DOCS_PRUNABLE_BRANCHES[@]}")
-  DOCS_PRUNABLE_BRANCHES=("${docs_repo_prunable[@]}" "${docs_fix_prunable[@]}")
+  local -a all_prunable=()
+  local _path _lbl _col _url _slug _ro
+  while IFS=$'\037' read -r _path _lbl _col _url _slug _ro; do
+    docs_repo_is_clean "$dir" "$_path" "$_lbl" "$_col" "$_url" "$_slug" "$_ro" || out="${out:+$out,}$DOCS_DIRTY_COLUMN"
+    (( ${#DOCS_PRUNABLE_BRANCHES[@]} == 0 )) || all_prunable+=("${DOCS_PRUNABLE_BRANCHES[@]}")
+  done < <(slot_catalog_repos_iter)
+  DOCS_PRUNABLE_BRANCHES=(${all_prunable[@]+"${all_prunable[@]}"})
 
   if (( has_repo )); then
     local head_branch head_held=0
@@ -294,8 +335,10 @@ slot_dirty_report() {
       [[ -z "$v" ]] || out+="  stashed:"$'\n'"$(printf '%s\n' "$v" | sed 's/^/    /')"$'\n'
     fi
   fi
-  docs_repo_is_clean "$dir" || out+="  $DOCS_DIRTY_REASON"$'\n'
-  docs_repo_is_clean "$dir" docs/fix docs/fix docsfix || out+="  $DOCS_DIRTY_REASON"$'\n'
+  local _path _lbl _col _url _slug _ro
+  while IFS=$'\037' read -r _path _lbl _col _url _slug _ro; do
+    docs_repo_is_clean "$dir" "$_path" "$_lbl" "$_col" "$_url" "$_slug" "$_ro" || out+="  $DOCS_DIRTY_REASON"$'\n'
+  done < <(slot_catalog_repos_iter)
   if (( has_repo )); then
     if [[ -z "$(head_branch_of "$dir")" ]] && ! head_is_delivered "$dir"; then
       local tip
@@ -451,6 +494,16 @@ create_slot() {
     die "slot dir already exists: $slots_dir/$name"
   fi
 
+  local catalog="${SLOT_REPOS_CATALOG:-$(slot_repos_catalog_json)}"
+  slot_repos_check_untracked "$repo_root" "$catalog"
+  local selected_repos="${ACQUIRE_SELECTED_REPOS_JSON:-}"
+  if [[ -z "$selected_repos" ]]; then
+    selected_repos=$(slot_repos_select_for_acquire "$catalog" 0)
+  fi
+  local excludes_nl excludes_sp
+  excludes_nl=$(slot_repos_paths_nl "$catalog")
+  excludes_sp=$(printf '%s' "$excludes_nl" | tr '\n' ' ')
+
   echo "▸ creating workspace volume $vol"
   docker volume create \
     --label "dev-container.sid=$proj" \
@@ -469,7 +522,7 @@ create_slot() {
   echo "▸ cloning the main checkout into $vol"
   slot_compose "$proj" run --rm --no-deps -T -u root \
       -v "$repo_root:/src:ro" --entrypoint sh "$svc" -c \
-      'set -e; ws=$1; origin=$2; user=$3; git config --global --add safe.directory "*"; git clone --quiet --no-hardlinks --no-checkout /src "$ws/.dev-container-clone"; mv "$ws/.dev-container-clone/.git" "$ws/.git"; rmdir "$ws/.dev-container-clone"; git -C "$ws" remote set-url origin "$origin"; git -C "$ws" reset --quiet --hard; git -C "$ws" config --local core.checkStat minimal; [ ! -d "/src/$5" ] || [ -d "$ws/$5" ] || { set -f; tar -C /src -cf - $4 "$5" | tar -C "$ws" -xpf -; set +f; }; [ ! -f /src/project.env ] || [ -f "$ws/project.env" ] || cp /src/project.env "$ws/project.env"; [ ! -f /src/bin/dev-container ] || [ -f "$ws/bin/dev-container" ] || { mkdir -p "$ws/bin"; cp /src/bin/dev-container "$ws/bin/dev-container"; }; exclude=$(git -C "$ws" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || git -C "$ws" rev-parse --git-path info/exclude 2>/dev/null || echo "$ws/.git/info/exclude"); case "$exclude" in /*) ;; *) exclude="$ws/$exclude" ;; esac; mkdir -p "$(dirname "$exclude")"; for p in "/$5/" "/project.env" "/bin/dev-container"; do grep -Fxq "$p" "$exclude" 2>/dev/null || echo "$p" >>"$exclude"; done; mounts=$(awk -v ws="$ws/" "index(\$5, ws) == 1 { print \$5 }" /proc/self/mountinfo); set --; for m in $mounts; do set -- "$@" -path "$m" -prune -o; done; find "$ws" "$@" -exec chown -h "$user:$user" {} +' sh "/workspace" "$origin_url" "${CONTAINER_USER:-node}" "$(devcontainer_exclude_words "$repo_root")" "$COMPOSE_DIR" \
+      'set -e; ws=$1; origin=$2; user=$3; cat_excludes=${6-}; git config --global --add safe.directory "*"; git clone --quiet --no-hardlinks --no-checkout /src "$ws/.dev-container-clone"; mv "$ws/.dev-container-clone/.git" "$ws/.git"; rmdir "$ws/.dev-container-clone"; git -C "$ws" remote set-url origin "$origin"; git -C "$ws" reset --quiet --hard; git -C "$ws" config --local core.checkStat minimal; [ ! -d "/src/$5" ] || [ -d "$ws/$5" ] || { set -f; tar -C /src -cf - $4 "$5" | tar -C "$ws" -xpf -; set +f; }; [ ! -f /src/project.env ] || [ -f "$ws/project.env" ] || cp /src/project.env "$ws/project.env"; [ ! -f /src/bin/dev-container ] || [ -f "$ws/bin/dev-container" ] || { mkdir -p "$ws/bin"; cp /src/bin/dev-container "$ws/bin/dev-container"; }; exclude=$(git -C "$ws" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || git -C "$ws" rev-parse --git-path info/exclude 2>/dev/null || echo "$ws/.git/info/exclude"); case "$exclude" in /*) ;; *) exclude="$ws/$exclude" ;; esac; mkdir -p "$(dirname "$exclude")"; for p in "/$5/" "/project.env" "/bin/dev-container"; do grep -Fxq "$p" "$exclude" 2>/dev/null || echo "$p" >>"$exclude"; done; for cp in $cat_excludes; do [ -n "$cp" ] || continue; grep -Fxq "/$cp" "$exclude" 2>/dev/null || printf "/%s\n" "$cp" >>"$exclude"; done; mounts=$(awk -v ws="$ws/" "index(\$5, ws) == 1 { print \$5 }" /proc/self/mountinfo); set --; for m in $mounts; do set -- "$@" -path "$m" -prune -o; done; find "$ws" "$@" -exec chown -h "$user:$user" {} +' sh "/workspace" "$origin_url" "${CONTAINER_USER:-node}" "$(devcontainer_exclude_words "$repo_root")" "$COMPOSE_DIR" "$excludes_sp" \
     || die "cloning into '$proj' failed — the reason is above this line."
 
   apply_checkout_git_identity "$proj"
@@ -491,6 +544,7 @@ create_slot() {
       cp "$repo_root/bin/dev-container" "$target_dir/bin/dev-container"
     fi
     adopt_exclude_project_files "$target_dir"
+    slot_repos_exclude_in_dir "$target_dir" "$catalog"
 
     local copy_file
     local -a copy_files
@@ -513,16 +567,14 @@ create_slot() {
     done
 
     if [[ -n "${dir:-}" ]]; then
-      echo "▸ cloning the docs repository into docs/repo"
-      forge_git clone --depth 1 --quiet -- "$DOCS_REPO_URL" "$target_dir/docs/repo"
-      exclude_docs_clones "$target_dir"
-      forge_git -C "$target_dir" fetch --quiet origin "refs/heads/$(default_branch "$target_dir")" 2>/dev/null \
-        || echo "  ! could not fetch origin — docs/repo follows the pin on $repo_root's own $(default_branch "$target_dir"), which may be behind" >&2
-      sync_docs_repo_to_pin "$target_dir" \
-        || echo "  ! could not fetch the docs pin into docs/repo — $DOCS_PIN_REASON, and anything that reads docs/repo will say so" >&2
-      guard_docs_repo_readonly "$target_dir"
+      clone_repos_in_dir "$target_dir" "$selected_repos" || {
+        die "cloning extra repositories into '$target_dir' failed — the reason is above this line."
+      }
     else
-      clone_docs_repo_in_volume "$proj"
+      clone_repos_in_volume "$proj" "$selected_repos" "$excludes_nl" || {
+        remove_slot_volume "$proj" || true
+        die "could not set up repositories in the volume of '$proj' — the reason is above this line."
+      }
     fi
     apply_checkout_check_stat "$target_dir"
   else
@@ -534,7 +586,19 @@ create_slot() {
       echo "▸ copying $copy_file"
       slot_helper_run "$proj" sh -c 'mkdir -p "$(dirname "$1")" && cat >"$1"' sh "$copy_file" <"$repo_root/$copy_file"
     done
-    clone_docs_repo_in_volume "$proj"
+    clone_repos_in_volume "$proj" "$selected_repos" "$excludes_nl" || {
+      remove_slot_volume "$proj" || true
+      die "could not set up repositories in the volume of '$proj' — the reason is above this line."
+    }
+  fi
+
+  if (( $(printf '%s' "$selected_repos" | jq 'length') > 0 )); then
+    apply_checkout_git_identity "$proj"
+  fi
+
+  ACQUIRE_STATE_REPOS_JSON=$(slot_repos_to_state_entries "$selected_repos")
+  if [[ -n "${SLOT_REPOS_FILE:-}" ]] && (( $(printf '%s' "$selected_repos" | jq 'length') > 0 )); then
+    slot_repos_write_state "$proj" "$ACQUIRE_STATE_REPOS_JSON"
   fi
 
   lock_acquire
@@ -595,7 +659,9 @@ finish_acquire() {
   token_sha256=$(printf '%s' "$raw_token" | adopt_sha256)
   raw_token=""
 
-  write_lease "$(lease_file_of "$slot_id")" "$holder" "$slot_id" "$epoch" "$key" "$ssh_port" "$owner" "$repo_root" "$token_sha256" "$ephemeral" "$idle_limit"
+  local slot_repos_json
+  slot_repos_json="${ACQUIRE_STATE_REPOS_JSON:-$(slot_repos_read_state "$slot_id")}"
+  write_lease "$(lease_file_of "$slot_id")" "$holder" "$slot_id" "$epoch" "$key" "$ssh_port" "$owner" "$repo_root" "$token_sha256" "$ephemeral" "$idle_limit" "$slot_repos_json"
   RESERVED_LEASE=""
   write_holder_file "$dir" "$holder" "$owner" "$slot_id" "$epoch"
 
@@ -742,22 +808,17 @@ slot_acquire_verdict() {
         ACQUIRE_REASON="dirty:uncommitted-or-stashed (fast: not delivery-checked)"
         return 1
       fi
-      if facts_lines "$check_target" clone | grep -qxF "docs/repo"; then
-        local df; df=$(facts_file "$check_target" docs/repo)
-        facts_of "$check_target" docs/repo >/dev/null
-        if facts_unreadable "$df" || [[ -n "$(facts_lines "$df" status)" || -n "$(facts_lines "$df" stash)" ]]; then
-          ACQUIRE_REASON="dirty:docs uncommitted-or-stashed (fast: not delivery-checked)"
-          return 1
+      local _path _lbl _col _url _slug _ro df
+      while IFS=$'\037' read -r _path _lbl _col _url _slug _ro; do
+        if facts_lines "$check_target" clone | grep -qxF "$_path"; then
+          df=$(facts_file "$check_target" "$_path")
+          facts_of "$check_target" "$_path" >/dev/null
+          if facts_unreadable "$df" || [[ -n "$(facts_lines "$df" status)" || -n "$(facts_lines "$df" stash)" ]]; then
+            ACQUIRE_REASON="dirty:${_col} uncommitted-or-stashed (fast: not delivery-checked)"
+            return 1
+          fi
         fi
-      fi
-      if facts_lines "$check_target" clone | grep -qxF "docs/fix"; then
-        local dff; dff=$(facts_file "$check_target" docs/fix)
-        facts_of "$check_target" docs/fix >/dev/null
-        if facts_unreadable "$dff" || [[ -n "$(facts_lines "$dff" status)" || -n "$(facts_lines "$dff" stash)" ]]; then
-          ACQUIRE_REASON="dirty:docs/fix uncommitted-or-stashed (fast: not delivery-checked)"
-          return 1
-        fi
-      fi
+      done < <(slot_catalog_repos_iter)
     else
       if ! slot_is_clean_for_reuse "$check_target"; then
         ACQUIRE_REASON="dirty:$(slot_dirty_column "$check_target")"
@@ -797,20 +858,16 @@ slot_acquire_verdict() {
       ACQUIRE_REASON="dirty:uncommitted-or-stashed (fast: not delivery-checked)"
       return 1
     fi
-    local docs="$check_dir/docs/repo"
-    if [[ -f "$docs/.git/HEAD" ]] \
-       && { [[ -n "$(git -C "$docs" status --porcelain 2>/dev/null)" ]] \
-            || [[ -n "$(git -C "$docs" stash list 2>/dev/null)" ]]; }; then
-      ACQUIRE_REASON="dirty:docs uncommitted-or-stashed (fast: not delivery-checked)"
-      return 1
-    fi
-    local docs_fix="$check_dir/docs/fix"
-    if [[ -f "$docs_fix/.git/HEAD" ]] \
-       && { [[ -n "$(git -C "$docs_fix" status --porcelain 2>/dev/null)" ]] \
-            || [[ -n "$(git -C "$docs_fix" stash list 2>/dev/null)" ]]; }; then
-      ACQUIRE_REASON="dirty:docs/fix uncommitted-or-stashed (fast: not delivery-checked)"
-      return 1
-    fi
+    local _path _lbl _col _url _slug _ro sub_dir
+    while IFS=$'\037' read -r _path _lbl _col _url _slug _ro; do
+      sub_dir="$check_dir/$_path"
+      if [[ -f "$sub_dir/.git/HEAD" ]] \
+         && { [[ -n "$(git -C "$sub_dir" status --porcelain 2>/dev/null)" ]] \
+              || [[ -n "$(git -C "$sub_dir" stash list 2>/dev/null)" ]]; }; then
+        ACQUIRE_REASON="dirty:${_col} uncommitted-or-stashed (fast: not delivery-checked)"
+        return 1
+      fi
+    done < <(slot_catalog_repos_iter)
   else
     if [[ -n "$check_dir" && -d "$check_dir" ]] && ! slot_is_clean_for_reuse "$check_dir"; then
       ACQUIRE_REASON="dirty:$(slot_dirty_column "$check_dir")"

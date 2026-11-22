@@ -327,7 +327,7 @@ cmd_adopt() {
   local compose_dir="$DEFAULT_COMPOSE_DIR"
   if [[ -f "$root/project.env" ]]; then
     read_project_env "$root"
-    check_project_env "$root/project.env" "$PE_DEFAULT_BRANCH" "$PE_SLOT_PORTS" "${PE_SLOT_MOUNT_DIRS:-}" "${PE_SLOT_OVERLAYS:-}" "${PE_SLOT_ENV_KEYS:-}" "${PE_SLOT_MEMORY_LIMIT:-}"
+    check_project_env "$root/project.env" "$PE_DEFAULT_BRANCH" "$PE_SLOT_PORTS" "${PE_SLOT_MOUNT_DIRS:-}" "${PE_SLOT_OVERLAYS:-}" "${PE_SLOT_ENV_KEYS:-}" "${PE_SLOT_MEMORY_LIMIT:-}" "$root" 1
     compose_dir=${PE_COMPOSE_DIR:-$DEFAULT_COMPOSE_DIR}
     adopt_ensure_compose "$root" "$compose_dir" "${PE_COMPOSE_FILES:-docker-compose.yml}"
   else
@@ -353,7 +353,7 @@ cmd_adopt() {
     } >"$root/project.env.tmp.$$"
     mv "$root/project.env.tmp.$$" "$root/project.env"
     read_project_env "$root"
-    check_project_env "$root/project.env" "$PE_DEFAULT_BRANCH" "$PE_SLOT_PORTS" "${PE_SLOT_MOUNT_DIRS:-}" "${PE_SLOT_OVERLAYS:-}" "${PE_SLOT_ENV_KEYS:-}" "${PE_SLOT_MEMORY_LIMIT:-}"
+    check_project_env "$root/project.env" "$PE_DEFAULT_BRANCH" "$PE_SLOT_PORTS" "${PE_SLOT_MOUNT_DIRS:-}" "${PE_SLOT_OVERLAYS:-}" "${PE_SLOT_ENV_KEYS:-}" "${PE_SLOT_MEMORY_LIMIT:-}" "$root" 1
   fi
 
   adopt_write_dotenv "$root" "$compose_dir"

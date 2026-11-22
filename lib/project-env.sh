@@ -2,7 +2,7 @@
 
 SLOT_PORT_BLOCK=16
 
-PROJECT_ENV_KEYS="PROJECT DEFAULT_BRANCH SLOT_PORTS SLOT_FORBIDDEN_PORTS DOCS_REPO_URL DOCS_PIN_FILE SIGNING_KEY_VOLUME SHARED_CACHE_VOLUME PNPM_STORE_VOLUME COMPOSE_DIR COMPOSE_FILES SECRETS_OVERLAY SLOT_ENV_KEYS SLOT_ENV_SET SLOT_COPY_FILES SLOT_MOUNT_DIRS SLOT_OVERLAYS FORGE_AUTH FORGE_AUTH_FILE LIVE_ENV_FILE LIVE_SERVICE LIVE_GATEWAY SLOT_MEMORY_LIMIT SLOT_GIT_NAME SLOT_GIT_EMAIL"
+PROJECT_ENV_KEYS="PROJECT DEFAULT_BRANCH SLOT_PORTS SLOT_FORBIDDEN_PORTS DOCS_REPO_URL DOCS_PIN_FILE SLOT_REPOS_FILE SIGNING_KEY_VOLUME SHARED_CACHE_VOLUME PNPM_STORE_VOLUME COMPOSE_DIR COMPOSE_FILES SECRETS_OVERLAY SLOT_ENV_KEYS SLOT_ENV_SET SLOT_COPY_FILES SLOT_MOUNT_DIRS SLOT_OVERLAYS FORGE_AUTH FORGE_AUTH_FILE LIVE_ENV_FILE LIVE_SERVICE LIVE_GATEWAY SLOT_MEMORY_LIMIT SLOT_GIT_NAME SLOT_GIT_EMAIL"
 POOL_WIDE_KEYS="SLOT_CEILING SLOT_COUNT SLOT_PORT_RANGE IDLE_LIMIT"
 PROJECT_ENV_REQUIRED="PROJECT DEFAULT_BRANCH SLOT_PORTS COMPOSE_FILES"
 FORGE_AUTH_MODES="token app"
@@ -156,21 +156,45 @@ check_slot_env_keys() {
   done
 }
 
+check_slot_repos_file() {
+  local file="$1" value="$2"
+  [[ -n "$value" ]] || return 0
+  if [[ "$value" == *[[:space:]]* || "$value" == */ ]] || ! path_is_inside_checkout "$value" || [[ "$value" == . || "$value" == ./* ]]; then
+    die "$file: SLOT_REPOS_FILE entry $value is not a path inside the checkout — it must be relative and must not contain '..'"
+  fi
+}
+
 check_project_env() {
-  local label="$1" branch="$2" ports="$3" mount_dirs="$4" overlays="$5" env_keys="${6:-}" memory="${7:-}"
+  local label="$1" branch="$2" ports="$3" mount_dirs="$4" overlays="$5" env_keys="${6:-}" memory="${7:-}" root="${8:-}" pe_only="${9:-0}"
   check_default_branch "$label" "$branch"
   check_slot_ports "$label" "$ports"
   check_relative_paths "$label" SLOT_MOUNT_DIRS "$mount_dirs"
   check_slot_overlays "$label" "$overlays"
   check_slot_env_keys "$label" "$env_keys"
   check_memory_limit "$label" "$memory"
+  local repos_file docs_url docs_pin cdir
+  if (( pe_only )); then
+    repos_file="${PE_SLOT_REPOS_FILE:-}"
+    docs_url="${PE_DOCS_REPO_URL:-}"
+    docs_pin="${PE_DOCS_PIN_FILE:-.github/docs-pin}"
+    cdir="${PE_COMPOSE_DIR:-.devcontainer}"
+  else
+    repos_file="${SLOT_REPOS_FILE:-${PE_SLOT_REPOS_FILE:-}}"
+    docs_url="${DOCS_REPO_URL:-${PE_DOCS_REPO_URL:-}}"
+    docs_pin="${DOCS_PIN_FILE:-${PE_DOCS_PIN_FILE:-.github/docs-pin}}"
+    cdir="${COMPOSE_DIR:-${PE_COMPOSE_DIR:-.devcontainer}}"
+  fi
+  check_slot_repos_file "$label" "$repos_file"
+  if [[ -n "$root" ]] && declare -F slot_repos_catalog_json >/dev/null 2>&1; then
+    slot_repos_catalog_json "$root" "$repos_file" "$docs_url" "$docs_pin" "$cdir" >/dev/null
+  fi
 }
 
 apply_project_env() {
   local key var
   DEFAULT_BRANCH=$PE_DEFAULT_BRANCH
   SLOT_PORT_NAMES=$PE_SLOT_PORTS
-  for key in DOCS_REPO_URL DOCS_PIN_FILE SIGNING_KEY_VOLUME SHARED_CACHE_VOLUME PNPM_STORE_VOLUME COMPOSE_DIR COMPOSE_FILES SECRETS_OVERLAY SLOT_ENV_KEYS SLOT_ENV_SET SLOT_COPY_FILES SLOT_MOUNT_DIRS SLOT_OVERLAYS FORGE_AUTH FORGE_AUTH_FILE LIVE_ENV_FILE LIVE_SERVICE LIVE_GATEWAY SLOT_GIT_NAME SLOT_GIT_EMAIL; do
+  for key in DOCS_REPO_URL DOCS_PIN_FILE SLOT_REPOS_FILE SIGNING_KEY_VOLUME SHARED_CACHE_VOLUME PNPM_STORE_VOLUME COMPOSE_DIR COMPOSE_FILES SECRETS_OVERLAY SLOT_ENV_KEYS SLOT_ENV_SET SLOT_COPY_FILES SLOT_MOUNT_DIRS SLOT_OVERLAYS FORGE_AUTH FORGE_AUTH_FILE LIVE_ENV_FILE LIVE_SERVICE LIVE_GATEWAY SLOT_GIT_NAME SLOT_GIT_EMAIL; do
     var="PE_$key"
     [[ -z "${!var+x}" ]] || printf -v "$key" %s "${!var}"
   done

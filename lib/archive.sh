@@ -73,21 +73,24 @@ archive_partition_untracked() {
 
 archive_collect_host_dir() {
   local dir="$1" tmp_dir="$2" sid="$3" project="$4" limit="$5"
+  git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
   local has_unpushed=""
-  has_unpushed=$(git -C "$dir" log HEAD --branches --not --remotes -n 1 --format=%H 2>/dev/null || true)
-  if [[ -n "$has_unpushed" ]]; then
-    if ! git -C "$dir" bundle create "$tmp_dir/commits.bundle" HEAD --branches --not --remotes >/dev/null 2>&1; then
-      archive_fail_park "$tmp_dir" "$sid" "$project" "bundle create failed" "failed to create bundle for '$sid'"
-      return 1
+  if git -C "$dir" rev-parse --verify HEAD >/dev/null 2>&1; then
+    has_unpushed=$(git -C "$dir" log HEAD --branches --not --remotes -n 1 --format=%H 2>/dev/null || true)
+    if [[ -n "$has_unpushed" ]]; then
+      if ! git -C "$dir" bundle create "$tmp_dir/commits.bundle" HEAD --branches --not --remotes >/dev/null 2>&1; then
+        archive_fail_park "$tmp_dir" "$sid" "$project" "bundle create failed" "failed to create bundle for '$sid'"
+        return 1
+      fi
     fi
-  fi
 
-  if ! git -C "$dir" diff --quiet HEAD 2>/dev/null; then
-    if ! git -C "$dir" diff --binary HEAD > "$tmp_dir/changes.patch" 2>/dev/null; then
-      archive_fail_park "$tmp_dir" "$sid" "$project" "git diff failed" "failed to generate diff for '$sid'"
-      return 1
+    if ! git -C "$dir" diff --quiet HEAD 2>/dev/null; then
+      if ! git -C "$dir" diff --binary HEAD > "$tmp_dir/changes.patch" 2>/dev/null; then
+        archive_fail_park "$tmp_dir" "$sid" "$project" "git diff failed" "failed to generate diff for '$sid'"
+        return 1
+      fi
+      [[ -s "$tmp_dir/changes.patch" ]] || rm -f "$tmp_dir/changes.patch"
     fi
-    [[ -s "$tmp_dir/changes.patch" ]] || rm -f "$tmp_dir/changes.patch"
   fi
 
   local -a raw_candidates=()
@@ -168,7 +171,13 @@ archive_collect_volume() {
   local probe_out
   if ! probe_out=$(slot_exec_stream "$sid" sh -c '
     set -e
-    git -c safe.directory="*" rev-parse --git-dir >/dev/null
+    command -v git >/dev/null
+    rc=0
+    git -c safe.directory="*" rev-parse --git-dir >/dev/null 2>&1 || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      [ "$rc" -eq 128 ] && exit 0
+      exit "$rc"
+    fi
     git -c safe.directory="*" ls-files --others --exclude-standard | while IFS= read -r f; do
       [ -n "$f" ] || continue
       case "$f" in node_modules/*|*/node_modules/*|node_modules|*/node_modules) continue ;; esac

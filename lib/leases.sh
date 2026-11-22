@@ -50,6 +50,16 @@ lease_is_ephemeral() {
   [[ -f "$file" && "$(lease_field "$file" ephemeral 2>/dev/null || true)" == "true" ]]
 }
 
+remove_lease_key_files() {
+  local lease="$1" key
+  key=$(lease_field "$lease" key 2>/dev/null || true)
+  case "$key" in
+    ""|/dev/*) return 0 ;;
+  esac
+  if [[ ! -e "$key" || -f "$key" || -L "$key" ]]; then rm -f "$key"; fi
+  if [[ ! -e "$key.pub" || -f "$key.pub" || -L "$key.pub" ]]; then rm -f "$key.pub"; fi
+}
+
 write_lease() {
   local file="$1" holder="$2" project="$3" since="$4" key="$5" ssh_port="$6" owner="$7" root="$8" token_sha256="${9:-}" ephemeral="${10:-0}" idle_limit="${11:-}"
   jq -n --arg holder "$holder" --arg project "$project" \

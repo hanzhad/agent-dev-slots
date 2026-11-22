@@ -392,6 +392,75 @@ class TestVolumeLifecycle(RealEngineCase):
         self.assertTrue(os.path.isfile(os.path.join(self.state, "rescue", key, "slot-2", "new-files.tar")))
         self.assertFalse(os.path.exists(os.path.join(self.state, "rescue", key, "slot-3")))
 
+    def test_reap_and_evict_non_git_real_volume_slot_removes_without_parking(self):
+        checkout, compose_dir, origin, proj_prefix, key = self._create_project("vlnogit")
+        old_since = int(time.time()) - 10000
+
+        def make_bare_vol(slot_num, *, holder=None, half_provisioned=False):
+            sid = f"{proj_prefix}-slot-{slot_num}"
+            vol = f"{sid}-workspace"
+            self.addCleanup(self._cleanup_slot, compose_dir, sid)
+            created = docker(
+                "volume",
+                "create",
+                "--label",
+                f"dev-container.sid={sid}",
+                "--label",
+                f"dev-container.project={proj_prefix}",
+                "--label",
+                f"dev-container.origin={origin}",
+                "--label",
+                f"dev-container.repo-root={checkout}",
+                vol,
+                check=False,
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            if half_provisioned:
+                seeded = docker(
+                    "run",
+                    "--rm",
+                    "--user",
+                    "root",
+                    "-v",
+                    f"{vol}:/workspace",
+                    self.fixture,
+                    "sh",
+                    "-c",
+                    "mkdir -p /workspace/.devcontainer && chown -R 1000:1000 /workspace",
+                    check=False,
+                )
+                self.assertEqual(seeded.returncode, 0, seeded.stderr)
+            if holder is not None:
+                write(
+                    os.path.join(self.state, "leases", f"{sid}.json"),
+                    json.dumps({
+                        "holder": holder,
+                        "owner": "Docker [vl]",
+                        "project": sid,
+                        "since": old_since,
+                        "key": "/dev/null",
+                        "ssh_port": 42000 + slot_num * 16,
+                        "repo_root": checkout,
+                    }),
+                )
+            return sid, vol
+
+        sid1, vol1 = make_bare_vol(1, holder="reap-nogit", half_provisioned=True)
+        sid2, vol2 = make_bare_vol(2, holder=None, half_provisioned=False)
+
+        evicted = self._in_engine(checkout, "evict", "slot-2", "--yes", "--force")
+        self.assertEqual(evicted.returncode, 0, evicted.stdout + evicted.stderr)
+        self.assertFalse(self._volume_exists(vol2))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "parked", f"{sid2}.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "rescue", key, "slot-2")))
+
+        reaped = self._in_engine(checkout, "reap")
+        self.assertEqual(reaped.returncode, 0, reaped.stdout + reaped.stderr)
+        self.assertFalse(self._volume_exists(vol1))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "leases", f"{sid1}.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "parked", f"{sid1}.json")))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "rescue", key, "slot-1")))
+
 
 if __name__ == "__main__":
     unittest.main()

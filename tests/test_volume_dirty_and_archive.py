@@ -964,6 +964,51 @@ class TestVolumeDirtyChecksWithoutStubState(_NoStubStateVolumeCase):
         self.assertEqual(discard.returncode, 0, discard.stdout.decode() + discard.stderr.decode())
         self.assertFalse(self.harness.volume_exists(name))
 
+    def test_release_and_park_tolerate_dev_null_lease_key(self):
+        s_clean = self.acquire_vol("h-devnull-clean", with_docs=False)
+        lease_clean = self.harness.lease_path(s_clean)
+        with open(lease_clean, encoding="utf-8") as f:
+            data = json.load(f)
+        data["key"] = "/dev/null"
+        with open(lease_clean, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        rel_clean = self.run_dc("release", s_clean, "--for", "h-devnull-clean", with_docs=False)
+        self.assertEqual(rel_clean.returncode, 0, rel_clean.stdout.decode() + rel_clean.stderr.decode())
+        self.assertFalse(self.harness.volume_exists(s_clean))
+        self.assertFalse(os.path.exists(lease_clean))
+
+        s_discard = self.acquire_vol("h-devnull-discard", with_docs=False)
+        with open(os.path.join(self.harness.slot_dir(s_discard), "wip.txt"), "w", encoding="utf-8") as f:
+            f.write("dirty\n")
+        lease_discard = self.harness.lease_path(s_discard)
+        with open(lease_discard, encoding="utf-8") as f:
+            data = json.load(f)
+        data["key"] = "/dev/null"
+        with open(lease_discard, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        rel_discard = self.run_dc("release", s_discard, "--for", "h-devnull-discard", "--discard", with_docs=False)
+        self.assertEqual(rel_discard.returncode, 0, rel_discard.stdout.decode() + rel_discard.stderr.decode())
+        self.assertFalse(self.harness.volume_exists(s_discard))
+        self.assertFalse(os.path.exists(lease_discard))
+
+        s_park = self.acquire_vol("h-devnull-park", with_docs=False)
+        with open(os.path.join(self.harness.slot_dir(s_park), "wip.txt"), "w", encoding="utf-8") as f:
+            f.write("dirty\n")
+        lease_park = self.harness.lease_path(s_park)
+        with open(lease_park, encoding="utf-8") as f:
+            data = json.load(f)
+        data["key"] = "/dev/null"
+        with open(lease_park, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+        parked = self.run_dc("park", s_park, with_docs=False)
+        self.assertEqual(parked.returncode, 0, parked.stdout.decode() + parked.stderr.decode())
+        self.assertFalse(os.path.exists(lease_park))
+        self.assertTrue(os.path.isfile(self.harness.parked_path(s_park)))
+        self.assertTrue(os.path.exists("/dev/null"))
+
     def test_down_refuses_dirty_unleased_volume_and_allows_clean_or_force(self):
         s_dirty = self.acquire_vol("h-down-dirty", with_docs=False)
         v_dirty = self.harness.slot_dir(s_dirty)
@@ -1425,6 +1470,63 @@ class TestVolumeRescueArchiveWithoutStubState(_NoStubStateVolumeCase):
             os.path.isfile(os.path.join(self.rescue_dir, self.harness.project_key, s2, "new-files.tar")),
             "dirty volume was not archived after key rescue dir became present",
         )
+
+    def test_non_repo_volume_and_host_slot_removed_by_reap_and_evict_without_parking(self):
+        since = 1700000000
+        self.harness.set_now(since)
+
+        # 1. Expired non-ephemeral vol:* slot whose workspace has no .git -> reaped cleanly
+        s_reap_leased = self.acquire_vol("nogit-reap-leased", with_docs=False, now=since)
+        shutil.rmtree(os.path.join(self.harness.slot_dir(s_reap_leased), ".git"))
+        self.expire_lease(s_reap_leased)
+
+        # 2. Unleased stopped half-provisioned vol:* slot without .git -> reaped cleanly
+        s_reap_unleased = self.acquire_vol("nogit-reap-unleased", with_docs=False, now=since)
+        v_unleased = self.harness.slot_dir(s_reap_unleased)
+        shutil.rmtree(os.path.join(v_unleased, ".git"))
+        self.free_lease(s_reap_unleased)
+        self.harness.mark_stopped(s_reap_unleased)
+
+        reaped = self.run_dc("reap", with_docs=False, now=since + 10000)
+        self.assertEqual(reaped.returncode, 0, reaped.stdout.decode() + reaped.stderr.decode())
+        for s in (s_reap_leased, s_reap_unleased):
+            self.assertFalse(self.harness.volume_exists(s), f"non-repo volume {s} survived reap")
+            self.assertFalse(os.path.exists(self.harness.lease_path(s)), f"lease {s} survived reap")
+            self.assertFalse(os.path.exists(self.harness.parked_path(s)), f"non-repo slot {s} was parked")
+
+        # 3. Non-ephemeral vol:* slot without .git -> evict removes without parking
+        s_evict = self.acquire_vol("nogit-evict", with_docs=False, now=since)
+        shutil.rmtree(os.path.join(self.harness.slot_dir(s_evict), ".git"))
+        evicted = self.run_dc("evict", s_evict, "--yes", "--force", with_docs=False, now=since + 10000)
+        self.assertEqual(evicted.returncode, 0, evicted.stdout.decode() + evicted.stderr.decode())
+        self.assertFalse(self.harness.volume_exists(s_evict))
+        self.assertFalse(os.path.exists(self.harness.lease_path(s_evict)))
+        self.assertFalse(os.path.exists(self.harness.parked_path(s_evict)))
+
+        # 4. Parity: non-repo host-dir slot -> archive_and_clean_slot removes without parking
+        host_name = "slot-9"
+        host_sid = f"{PROJECT_PREFIX}-{host_name}"
+        host_dir = os.path.join(self.harness.slots_dir, host_name)
+        os.makedirs(os.path.join(host_dir, ".devcontainer"), exist_ok=True)
+        with open(os.path.join(host_dir, ".devcontainer", ".slot-holder"), "w", encoding="utf-8") as f:
+            f.write("holder=half-provisioned\n")
+        env = self.harness._env(None)
+        env.pop("DOCKER_STUB_STATE", None)
+        env["TEST_DOCKER_STORE"] = self.harness.docker_state
+        env["TEST_DOCKER_BASE"] = os.path.join(self.harness.stub_bin, "docker-base")
+        env["DEV_CONTAINER_LIB"] = "1"
+        host_res = subprocess.run(
+            ["bash", "-c", '. "$0"; archive_and_clean_slot "$1" "$2" "$3"', self.harness.script, host_dir, host_sid, host_name],
+            cwd=self.harness.tmp,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60,
+        )
+        self.assertEqual(host_res.returncode, 0, host_res.stdout.decode() + host_res.stderr.decode())
+        self.assertFalse(os.path.exists(host_dir))
+        self.assertFalse(os.path.exists(self.harness.parked_path(host_name)))
+        self.assertEqual(self._rescue_files(), [])
 
 
 if __name__ == "__main__":

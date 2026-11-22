@@ -212,9 +212,7 @@ cmd_release() {
       echo "slot '$sid' could not be removed: $(spec_of "$sid") is still there. The lease is kept; remove it by hand and release again." >&2
       exit 1
     fi
-    local wiped_key
-    wiped_key=$(lease_field "$lease" key 2>/dev/null || true)
-    [[ -n "$wiped_key" ]] && rm -f "$wiped_key" "$wiped_key.pub"
+    remove_lease_key_files "$lease"
     rm -f "$lease" "$(lease_token_file_of "$sid")"
     echo "slot '$sid' released and removed — nobody holds it, and its directory and containers are gone."
     return
@@ -227,9 +225,7 @@ cmd_release() {
     slot_compose "$dir" "$sid" stop || true
   fi
 
-  local key
-  key=$(lease_field "$lease" key 2>/dev/null || true)
-  [[ -n "$key" ]] && rm -f "$key" "$key.pub"
+  remove_lease_key_files "$lease"
   rm -f "$lease" "$(lease_token_file_of "$sid")"
   clear_holder_file "$dir"
 
@@ -293,8 +289,7 @@ cmd_park() {
     clear_lease_key "$dir" "$sid"
     clear_slot_allow_hosts "$sid"
     sync_slot_ssh_key "${sid:-$dir}" ""
-    local key; key=$(lease_field "$lease" key 2>/dev/null || true)
-    [[ -n "$key" ]] && rm -f "$key" "$key.pub"
+    remove_lease_key_files "$lease"
     rm -f "$lease" "$(lease_token_file_of "$sid")"
     clear_holder_file "$dir"
     echo "'$sid' was reuse-clean — released, not parked. A plain 'release $name --for $holder' would have done the same thing."
@@ -307,8 +302,7 @@ cmd_park() {
   clear_lease_key "$dir" "$sid"
   clear_slot_allow_hosts "$sid"
   sync_slot_ssh_key "${sid:-$dir}" ""
-  local key; key=$(lease_field "$lease" key 2>/dev/null || true)
-  [[ -n "$key" ]] && rm -f "$key" "$key.pub"
+  remove_lease_key_files "$lease"
   rm -f "$lease" "$(lease_token_file_of "$sid")"
   clear_holder_file "$dir"
 

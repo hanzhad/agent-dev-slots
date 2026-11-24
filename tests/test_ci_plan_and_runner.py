@@ -1263,6 +1263,12 @@ class TestCheckTestLegsScript(unittest.TestCase):
 
 
 class TestCiWorkflowContract(unittest.TestCase):
+    def _extract_job_block(self, text, job_name):
+        pattern = rf"(?m)^  {re.escape(job_name)}:\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)"
+        match = re.search(pattern, text, re.DOTALL)
+        self.assertIsNotNone(match, f"missing job block {job_name}:")
+        return match.group(1)
+
     def test_ci_workflow_triggers_pins_and_jobs(self):
         with open(CI_WORKFLOW, encoding="utf-8") as fh:
             text = fh.read()
@@ -1276,19 +1282,26 @@ class TestCiWorkflowContract(unittest.TestCase):
             "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
             "actions/upload-artifact": "cf430e030ddbb5b0abf93d22962f4752f3646cd9",
             "actions/download-artifact": "9000827ccba6bdab643e8b6fd33ac0654aef8333",
+            "docker/setup-buildx-action": "f87e5991a6d7451dcb8d9637bfbc97413f497069",
+            "docker/build-push-action": "c3c9e263c25d99ce0380d002d59b67737d91b0dc",
         }
         uses_matches = re.findall(r"uses:\s*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@([^\s#]+)", text)
         self.assertGreater(len(uses_matches), 0)
+        used_actions = {action for action, _ in uses_matches}
         for action, ref in uses_matches:
             self.assertIn(action, expected_pins, f"unexpected action {action}")
             self.assertEqual(ref, expected_pins[action], f"{action} not pinned to {expected_pins[action]}")
+        self.assertIn("docker/setup-buildx-action", used_actions)
+        self.assertIn("docker/build-push-action", used_actions)
 
-        for job in ("changes:", "test-leg:", "test:", "scan:", "docker:"):
-            self.assertIn(job, text, f"missing job {job}")
+        for job in ("changes:", "test-leg:", "test:", "scan:", "docker-core:", "docker-multi-toolbox:"):
+            self.assertIn(f"  {job}\n", text, f"missing job {job}")
+        self.assertNotIn("  docker:\n", text, "legacy monolithic docker job should be split")
 
-        self.assertIn("scripts/ci/select-ci-plan.py", text)
+        self.assertIn("scripts/ci/select-ci-plan.py --shard-selected", text)
         self.assertIn("scripts/ci/run-tests.py", text)
-        self.assertIn("--workers 2", text)
+        self.assertIn("--workers 4", text)
+        self.assertNotIn("--workers 2", text)
         self.assertIn("fail-fast: false", text)
         self.assertIn("scripts/ci/check-test-legs.py", text)
         self.assertIn("!cancelled()", text)
@@ -1301,7 +1314,7 @@ class TestCiWorkflowContract(unittest.TestCase):
         plan_match = re.search(r"python3\s+scripts/ci/select-ci-plan\.py([^\n]*)", text)
         self.assertIsNotNone(plan_match, "missing select-ci-plan.py invocation in ci.yml")
         plan_flags = plan_match.group(1).split()
-        uses_shard_selected = "--shard-selected" in plan_flags
+        self.assertIn("--shard-selected", plan_flags)
 
         plan_mod = _load_module("select_ci_plan_contract_mod", SELECT_PLAN)
         six_tests = [f"tests/test_case_{i}.py" for i in range(1, 7)]
@@ -1309,30 +1322,154 @@ class TestCiWorkflowContract(unittest.TestCase):
             six_tests,
             "pull_request",
             exists_fn=lambda _: True,
-            shard_selected=uses_shard_selected,
+            shard_selected=True,
         )
+        self.assertGreater(len(matrix), 1)
 
-        # Inspect the non-ALL_TESTS branch of `test-leg` in ci.yml.
+        # Inspect the Run test leg shell script in ci.yml and exercise all three modes.
         branch_match = re.search(
-            r'if\s+\[\s*"\$ALL_TESTS"\s*=\s*"true"\s*\];\s*then(.*?)else(.*?)fi',
+            r'if\s+\[\s*"\$ALL_TESTS"\s*=\s*"true"\s*\];\s*then(.*?)else(.*?)\n\s*fi\b',
             text,
             re.DOTALL,
         )
         self.assertIsNotNone(branch_match, "missing ALL_TESTS if/else branch in ci.yml")
         selected_branch = branch_match.group(2)
+        self.assertIn("--shard", selected_branch)
 
-        if len(matrix) > 1:
-            self.assertIn(
-                "--shard",
-                selected_branch,
-                "ci.yml emits multiple selected legs but does not pass --shard in the non-ALL_TESTS branch",
+        run_script = branch_match.group(0)
+        with tempfile.TemporaryDirectory() as tmp:
+            stub_runner = os.path.join(tmp, "scripts", "ci", "run-tests.py")
+            os.makedirs(os.path.dirname(stub_runner), exist_ok=True)
+            args_log = os.path.join(tmp, "captured-args.json")
+            _write_file(
+                stub_runner,
+                "import json, sys\n"
+                f"with open({args_log!r}, 'w', encoding='utf-8') as fh:\n"
+                "    json.dump(sys.argv[1:], fh)\n",
             )
-        else:
-            self.assertEqual(
-                matrix,
-                ["selected"],
-                "unsharded ci.yml runner must receive a single ['selected'] leg",
-            )
+            runner_temp = os.path.join(tmp, "runner-temp")
+            os.makedirs(runner_temp, exist_ok=True)
+
+            cases = [
+                (
+                    "full-shard",
+                    {
+                        "ALL_TESTS": "true",
+                        "MATRIX": json.dumps([f"shard-{i}" for i in range(1, 7)]),
+                        "SCOPE": "all",
+                        "LEG": "shard-3",
+                    },
+                    ["--leg", "shard-3", "--shard", "3/6", "--workers", "4", "--report", "test-report.json"],
+                ),
+                (
+                    "single-selected",
+                    {
+                        "ALL_TESTS": "false",
+                        "MATRIX": json.dumps(["selected"]),
+                        "SCOPE": "tests/test_a.py tests/test_b.py",
+                        "LEG": "selected",
+                    },
+                    [
+                        "--leg",
+                        "selected",
+                        "--files-from",
+                        os.path.join(runner_temp, "selected-tests.txt"),
+                        "--workers",
+                        "4",
+                        "--report",
+                        "test-report.json",
+                    ],
+                ),
+                (
+                    "sharded-selected",
+                    {
+                        "ALL_TESTS": "false",
+                        "MATRIX": json.dumps(["selected-1", "selected-2", "selected-3"]),
+                        "SCOPE": " ".join(six_tests),
+                        "LEG": "selected-2",
+                    },
+                    [
+                        "--leg",
+                        "selected-2",
+                        "--files-from",
+                        os.path.join(runner_temp, "selected-tests.txt"),
+                        "--shard",
+                        "2/3",
+                        "--workers",
+                        "4",
+                        "--report",
+                        "test-report.json",
+                    ],
+                ),
+            ]
+            for label, extra_env, expected_argv in cases:
+                with self.subTest(case=label):
+                    env = dict(os.environ)
+                    env.update(extra_env)
+                    env["RUNNER_TEMP"] = runner_temp
+                    proc = subprocess.run(
+                        ["bash", "-euo", "pipefail", "-c", run_script],
+                        cwd=tmp,
+                        env=env,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+                    with open(args_log, encoding="utf-8") as fh:
+                        actual_argv = json.load(fh)
+                    self.assertEqual(actual_argv, expected_argv)
+
+    def test_ci_workflow_docker_jobs_partition_all_docker_tests_with_gha_cache(self):
+        with open(CI_WORKFLOW, encoding="utf-8") as fh:
+            text = fh.read()
+
+        core_block = self._extract_job_block(text, "docker-core")
+        multi_block = self._extract_job_block(text, "docker-multi-toolbox")
+
+        for name, block in (("docker-core", core_block), ("docker-multi-toolbox", multi_block)):
+            with self.subTest(job=name):
+                self.assertIn("needs: [changes]", block)
+                self.assertIn("needs.changes.outputs.run_docker == 'true'", block)
+                self.assertIn("docker/setup-buildx-action@", block)
+                self.assertIn("docker/build-push-action@", block)
+                self.assertIn("type=gha", block)
+                self.assertIn("file: image/Dockerfile", block)
+                self.assertIn("PYTHONPATH: tests/docker", block)
+
+        self.assertIn("file: image/toolbox/Dockerfile", multi_block)
+        self.assertIn("scope=toolbox", multi_block)
+        self.assertIn("scope=engine", core_block)
+        self.assertIn("scope=engine", multi_block)
+
+        core_tests = sorted(re.findall(r"tests/docker/test_[A-Za-z0-9_]+\.py", core_block))
+        multi_tests = sorted(re.findall(r"tests/docker/test_[A-Za-z0-9_]+\.py", multi_block))
+
+        self.assertEqual(
+            core_tests,
+            sorted([
+                "tests/docker/test_engine_container.py",
+                "tests/docker/test_compose_paths.py",
+                "tests/docker/test_overlay.py",
+                "tests/docker/test_volume_lifecycle.py",
+            ]),
+        )
+        self.assertEqual(
+            multi_tests,
+            sorted([
+                "tests/docker/test_multi_repo_docker.py",
+                "tests/docker/test_multi_repo_lifecycle.py",
+                "tests/docker/test_toolbox_docker.py",
+            ]),
+        )
+
+        # Ensure every tests/docker/test_*.py file on disk is assigned to exactly one job.
+        on_disk = sorted(
+            f"tests/docker/{name}"
+            for name in os.listdir(DOCKER_TESTS_DIR)
+            if name.startswith("test_") and name.endswith(".py")
+        )
+        self.assertEqual(set(core_tests) & set(multi_tests), set())
+        self.assertEqual(sorted(core_tests + multi_tests), on_disk)
 
 
 _DOCKERKIT_FAKE_PREFIX = """

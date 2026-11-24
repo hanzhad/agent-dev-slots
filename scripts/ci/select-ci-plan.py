@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Select CI execution plan from changed files and EVENT_NAME (fail-closed)."""
 
+import argparse
 import json
+import math
 import os
 import sys
 
@@ -14,7 +16,7 @@ FULL_RUN_PREFIXES = (
     "bin/",
     "lib/",
     "templates/",
-    "docker/",
+    "image/",
 )
 FULL_RUN_EXACT = ("tests/harness.py", "__fail_closed__")
 
@@ -47,7 +49,7 @@ def _is_top_level_unit_test(path):
     )
 
 
-def select_plan(changed_files, event_name, exists_fn=None):
+def select_plan(changed_files, event_name, exists_fn=None, shard_selected=False):
     """Pure planner: return (all_flag, matrix_list, run_docker, scope_str)."""
     files = [line.strip() for line in changed_files if line.strip()]
 
@@ -78,7 +80,12 @@ def select_plan(changed_files, event_name, exists_fn=None):
         return True, list(FULL_MATRIX), True, "all"
 
     if selected_tests:
-        return False, ["selected"], run_docker, " ".join(selected_tests)
+        if shard_selected and len(selected_tests) > 2:
+            leg_count = min(SHARD_COUNT, math.ceil(len(selected_tests) / 2))
+            matrix = [f"selected-{i}" for i in range(1, leg_count + 1)]
+        else:
+            matrix = ["selected"]
+        return False, matrix, run_docker, " ".join(selected_tests)
     return False, [], run_docker, "none"
 
 
@@ -93,10 +100,25 @@ def format_outputs(all_flag, matrix_list, run_docker, scope_str):
     return "\n".join(lines) + "\n"
 
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Select CI execution plan from changed files and EVENT_NAME."
+    )
+    parser.add_argument(
+        "--shard-selected",
+        action="store_true",
+        help="Emit selected-1..K matrix legs when more than 2 unit test files are selected.",
+    )
+    args = parser.parse_args(argv)
+
     event_name = os.environ.get("EVENT_NAME", "").strip()
     changed_files = sys.stdin.read().splitlines()
-    all_flag, matrix_list, run_docker, scope_str = select_plan(changed_files, event_name, exists_fn=os.path.isfile)
+    all_flag, matrix_list, run_docker, scope_str = select_plan(
+        changed_files,
+        event_name,
+        exists_fn=os.path.isfile,
+        shard_selected=args.shard_selected,
+    )
     rendered = format_outputs(all_flag, matrix_list, run_docker, scope_str)
 
     github_output = os.environ.get("GITHUB_OUTPUT", "").strip()

@@ -138,11 +138,15 @@ cmd_acquire() {
         last_leased="$wait_key"
       fi
     fi
-    local slept=0
-    while (( slept < wait_limit )); do
+    local interval interval_us
+    read -r interval interval_us <<<"$(wait_interval_spec)"
+    local start_sec=$SECONDS slept_us=0 wall_us=0 elapsed_us=0 wait_limit_us=$(( wait_limit * 1000000 ))
+    while (( elapsed_us < wait_limit_us )); do
       [[ "$(lease_state_signature)" == "$seen" ]] || break
-      sleep 1
-      slept=$((slept + 1))
+      sleep "$interval"
+      slept_us=$(( slept_us + interval_us ))
+      wall_us=$(( (SECONDS - start_sec) * 1000000 ))
+      elapsed_us=$(( slept_us > wall_us ? slept_us : wall_us ))
       wait_deadline_check
     done
   done

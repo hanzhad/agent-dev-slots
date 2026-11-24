@@ -2,14 +2,19 @@
 """Sharded parallel unittest runner for CI and local verification."""
 
 import argparse
+import ast
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import tempfile
 import time
+
+TIMINGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test-timings.json")
+_TEST_DEF_RE = re.compile(r"^\s*(?:async\s+)?def\s+test_", re.MULTILINE)
 
 _SINGLE_FILE_RUNNER = """
 import json, os, sys, time, unittest
@@ -72,23 +77,88 @@ def parse_shard(spec):
     return idx, total
 
 
-def _file_line_count(path):
+def _extract_timing_weight(entry):
+    if isinstance(entry, (int, float)) and not isinstance(entry, bool) and entry > 0:
+        return float(entry)
+    if isinstance(entry, dict):
+        for key in ("duration_s", "weight", "duration", "seconds", "tests"):
+            val = entry.get(key)
+            if isinstance(val, (int, float)) and not isinstance(val, bool) and val > 0:
+                return float(val)
+    return None
+
+
+def load_timings(path=TIMINGS_FILE):
+    """Load test timing entries from a JSON file; return {} when absent or invalid."""
     try:
-        with open(path, "rb") as fh:
-            return sum(1 for _ in fh)
+        with open(path, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if isinstance(raw, dict) and isinstance(raw.get("files"), dict):
+        return raw["files"]
+    if isinstance(raw, dict):
+        return raw
+    return {}
+
+
+def _lookup_timing_weight(timings, path):
+    if not timings:
+        return None
+    norm = path.replace("\\", "/")
+    candidates = [norm]
+    if norm.startswith("./"):
+        candidates.append(norm[2:])
+    if "/tests/" in norm:
+        candidates.append("tests/" + norm.rsplit("/tests/", 1)[1])
+    candidates.append(os.path.basename(norm))
+    for key in candidates:
+        if key in timings:
+            weight = _extract_timing_weight(timings[key])
+            if weight is not None:
+                return weight
+    return None
+
+
+def _count_test_methods(source):
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return len(_TEST_DEF_RE.findall(source))
+    return sum(
+        1
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("test_")
+    )
+
+
+def _file_weight(path, timings):
+    measured = _lookup_timing_weight(timings, path)
+    if measured is not None:
+        return measured
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            source = fh.read()
     except OSError:
-        return 0
+        return 0.0
+    test_count = _count_test_methods(source)
+    if test_count > 0:
+        return float(test_count)
+    return float(source.count("\n") + (1 if source and not source.endswith("\n") else 0)) * 0.01
 
 
-def select_shard(paths, shard_index, shard_total):
-    """Distribute paths across shard_total buckets deterministically by line count."""
-    weighted = sorted(((-_file_line_count(p), p) for p in paths))
+def select_shard(paths, shard_index, shard_total, timings=None):
+    """Distribute paths across shard_total buckets deterministically by timing weight."""
+    if timings is None:
+        timings = load_timings()
+    weighted = sorted(((-_file_weight(p, timings), p) for p in paths))
     buckets = [[] for _ in range(shard_total)]
-    loads = [0] * shard_total
-    for neg_lines, path in weighted:
+    loads = [0.0] * shard_total
+    for neg_weight, path in weighted:
         target = min(range(shard_total), key=lambda b: (loads[b], len(buckets[b]), b))
         buckets[target].append(path)
-        loads[target] += -neg_lines
+        loads[target] += -neg_weight
     return buckets[shard_index - 1]
 
 

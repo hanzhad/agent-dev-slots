@@ -5,7 +5,7 @@ import shutil
 import subprocess
 import unittest
 
-from dockerkit import FIXTURE_DIR, REPO_ROOT, RealEngineCase, docker, needs_docker, write
+from dockerkit import REPO_ROOT, RealEngineCase, docker, needs_docker, write
 
 FIXTURES = os.path.join(REPO_ROOT, "tests", "fixtures")
 FOUR_GIB = 4 * 1024 ** 3
@@ -33,10 +33,7 @@ class OverlayBuildsOnFixtureProjects(RealEngineCase):
 
     def setUp(self):
         super().setUp()
-        self.fixture = f"dct{self.uid}-fixture:local"
-        self.addCleanup(docker, "rmi", "-f", self.fixture, check=False)
-        built = docker("build", "-q", "-t", self.fixture, "--build-arg", "BASE=" + self.image, FIXTURE_DIR, check=False)
-        self.assertEqual(built.returncode, 0, built.stderr)
+        self.fixture = self.ensure_fixture_image()
 
     def fixture_projects(self):
         return sorted(

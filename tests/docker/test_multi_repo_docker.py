@@ -11,7 +11,7 @@ import threading
 import time
 import urllib.parse
 
-from dockerkit import FIXTURE_DIR, RealEngineCase, docker, needs_docker, write
+from dockerkit import RealEngineCase, docker, needs_docker, write
 
 COMPOSE_YML = """services:
   app:
@@ -104,12 +104,7 @@ class TestMultiRepoDocker(RealEngineCase):
 
     def setUp(self):
         super().setUp()
-        self.fixture = f"dct{self.uid}-fixture:local"
-        self.addCleanup(docker, "rmi", "-f", self.fixture, check=False)
-        built = docker(
-            "build", "-q", "-t", self.fixture, "--build-arg", "BASE=" + self.image, FIXTURE_DIR, check=False
-        )
-        self.assertEqual(built.returncode, 0, built.stderr)
+        self.fixture = self.ensure_fixture_image()
 
         self.remotes_dir = os.path.join(self.tmp, "remotes")
         os.makedirs(self.remotes_dir, exist_ok=True)

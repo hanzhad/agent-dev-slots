@@ -1,7 +1,7 @@
 import os
 import unittest
 
-from dockerkit import FIXTURE_DIR, RealEngineCase, docker, needs_docker, write
+from dockerkit import RealEngineCase, docker, needs_docker, write
 
 COMPOSE = """name: {project}
 services:
@@ -29,10 +29,8 @@ class ComposePathsResolveThroughTheEngine(RealEngineCase):
     def setUp(self):
         super().setUp()
         self.project = "dctp" + self.uid
-        self.fixture = f"dct{self.uid}-fixture:local"
-        self.addCleanup(docker, "rmi", "-f", self.fixture, self.project + "-built", check=False)
-        built = docker("build", "-q", "-t", self.fixture, "--build-arg", "BASE=" + self.image, FIXTURE_DIR, check=False)
-        self.assertEqual(built.returncode, 0, built.stderr)
+        self.fixture = self.ensure_fixture_image()
+        self.addCleanup(docker, "rmi", "-f", self.project + "-built", check=False)
         self.checkout = os.path.join(self.projects, "proj")
         self.compose_dir = os.path.join(self.checkout, ".devcontainer")
         write(os.path.join(self.compose_dir, "compose.yml"), COMPOSE.format(project=self.project, fixture=self.fixture))

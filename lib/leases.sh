@@ -25,7 +25,7 @@ lock_acquire() {
       (( LOCK_WAIT )) || die "the host-wide lock at $LOCK_DIR was busy for 30s — another dev-container is holding it. 'acquire --wait' waits it out; if nothing else is running, a stuck previous run left it: remove it by hand (rm -rf $LOCK_DIR)."
       (( waited % 60 == 31 )) && echo "▸ the host-wide lock at $LOCK_DIR has been busy for ${waited}s — still waiting (--wait)" >&2
     fi
-    sleep 1
+    sleep "${DEV_CONTAINER_WAIT_INTERVAL:-1}"
   done
   LOCK_HELD=1
 }

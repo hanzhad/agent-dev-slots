@@ -35,6 +35,29 @@ MAIN_ENV = (
 SLOT_TOK = "tok_sentinel_slot_tb1"
 CALLER_TOK = "tok_sentinel_caller_tb2"
 
+_KEY_SOURCE_DIR = None
+_KEY_SOURCE = None
+
+
+def setUpModule():
+    global _KEY_SOURCE_DIR, _KEY_SOURCE
+    _KEY_SOURCE_DIR = tempfile.mkdtemp(prefix="toolbox-auth-key-")
+    _KEY_SOURCE = os.path.join(_KEY_SOURCE_DIR, "app.pem")
+    subprocess.run(
+        ["openssl", "genrsa", "-out", _KEY_SOURCE, "2048"],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
+def tearDownModule():
+    global _KEY_SOURCE_DIR, _KEY_SOURCE
+    if _KEY_SOURCE_DIR is not None:
+        shutil.rmtree(_KEY_SOURCE_DIR, ignore_errors=True)
+    _KEY_SOURCE_DIR = None
+    _KEY_SOURCE = None
+
 
 def read_text(path):
     with open(path, encoding="utf-8") as handle:
@@ -894,12 +917,9 @@ class TestToolboxCliAndLifecycle(DevContainerTestCase):
         key_dir = os.path.join(self.harness.tmp, "app-keys")
         os.makedirs(key_dir, exist_ok=True)
         key_path = os.path.join(key_dir, "app.pem")
-        subprocess.run(
-            ["openssl", "genrsa", "-out", key_path, "2048"],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        if _KEY_SOURCE is None:
+            setUpModule()
+        shutil.copyfile(_KEY_SOURCE, key_path)
         os.chmod(key_path, 0o600)
         env_text = "\n".join([
             "FORGE_APP_ID=1234567",

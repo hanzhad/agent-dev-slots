@@ -760,18 +760,26 @@ def _cleanup_template_cache():
         _TEMPLATE_CACHE_DIR = None
 
 
-def _ensure_template_cache(real_git_bin):
+def _ensure_template_cache_root():
     global _TEMPLATE_CACHE_DIR
-    with _TEMPLATE_LOCK:
-        if _TEMPLATE_CACHE_DIR is not None:
-            return _TEMPLATE_CACHE_DIR
-        cache_dir = tempfile.mkdtemp(prefix="dev-container-template-")
+    if _TEMPLATE_CACHE_DIR is None:
+        _TEMPLATE_CACHE_DIR = tempfile.mkdtemp(prefix="dev-container-template-")
         atexit.register(_cleanup_template_cache)
+    return _TEMPLATE_CACHE_DIR
+
+
+def _ensure_docs_repo_template(real_git_bin):
+    with _TEMPLATE_LOCK:
+        cache_dir = _ensure_template_cache_root()
+        docs_stub = os.path.join(cache_dir, "docs-repo-stub")
+        if os.path.isdir(docs_stub):
+            return docs_stub
+        staging = docs_stub + ".building"
+        shutil.rmtree(staging, ignore_errors=True)
+        os.makedirs(staging)
         try:
-            docs_stub = os.path.join(cache_dir, "docs-repo-stub")
-            os.makedirs(docs_stub)
             run_docs = lambda *args: subprocess.run(
-                [real_git_bin, "-C", docs_stub, *args],
+                [real_git_bin, "-C", staging, *args],
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -779,48 +787,65 @@ def _ensure_template_cache(real_git_bin):
             run_docs("init", "-q")
             run_docs("config", "user.email", "fixture@example.com")
             run_docs("config", "user.name", "fixture")
-            with open(os.path.join(docs_stub, "README.md"), "w", encoding="utf-8") as handle:
+            with open(os.path.join(staging, "README.md"), "w", encoding="utf-8") as handle:
                 handle.write("docs repo stub\n")
             run_docs("add", "-A")
             run_docs("commit", "-q", "-m", "fixture")
+            os.rename(staging, docs_stub)
+        except Exception:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        return docs_stub
 
-            fixture_tmpl = os.path.join(cache_dir, "fixture-repo")
-            os.makedirs(os.path.join(fixture_tmpl, "bin"))
-            os.makedirs(os.path.join(fixture_tmpl, ".devcontainer"))
-            os.makedirs(os.path.join(fixture_tmpl, ".local"))
+
+def _ensure_fixture_repo_template(real_git_bin, project_env):
+    effective_env = _DEFAULT_PROJECT_ENV if project_env is None else project_env
+    key = hashlib.sha256(effective_env.encode("utf-8")).hexdigest()
+    with _TEMPLATE_LOCK:
+        cache_dir = _ensure_template_cache_root()
+        fixture_tmpl = os.path.join(cache_dir, f"fixture-repo-{key}")
+        if os.path.isdir(fixture_tmpl):
+            return fixture_tmpl
+        staging = fixture_tmpl + ".building"
+        shutil.rmtree(staging, ignore_errors=True)
+        try:
+            os.makedirs(os.path.join(staging, "bin"))
+            os.makedirs(os.path.join(staging, ".devcontainer"))
+            os.makedirs(os.path.join(staging, ".local"))
             shutil.copyfile(
                 os.path.join(REPO_ROOT, SCRIPT_REL),
-                os.path.join(fixture_tmpl, SCRIPT_REL),
+                os.path.join(staging, SCRIPT_REL),
             )
             shutil.copytree(
                 os.path.join(REPO_ROOT, "templates"),
-                os.path.join(fixture_tmpl, "templates"),
+                os.path.join(staging, "templates"),
             )
             shutil.copytree(
                 os.path.join(REPO_ROOT, LIB_REL),
-                os.path.join(fixture_tmpl, LIB_REL),
+                os.path.join(staging, LIB_REL),
             )
-            st = os.stat(os.path.join(fixture_tmpl, SCRIPT_REL))
-            os.chmod(os.path.join(fixture_tmpl, SCRIPT_REL), st.st_mode | stat.S_IEXEC)
-            with open(os.path.join(fixture_tmpl, ".gitignore"), "w", encoding="utf-8") as handle:
+            st = os.stat(os.path.join(staging, SCRIPT_REL))
+            os.chmod(os.path.join(staging, SCRIPT_REL), st.st_mode | stat.S_IEXEC)
+            with open(os.path.join(staging, ".gitignore"), "w", encoding="utf-8") as handle:
                 handle.write(".env\n.slot-holder\ndocs/*\n")
             with open(
-                os.path.join(fixture_tmpl, ".devcontainer", "docker-compose.yml"),
+                os.path.join(staging, ".devcontainer", "docker-compose.yml"),
                 "w",
                 encoding="utf-8",
             ) as handle:
                 handle.write("# fixture placeholder, unparsed — docker is stubbed\n")
-            with open(os.path.join(fixture_tmpl, ".local", ".gitkeep"), "w", encoding="utf-8"):
+            with open(os.path.join(staging, ".local", ".gitkeep"), "w", encoding="utf-8"):
                 pass
-            install_stub = os.path.join(fixture_tmpl, ".devcontainer", "install.sh")
+            install_stub = os.path.join(staging, ".devcontainer", "install.sh")
             with open(install_stub, "w", encoding="utf-8") as handle:
                 handle.write(INSTALL_STUB)
             os.chmod(install_stub, 0o755)
-            with open(os.path.join(fixture_tmpl, "project.env"), "w", encoding="utf-8") as handle:
-                handle.write(_DEFAULT_PROJECT_ENV)
+            if effective_env:
+                with open(os.path.join(staging, "project.env"), "w", encoding="utf-8") as handle:
+                    handle.write(effective_env)
 
             run_fix = lambda *args: subprocess.run(
-                [real_git_bin, "-C", fixture_tmpl, *args],
+                [real_git_bin, "-C", staging, *args],
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -831,11 +856,11 @@ def _ensure_template_cache(real_git_bin):
             run_fix("add", "-A")
             run_fix("commit", "-q", "-m", "fixture")
             run_fix("remote", "add", "origin", "https://example.invalid/fixture.git")
+            os.rename(staging, fixture_tmpl)
         except Exception:
-            shutil.rmtree(cache_dir, ignore_errors=True)
+            shutil.rmtree(staging, ignore_errors=True)
             raise
-        _TEMPLATE_CACHE_DIR = cache_dir
-        return _TEMPLATE_CACHE_DIR
+        return fixture_tmpl
 
 
 class DevContainerHarness:
@@ -855,8 +880,8 @@ class DevContainerHarness:
         self.now = None
         self.real_git_bin = shutil.which("git")
         assert self.real_git_bin, "no real git on PATH — cannot build the stub"
+        self._docs_repo_stub = None
         self._build_stub_bin()
-        self._build_docs_repo_stub()
 
     def _write_stub(self, name, content):
         path = os.path.join(self.stub_bin, name)
@@ -872,41 +897,30 @@ class DevContainerHarness:
         self._write_stub("git", GIT_STUB)
 
     def _build_docs_repo_stub(self):
-        cache_dir = _ensure_template_cache(self.real_git_bin)
-        self.docs_repo_stub = os.path.join(self.tmp, "docs-repo-stub")
-        shutil.copytree(
-            os.path.join(cache_dir, "docs-repo-stub"),
-            self.docs_repo_stub,
-            symlinks=True,
-        )
+        docs_tmpl = _ensure_docs_repo_template(self.real_git_bin)
+        path = os.path.join(self.tmp, "docs-repo-stub")
+        shutil.copytree(docs_tmpl, path, symlinks=True)
+        self._docs_repo_stub = path
+        return path
+
+    @property
+    def docs_repo_stub(self):
+        if self._docs_repo_stub is None:
+            self._build_docs_repo_stub()
+        return self._docs_repo_stub
+
+    @docs_repo_stub.setter
+    def docs_repo_stub(self, value):
+        self._docs_repo_stub = value
 
     def build_fixture_repo(self, with_parent_env=None, project_env=None):
-        cache_dir = _ensure_template_cache(self.real_git_bin)
-        shutil.copytree(
-            os.path.join(cache_dir, "fixture-repo"),
-            self.fixture_repo,
-            symlinks=True,
-        )
+        fixture_tmpl = _ensure_fixture_repo_template(self.real_git_bin, project_env)
+        shutil.copytree(fixture_tmpl, self.fixture_repo, symlinks=True)
         if with_parent_env is not None:
             env_path = os.path.join(self.fixture_repo, ".devcontainer", ".env")
             with open(env_path, "w", encoding="utf-8") as handle:
                 handle.write(with_parent_env)
             os.chmod(env_path, 0o600)
-        if project_env is not None and project_env != _DEFAULT_PROJECT_ENV:
-            proj_env_path = os.path.join(self.fixture_repo, "project.env")
-            if project_env:
-                with open(proj_env_path, "w", encoding="utf-8") as handle:
-                    handle.write(project_env)
-            elif os.path.exists(proj_env_path):
-                os.remove(proj_env_path)
-            run = lambda *args: subprocess.run(
-                [self.real_git_bin, "-C", self.fixture_repo, *args],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-            run("add", "-A")
-            run("commit", "-q", "--amend", "--no-edit")
 
     @property
     def script(self):
@@ -1105,6 +1119,7 @@ class DevContainerHarness:
         env["DOCS_REPO_URL"] = self.docs_repo_stub
         env["DEV_CONTAINER_HOME"] = self.state_dir
         env["DEV_CONTAINER_PORT_BASE"] = str(_PORT_BASE)
+        env["DEV_CONTAINER_WAIT_INTERVAL"] = "0.05"
         env["HOME"] = self.home
         env["DOCKER_STUB_LEASE_DIR"] = os.path.join(self.state_dir, "leases")
         env["DEV_CONTAINER_DOCKERENV_PATH"] = os.path.join(self.tmp, "not-a-container")

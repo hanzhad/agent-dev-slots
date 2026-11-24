@@ -141,7 +141,7 @@ cmd_acquire() {
     local slept=0
     while (( slept < wait_limit )); do
       [[ "$(lease_state_signature)" == "$seen" ]] || break
-      sleep 1
+      sleep "${DEV_CONTAINER_WAIT_INTERVAL:-1}"
       slept=$((slept + 1))
       wait_deadline_check
     done

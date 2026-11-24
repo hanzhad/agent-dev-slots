@@ -2,6 +2,7 @@
 """Select CI execution plan from changed files and EVENT_NAME (fail-closed)."""
 
 import json
+import math
 import os
 import sys
 
@@ -14,7 +15,7 @@ FULL_RUN_PREFIXES = (
     "bin/",
     "lib/",
     "templates/",
-    "docker/",
+    "image/",
 )
 FULL_RUN_EXACT = ("tests/harness.py", "__fail_closed__")
 
@@ -78,7 +79,12 @@ def select_plan(changed_files, event_name, exists_fn=None):
         return True, list(FULL_MATRIX), True, "all"
 
     if selected_tests:
-        return False, ["selected"], run_docker, " ".join(selected_tests)
+        if len(selected_tests) <= 2:
+            matrix = ["selected"]
+        else:
+            leg_count = min(SHARD_COUNT, math.ceil(len(selected_tests) / 2))
+            matrix = [f"selected-{i}" for i in range(1, leg_count + 1)]
+        return False, matrix, run_docker, " ".join(selected_tests)
     return False, [], run_docker, "none"
 
 

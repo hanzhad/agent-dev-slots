@@ -4,7 +4,7 @@ import subprocess
 import time
 import unittest
 
-from dockerkit import FIXTURE_DIR, RealEngineCase, docker, needs_docker, write
+from dockerkit import RealEngineCase, docker, needs_docker, write
 
 FOUR_GIB = 4 * 1024 ** 3
 ONE_GIB = 1024 ** 3
@@ -49,11 +49,9 @@ class TestToolboxDocker(RealEngineCase):
 
     def setUp(self):
         super().setUp()
-        self.fixture = f"dct{self.uid}-fixture:local"
+        self.fixture = self.ensure_fixture_image()
         self.toolbox_image = f"dct{self.uid}-toolbox:local"
-        self.addCleanup(docker, "rmi", "-f", self.fixture, self.toolbox_image, check=False)
-        built = docker("build", "-q", "-t", self.fixture, "--build-arg", "BASE=" + self.image, FIXTURE_DIR, check=False)
-        self.assertEqual(built.returncode, 0, built.stderr)
+        self.addCleanup(docker, "rmi", "-f", self.toolbox_image, check=False)
 
     def _in_engine(self, checkout, *args, check=False):
         return self.inside(

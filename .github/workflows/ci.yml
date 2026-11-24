@@ -35,7 +35,7 @@ jobs:
             git diff --name-only "$BASE_SHA" HEAD || echo "__fail_closed__"
           else
             echo "__fail_closed__"
-          fi | python3 scripts/ci/select-ci-plan.py
+          fi | python3 scripts/ci/select-ci-plan.py --shard-selected
 
   test-leg:
     needs: [changes]
@@ -50,15 +50,25 @@ jobs:
       - name: Run test leg
         env:
           ALL_TESTS: ${{ needs.changes.outputs.all }}
+          MATRIX: ${{ needs.changes.outputs.matrix }}
           SCOPE: ${{ needs.changes.outputs.scope }}
           LEG: ${{ matrix.leg }}
         run: |
           if [ "$ALL_TESTS" = "true" ]; then
             shard_num="${LEG#shard-}"
-            python3 scripts/ci/run-tests.py --leg "$LEG" --shard "${shard_num}/6" --workers 2 --report test-report.json
+            python3 scripts/ci/run-tests.py --leg "$LEG" --shard "${shard_num}/6" --workers 4 --report test-report.json
           else
             printf '%s\n' $SCOPE > "$RUNNER_TEMP/selected-tests.txt"
-            python3 scripts/ci/run-tests.py --leg "$LEG" --files-from "$RUNNER_TEMP/selected-tests.txt" --workers 2 --report test-report.json
+            case "$LEG" in
+              selected-*)
+                shard_num="${LEG#selected-}"
+                shard_total="$(python3 -c 'import json, os; print(sum(1 for x in json.loads(os.environ["MATRIX"]) if isinstance(x, str) and x.startswith("selected-")))')"
+                python3 scripts/ci/run-tests.py --leg "$LEG" --files-from "$RUNNER_TEMP/selected-tests.txt" --shard "${shard_num}/${shard_total}" --workers 4 --report test-report.json
+                ;;
+              *)
+                python3 scripts/ci/run-tests.py --leg "$LEG" --files-from "$RUNNER_TEMP/selected-tests.txt" --workers 4 --report test-report.json
+                ;;
+            esac
           fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ always() }}
@@ -121,18 +131,106 @@ jobs:
           case "$base" in ""|0000000000000000000000000000000000000000) base="HEAD~1" ;; esac
           python3 scripts/scan.py --history --range "$base..HEAD"
 
-  docker:
+  docker-core:
     needs: [changes]
     runs-on: ubuntu-latest
     steps:
-      - name: Skip docker tests when not needed
+      - name: Skip docker-core tests when not needed
         if: ${{ needs.changes.outputs.run_docker != 'true' }}
         run: |
           echo "Skipping real docker tests (run_docker=${{ needs.changes.outputs.run_docker }})."
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: ${{ needs.changes.outputs.run_docker == 'true' }}
-      - name: Real docker tests
+      - name: Enable containerd image store for daemon BuildKit GHA cache
+        if: ${{ needs.changes.outputs.run_docker == 'true' }}
+        run: |
+          if ! docker info -f '{{.DriverStatus}}' | grep -q 'containerd'; then
+            sudo python3 -c 'import json, os; p = "/etc/docker/daemon.json"; os.makedirs(os.path.dirname(p), exist_ok=True); text = open(p).read().strip() if os.path.isfile(p) else ""; cfg = json.loads(text) if text else {}; cfg.setdefault("features", {})["containerd-snapshotter"] = True; open(p, "w").write(json.dumps(cfg, indent=2) + "\n")'
+            sudo systemctl restart docker
+          fi
+      - name: Set up Docker Buildx
+        id: buildx
+        if: ${{ needs.changes.outputs.run_docker == 'true' }}
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver: docker
+      - name: Warm engine image cache
+        if: ${{ needs.changes.outputs.run_docker == 'true' }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          context: .
+          file: image/Dockerfile
+          load: true
+          provenance: false
+          tags: dev-container-engine:local
+          cache-from: type=gha,scope=engine
+          cache-to: type=gha,mode=max,scope=engine,ignore-error=true
+      - name: Real docker tests (core)
         if: ${{ needs.changes.outputs.run_docker == 'true' }}
         env:
           DEV_CONTAINER_DOCKER_TESTS: "1"
-        run: python3 -m unittest discover -s tests/docker -v
+          PYTHONPATH: tests/docker
+        run: |
+          python3 -m unittest -v \
+            tests/docker/test_engine_container.py \
+            tests/docker/test_compose_paths.py \
+            tests/docker/test_overlay.py \
+            tests/docker/test_volume_lifecycle.py
+
+  docker-multi-toolbox:
+    needs: [changes]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip docker-multi-toolbox tests when not needed
+        if: ${{ needs.changes.outputs.run_docker != 'true' }}
+        run: |
+          echo "Skipping real docker tests (run_docker=${{ needs.changes.outputs.run_docker }})."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ needs.changes.outputs.run_docker == 'true' }}
+      - name: Enable containerd image store for daemon BuildKit GHA cache
+        if: ${{ needs.changes.outputs.run_docker == 'true' }}
+        run: |
+          if ! docker info -f '{{.DriverStatus}}' | grep -q 'containerd'; then
+            sudo python3 -c 'import json, os; p = "/etc/docker/daemon.json"; os.makedirs(os.path.dirname(p), exist_ok=True); text = open(p).read().strip() if os.path.isfile(p) else ""; cfg = json.loads(text) if text else {}; cfg.setdefault("features", {})["containerd-snapshotter"] = True; open(p, "w").write(json.dumps(cfg, indent=2) + "\n")'
+            sudo systemctl restart docker
+          fi
+      - name: Set up Docker Buildx
+        id: buildx
+        if: ${{ needs.changes.outputs.run_docker == 'true' }}
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver: docker
+      - name: Warm engine image cache
+        if: ${{ needs.changes.outputs.run_docker == 'true' }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          context: .
+          file: image/Dockerfile
+          load: true
+          provenance: false
+          tags: dev-container-engine:local
+          cache-from: type=gha,scope=engine
+      - name: Warm toolbox image cache
+        if: ${{ needs.changes.outputs.run_docker == 'true' }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          builder: ${{ steps.buildx.outputs.name }}
+          context: image/toolbox
+          file: image/toolbox/Dockerfile
+          load: true
+          provenance: false
+          tags: dev-container-toolbox:local
+          cache-from: type=gha,scope=toolbox
+          cache-to: type=gha,mode=max,scope=toolbox,ignore-error=true
+      - name: Real docker tests (multi-repo and toolbox)
+        if: ${{ needs.changes.outputs.run_docker == 'true' }}
+        env:
+          DEV_CONTAINER_DOCKER_TESTS: "1"
+          PYTHONPATH: tests/docker
+        run: |
+          python3 -m unittest -v \
+            tests/docker/test_multi_repo_docker.py \
+            tests/docker/test_multi_repo_lifecycle.py \
+            tests/docker/test_toolbox_docker.py

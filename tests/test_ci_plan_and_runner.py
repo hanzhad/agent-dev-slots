@@ -443,6 +443,30 @@ print(f"copies_after_h1={copies_after_h1}")
             "docs-repo-stub should be materialized lazily exactly once on access",
         )
 
+    def test_docs_repo_stub_relocates_cleanly_before_materialization(self):
+        h = harness.DevContainerHarness()
+        self.addCleanup(h.cleanup)
+        old_tmp = h.tmp
+        new_tmp = old_tmp + " with a space"
+        os.rename(old_tmp, new_tmp)
+
+        h.tmp = new_tmp
+        old_stub = h.docs_repo_stub
+        self.assertEqual(old_stub, os.path.join(old_tmp, "docs-repo-stub"))
+        self.assertFalse(
+            os.path.exists(old_tmp),
+            "reading docs_repo_stub during relocation must not recreate the old tmp directory",
+        )
+
+        relocated_stub = new_tmp + old_stub[len(old_tmp):]
+        h.docs_repo_stub = relocated_stub
+        expected = os.path.join(new_tmp, "docs-repo-stub")
+        self.assertEqual(relocated_stub, expected)
+        self.assertEqual(h.docs_repo_stub, expected)
+        self.assertTrue(os.path.isdir(os.path.join(expected, ".git")))
+        with open(os.path.join(expected, "README.md"), encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), "docs repo stub\n")
+
     def test_toolbox_hoists_openssl_genrsa_to_setUpModule(self):
         script = """
 import os, subprocess, sys
@@ -882,7 +906,7 @@ class TestRunTestsScript(unittest.TestCase):
 
 
 class TestSelectCiPlanScript(unittest.TestCase):
-    def _run_plan(self, changed_files, event_name="pull_request", github_output=None):
+    def _run_plan(self, changed_files, event_name="pull_request", github_output=None, extra_args=()):
         self.assertTrue(os.path.isfile(SELECT_PLAN), f"missing {SELECT_PLAN}")
         env = dict(os.environ)
         env["EVENT_NAME"] = event_name
@@ -891,7 +915,7 @@ class TestSelectCiPlanScript(unittest.TestCase):
         else:
             env.pop("GITHUB_OUTPUT", None)
         proc = subprocess.run(
-            [sys.executable, SELECT_PLAN],
+            [sys.executable, SELECT_PLAN, *extra_args],
             input="\n".join(changed_files) + ("\n" if changed_files else ""),
             capture_output=True,
             text=True,
@@ -990,12 +1014,23 @@ class TestSelectCiPlanScript(unittest.TestCase):
         plan_mod = _load_module("select_ci_plan_mod", SELECT_PLAN)
         shard_count = plan_mod.SHARD_COUNT
 
-        # Pure table-driven check across boundary counts 1..20.
+        # Pure table-driven check across boundary counts 1..20:
+        # default (shard_selected=False) emits ["selected"] for compatibility with unwired workflows,
+        # while shard_selected=True emits selected-1..K above 2 files.
         for count in (1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 20):
             files = [f"tests/test_case_{i}.py" for i in range(1, count + 1)]
-            with self.subTest(count=count):
+            with self.subTest(count=count, shard_selected=False):
                 all_flag, matrix, run_docker, scope = plan_mod.select_plan(
                     files, "pull_request", exists_fn=lambda _: True
+                )
+                self.assertFalse(all_flag)
+                self.assertFalse(run_docker)
+                self.assertEqual(scope.split(), files)
+                self.assertEqual(matrix, ["selected"])
+
+            with self.subTest(count=count, shard_selected=True):
+                all_flag, matrix, run_docker, scope = plan_mod.select_plan(
+                    files, "pull_request", exists_fn=lambda _: True, shard_selected=True
                 )
                 self.assertFalse(all_flag)
                 self.assertFalse(run_docker)
@@ -1011,6 +1046,7 @@ class TestSelectCiPlanScript(unittest.TestCase):
             ["tests/test_a.py", "tests/test_b.py", "tests/test_a.py", "tests/test_b.py"],
             "pull_request",
             exists_fn=lambda _: True,
+            shard_selected=True,
         )
         self.assertEqual(dup_matrix, ["selected"])
 
@@ -1019,28 +1055,36 @@ class TestSelectCiPlanScript(unittest.TestCase):
             ["tests/test_a.py", "tests/test_b.py", "tests/test_gone_1.py", "tests/test_gone_2.py"],
             "pull_request",
             exists_fn=lambda p: p in existing,
+            shard_selected=True,
         )
         self.assertEqual(filtered_matrix, ["selected"])
         self.assertEqual(filtered_scope, "tests/test_a.py tests/test_b.py")
 
-        # Mixing 3 unit tests with a docker test emits sharded selected legs AND run_docker=true.
+        # Mixing 3 unit tests with a docker test emits sharded selected legs AND run_docker=true when enabled.
         _, mixed_matrix, mixed_docker, mixed_scope = plan_mod.select_plan(
             ["tests/test_a.py", "tests/test_b.py", "tests/test_c.py", "tests/docker/test_overlay.py"],
             "pull_request",
             exists_fn=lambda _: True,
+            shard_selected=True,
         )
         self.assertTrue(mixed_docker)
         self.assertEqual(mixed_matrix, ["selected-1", "selected-2"])
         self.assertEqual(mixed_scope.split(), ["tests/test_a.py", "tests/test_b.py", "tests/test_c.py"])
 
-        # End-to-end CLI flow: select-ci-plan.py -> run-tests.py --files-from --shard -> check-test-legs.py.
+        # End-to-end CLI flow: default emits ["selected"]; --shard-selected emits selected-1..K.
         real_five = sorted(
             os.path.relpath(os.path.join(TESTS_DIR, name), ROOT)
             for name in os.listdir(TESTS_DIR)
             if name.startswith("test_") and name.endswith(".py")
         )[:5]
         self.assertEqual(len(real_five), 5)
-        cli_out = self._run_plan(real_five, event_name="pull_request")
+        default_cli_out = self._run_plan(real_five, event_name="pull_request")
+        self.assertEqual(json.loads(default_cli_out["matrix"]), ["selected"])
+        self.assertEqual(default_cli_out["scope"].split(), real_five)
+
+        cli_out = self._run_plan(
+            real_five, event_name="pull_request", extra_args=("--shard-selected",)
+        )
         legs = json.loads(cli_out["matrix"])
         self.assertEqual(legs, ["selected-1", "selected-2", "selected-3"])
         self.assertEqual(cli_out["scope"].split(), real_five)
@@ -1249,6 +1293,46 @@ class TestCiWorkflowContract(unittest.TestCase):
         self.assertIn("scripts/ci/check-test-legs.py", text)
         self.assertIn("!cancelled()", text)
         self.assertIn("needs.changes.outputs.run_docker", text)
+
+    def test_ci_workflow_selected_legs_match_runner_sharding(self):
+        with open(CI_WORKFLOW, encoding="utf-8") as fh:
+            text = fh.read()
+
+        plan_match = re.search(r"python3\s+scripts/ci/select-ci-plan\.py([^\n]*)", text)
+        self.assertIsNotNone(plan_match, "missing select-ci-plan.py invocation in ci.yml")
+        plan_flags = plan_match.group(1).split()
+        uses_shard_selected = "--shard-selected" in plan_flags
+
+        plan_mod = _load_module("select_ci_plan_contract_mod", SELECT_PLAN)
+        six_tests = [f"tests/test_case_{i}.py" for i in range(1, 7)]
+        _, matrix, _, _ = plan_mod.select_plan(
+            six_tests,
+            "pull_request",
+            exists_fn=lambda _: True,
+            shard_selected=uses_shard_selected,
+        )
+
+        # Inspect the non-ALL_TESTS branch of `test-leg` in ci.yml.
+        branch_match = re.search(
+            r'if\s+\[\s*"\$ALL_TESTS"\s*=\s*"true"\s*\];\s*then(.*?)else(.*?)fi',
+            text,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(branch_match, "missing ALL_TESTS if/else branch in ci.yml")
+        selected_branch = branch_match.group(2)
+
+        if len(matrix) > 1:
+            self.assertIn(
+                "--shard",
+                selected_branch,
+                "ci.yml emits multiple selected legs but does not pass --shard in the non-ALL_TESTS branch",
+            )
+        else:
+            self.assertEqual(
+                matrix,
+                ["selected"],
+                "unsharded ci.yml runner must receive a single ['selected'] leg",
+            )
 
 
 _DOCKERKIT_FAKE_PREFIX = """

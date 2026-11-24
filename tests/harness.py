@@ -880,7 +880,7 @@ class DevContainerHarness:
         self.now = None
         self.real_git_bin = shutil.which("git")
         assert self.real_git_bin, "no real git on PATH — cannot build the stub"
-        self._docs_repo_stub = None
+        self._docs_repo_stub_path = os.path.join(self.tmp, "docs-repo-stub")
         self._build_stub_bin()
 
     def _write_stub(self, name, content):
@@ -898,20 +898,20 @@ class DevContainerHarness:
 
     def _build_docs_repo_stub(self):
         docs_tmpl = _ensure_docs_repo_template(self.real_git_bin)
-        path = os.path.join(self.tmp, "docs-repo-stub")
+        path = self._docs_repo_stub_path
         shutil.copytree(docs_tmpl, path, symlinks=True)
-        self._docs_repo_stub = path
         return path
 
     @property
     def docs_repo_stub(self):
-        if self._docs_repo_stub is None:
+        path = self._docs_repo_stub_path
+        if path and not os.path.exists(path) and os.path.isdir(os.path.dirname(path)):
             self._build_docs_repo_stub()
-        return self._docs_repo_stub
+        return path
 
     @docs_repo_stub.setter
     def docs_repo_stub(self, value):
-        self._docs_repo_stub = value
+        self._docs_repo_stub_path = value
 
     def build_fixture_repo(self, with_parent_env=None, project_env=None):
         fixture_tmpl = _ensure_fixture_repo_template(self.real_git_bin, project_env)

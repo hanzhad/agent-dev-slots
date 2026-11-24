@@ -490,6 +490,24 @@ class TestSelectCiPlanScript(unittest.TestCase):
         out = self._run_plan(["tests/docker/test_overlay.py"], event_name="pull_request")
         self.assertEqual(out.get("run_docker"), "true")
 
+    def test_deleted_unit_test_files_are_excluded_from_scope(self):
+        out_only_deleted = self._run_plan(
+            ["tests/test_deleted_nonexistent.py"], event_name="pull_request"
+        )
+        self.assertEqual(out_only_deleted.get("all"), "false")
+        self.assertEqual(out_only_deleted.get("run_docker"), "false")
+        self.assertEqual(json.loads(out_only_deleted["matrix"]), [])
+        self.assertEqual(out_only_deleted.get("scope"), "none")
+
+        out_mixed = self._run_plan(
+            ["tests/test_deleted_nonexistent.py", "tests/test_scan.py"],
+            event_name="pull_request",
+        )
+        self.assertEqual(out_mixed.get("all"), "false")
+        self.assertEqual(out_mixed.get("run_docker"), "false")
+        self.assertEqual(json.loads(out_mixed["matrix"]), ["selected"])
+        self.assertEqual(out_mixed.get("scope"), "tests/test_scan.py")
+
     def test_writes_to_github_output_when_set(self):
         with tempfile.TemporaryDirectory() as tmp:
             gh_out = os.path.join(tmp, "github_output.txt")

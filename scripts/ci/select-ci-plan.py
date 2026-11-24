@@ -47,7 +47,7 @@ def _is_top_level_unit_test(path):
     )
 
 
-def select_plan(changed_files, event_name):
+def select_plan(changed_files, event_name, exists_fn=None):
     """Pure planner: return (all_flag, matrix_list, run_docker, scope_str)."""
     files = [line.strip() for line in changed_files if line.strip()]
 
@@ -67,6 +67,8 @@ def select_plan(changed_files, event_name):
             run_docker = True
             continue
         if _is_top_level_unit_test(path):
+            if exists_fn is not None and not exists_fn(path):
+                continue
             if path not in selected_tests:
                 selected_tests.append(path)
             continue
@@ -94,7 +96,7 @@ def format_outputs(all_flag, matrix_list, run_docker, scope_str):
 def main():
     event_name = os.environ.get("EVENT_NAME", "").strip()
     changed_files = sys.stdin.read().splitlines()
-    all_flag, matrix_list, run_docker, scope_str = select_plan(changed_files, event_name)
+    all_flag, matrix_list, run_docker, scope_str = select_plan(changed_files, event_name, exists_fn=os.path.isfile)
     rendered = format_outputs(all_flag, matrix_list, run_docker, scope_str)
 
     github_output = os.environ.get("GITHUB_OUTPUT", "").strip()

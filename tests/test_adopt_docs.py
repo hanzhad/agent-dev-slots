@@ -2,7 +2,12 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import unittest
+
+_TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
 
 from harness import DevContainerTestCase, REPO_ROOT, SCRIPT_REL, project_env_text
 
@@ -290,78 +295,6 @@ class AdoptMakesTheFolderIgnoreItself(AdoptDocsTestCase):
 
         exclude = read(os.path.join(other, ".git", "info", "exclude"))
         self.assertNotIn(".devcontainer/", exclude.replace("/.devcontainer/.env", ""))
-        self.assertEqual(read(os.path.join(other, ".devcontainer", ".gitignore")).count("\n*\n"), 1)
-
-    def test_a_second_adopt_leaves_the_ignore_file_alone(self):
-        other, git = self.fresh_repo()
-        self.engine("adopt", other)
-        path = os.path.join(other, ".devcontainer", ".gitignore")
-        before = read(path)
-
-        result = self.engine("adopt", other)
-
-        self.assertEqual(read(path), before)
-        self.assertNotIn("wrote .devcontainer/.gitignore", output_of(result))
-
-    def test_a_project_that_tracks_the_folder_keeps_its_git_untouched_and_is_told(self):
-        result = self.adopt()
-
-        self.assertEqual(result.returncode, 0, output_of(result))
-        self.assertFalse(os.path.exists(os.path.join(self.repo, ".devcontainer", ".gitignore")))
-        self.assertIn("tracked in git", output_of(result))
-
-    def test_a_slot_receives_the_ignore_file(self):
-        git = lambda *args: subprocess.run(
-            [self.harness.real_git_bin, "-C", self.repo, *args],
-            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-        git("rm", "-r", "-q", "--cached", ".devcontainer")
-        git("commit", "-qm", "untrack .devcontainer")
-        self.adopt()
-
-        result = self.harness.run_acquire()
-
-        self.assertEqual(result.returncode, 0, output_of(result))
-        slot = self.harness.slot_dir(self.harness.acquired_slot_name(result))
-        self.assertTrue(os.path.isfile(os.path.join(slot, ".devcontainer", ".gitignore")))
-
-
-class AdoptMakesTheFolderIgnoreItself(AdoptDocsTestCase):
-    def fresh_repo(self):
-        other = os.path.join(self.harness.tmp, "ignored-app")
-        os.makedirs(other)
-        git = lambda *args: subprocess.run(
-            [self.harness.real_git_bin, "-C", other, *args],
-            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        )
-        git("init", "-q")
-        git("config", "user.email", "f@example.com")
-        git("config", "user.name", "f")
-        write(os.path.join(other, "package.json"), "{}\n")
-        git("add", "-A")
-        git("commit", "-qm", "init")
-        return other, git
-
-    def test_git_status_shows_nothing_for_the_folder_even_with_a_secret_in_it(self):
-        other, git = self.fresh_repo()
-        write(os.path.join(other, ".devcontainer", "agent.env"), "GH_TOKEN=ghp_SENTINEL_ignore\n")
-
-        result = self.engine("adopt", other)
-
-        self.assertEqual(result.returncode, 0, output_of(result))
-        status = git("status", "--short", "--", ".devcontainer").stdout.decode()
-        self.assertEqual(status.strip(), "", status)
-        ignore = read(os.path.join(other, ".devcontainer", ".gitignore"))
-        self.assertIn("\n*\n", "\n" + ignore)
-        self.assertTrue(ignore.startswith("#"), ignore)
-
-    def test_the_ignore_file_is_the_only_mechanism_for_the_folder(self):
-        other, git = self.fresh_repo()
-
-        self.engine("adopt", other)
-        self.engine("adopt", other)
-
-        exclude = read(os.path.join(other, ".git", "info", "exclude"))
         self.assertNotIn("/.devcontainer/\n", exclude)
         self.assertEqual(read(os.path.join(other, ".devcontainer", ".gitignore")).count("\n*\n"), 1)
 

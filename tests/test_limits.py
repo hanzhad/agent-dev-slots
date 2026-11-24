@@ -1091,6 +1091,200 @@ class MachineCapFromLimitsFile(DevContainerTestCase):
             f"expected lock_acquire default interval to be 1 when unset, got {default_calls}",
         )
 
+    def test_wait_interval_us_and_spec_parse_decimals_and_fall_back_on_invalid(self):
+        self._identity_repo()
+        env = self.harness._env(None)
+        env["DEV_CONTAINER_LIB"] = "1"
+        env.pop("DEV_CONTAINER_WAIT_INTERVAL", None)
+
+        valid_cases = [
+            ("1", "1000000"),
+            ("0.05", "50000"),
+            ("0.08", "80000"),
+            ("0.123", "123000"),
+            ("2", "2000000"),
+            ("2.5", "2500000"),
+            (".25", "250000"),
+            ("00.05", "50000"),
+            ("0.0000005", "1"),
+        ]
+        invalid_cases = ("", "0", "0.0", ".0", "-1", "abc", "1s", "1.", "9999999999")
+
+        lines = ['. "$0"']
+        for idx, (raw, _) in enumerate(valid_cases):
+            lines.append(f'printf "VUS:{idx}:%s\\n" "$(wait_interval_us "{raw}")"')
+            lines.append(f'printf "VSPEC:{idx}:%s\\n" "$(DEV_CONTAINER_WAIT_INTERVAL="{raw}" wait_interval_spec)"')
+        for idx, raw in enumerate(invalid_cases):
+            lines.append(
+                f'if wait_interval_us "{raw}" >/dev/null 2>&1; then printf "IUS:{idx}:ok\\n"; else printf "IUS:{idx}:err\\n"; fi'
+            )
+            lines.append(f'printf "ISPEC:{idx}:%s\\n" "$(DEV_CONTAINER_WAIT_INTERVAL="{raw}" wait_interval_spec)"')
+        lines.append('printf "UNSET:%s\\n" "$(unset DEV_CONTAINER_WAIT_INTERVAL; wait_interval_spec)"')
+
+        res = subprocess.run(
+            ["bash", "-c", "\n".join(lines), self.harness.script],
+            cwd=self.harness.tmp,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+        self.assertEqual(res.returncode, 0, res.stderr.decode())
+        out_lines = set(res.stdout.decode().splitlines())
+
+        for idx, (raw, expected_us) in enumerate(valid_cases):
+            self.assertIn(f"VUS:{idx}:{expected_us}", out_lines)
+            self.assertIn(f"VSPEC:{idx}:{raw} {expected_us}", out_lines)
+        for idx, _ in enumerate(invalid_cases):
+            self.assertIn(f"IUS:{idx}:err", out_lines)
+            self.assertIn(f"ISPEC:{idx}:1 1000000", out_lines)
+        self.assertIn("UNSET:1 1000000", out_lines)
+
+    def test_lock_acquire_30s_limit_and_progress_hold_across_wait_intervals(self):
+        self._identity_repo()
+        lock = os.path.join(self.harness.state_dir, "lock")
+        self.addCleanup(lambda: os.path.isdir(lock) and os.rmdir(lock))
+
+        # Subcase A: with real sleep and DEV_CONTAINER_WAIT_INTERVAL=0.05, a lock held
+        # for 5s must NOT trigger the 30s timeout (old iteration counter died at ~1.5s).
+        os.mkdir(lock)
+        proc_real = self.harness.spawn(
+            "acquire",
+            "--for",
+            "lock-5s-real",
+            "--as",
+            self.OWNER,
+            port_overrides={"DEV_CONTAINER_WAIT_INTERVAL": "0.05"},
+        )
+        self.addCleanup(lambda: proc_real.poll() is None and proc_real.kill())
+        time.sleep(5.0)
+        self.assertIsNone(
+            proc_real.poll(),
+            "lock_acquire with DEV_CONTAINER_WAIT_INTERVAL=0.05 died before 5s instead of waiting 30s",
+        )
+        os.rmdir(lock)
+        _, err_real = proc_real.communicate(timeout=30)
+        self.assertEqual(proc_real.returncode, 0, err_real.decode())
+
+        # Subcase B: exact 30s simulated timeout for both <1 (0.05 -> 600 calls) and >1 (2 -> 15 calls).
+        sleep_log = os.path.join(self.harness.tmp, "noop-sleep.log")
+        self.harness._write_stub(
+            "sleep",
+            f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "{sleep_log}"\nexit 0\n',
+        )
+        for interval, expected_calls in (("0.05", 600), ("2", 15)):
+            with self.subTest(timeout_interval=interval):
+                if os.path.exists(sleep_log):
+                    os.remove(sleep_log)
+                os.mkdir(lock)
+                started = time.monotonic()
+                try:
+                    res = self._acquire(
+                        f"lock-limit-{interval}",
+                        port_overrides={"DEV_CONTAINER_WAIT_INTERVAL": interval},
+                    )
+                finally:
+                    if os.path.isdir(lock):
+                        os.rmdir(lock)
+                elapsed = time.monotonic() - started
+                self.assertNotEqual(res.returncode, 0)
+                self.assertIn("busy for 30s", res.stderr.decode())
+                calls = self._read_lines(sleep_log)
+                self.assertLessEqual(len(calls), expected_calls)
+                self.assertTrue(
+                    len(calls) == expected_calls or elapsed >= 28.0,
+                    f"interval={interval}: expected {expected_calls} sleeps (or 30s wall), got {len(calls)} in {elapsed:.2f}s",
+                )
+                if interval == "0.05":
+                    self.assertGreater(len(calls), 100)
+                self.assertTrue(all(c == interval for c in calls), calls[:5])
+
+        # Subcase C: --wait progress notes fire at 30s and every 60s thereafter with true elapsed seconds.
+        counter_file = os.path.join(self.harness.tmp, "noop-sleep.count")
+        for interval, unlock_after, expected_notes in (
+            ("2", 50, ["has been busy for 30s — still waiting (--wait)", "has been busy for 90s — still waiting (--wait)"]),
+            ("0.05", 620, ["has been busy for 30s — still waiting (--wait)"]),
+        ):
+            with self.subTest(wait_progress_interval=interval):
+                for path in (sleep_log, counter_file):
+                    if os.path.exists(path):
+                        os.remove(path)
+                self.harness._write_stub(
+                    "sleep",
+                    f'#!/usr/bin/env bash\n'
+                    f'n=0\n'
+                    f'[[ -f "{counter_file}" ]] && IFS= read -r n < "{counter_file}" || true\n'
+                    f'n=$((n + 1))\n'
+                    f'printf "%s\\n" "$n" > "{counter_file}"\n'
+                    f'if (( n >= {unlock_after} )); then rmdir "{lock}" 2>/dev/null || true; fi\n'
+                    f'exit 0\n',
+                )
+                os.mkdir(lock)
+                try:
+                    res = self._acquire(
+                        f"lock-wait-{interval}",
+                        "--wait",
+                        port_overrides={"DEV_CONTAINER_WAIT_INTERVAL": interval},
+                    )
+                finally:
+                    if os.path.isdir(lock):
+                        os.rmdir(lock)
+                stderr = res.stderr.decode()
+                self.assertEqual(res.returncode, 0, stderr)
+                note_lines = [line for line in stderr.splitlines() if "still waiting (--wait)" in line]
+                self.assertEqual(len(note_lines), len(expected_notes), stderr)
+                for expected in expected_notes:
+                    self.assertIn(expected, stderr)
+
+    def test_cmd_acquire_wait_limit_scales_with_dev_container_wait_interval(self):
+        self._identity_repo()
+        meminfo = os.path.join(self.harness.tmp, "meminfo")
+        floor_path = os.path.join(self.harness.home, ".config", "machine-limits", "memory-floor-mb")
+        os.makedirs(os.path.dirname(floor_path), exist_ok=True)
+        with open(floor_path, "w", encoding="utf-8") as handle:
+            handle.write("4096\n")
+        sleep_log = os.path.join(self.harness.tmp, "cmd-wait-sleep.log")
+
+        # On the first sleep inside cmd_acquire's memory wait loop (wait_limit=3s),
+        # raise MemAvailable above the floor. Because meminfo is not in lease_state_signature,
+        # cmd_acquire only re-checks memory after the full 3s inner wait_limit expires.
+        self.harness._write_stub(
+            "sleep",
+            f'#!/usr/bin/env bash\n'
+            f'printf "%s\\n" "$*" >> "{sleep_log}"\n'
+            f'printf "MemAvailable: %d kB\\n" $((8192 * 1024)) > "{meminfo}"\n'
+            f'exit 0\n',
+        )
+
+        for interval, expected_calls in (("0.25", 12), ("2", 2)):
+            with self.subTest(wait_limit_interval=interval):
+                if os.path.exists(sleep_log):
+                    os.remove(sleep_log)
+                with open(meminfo, "w", encoding="utf-8") as handle:
+                    handle.write(f"MemAvailable: {1024 * 1024} kB\n")
+                started = time.monotonic()
+                res = self._acquire(
+                    f"mem-wait-{interval}",
+                    "--wait",
+                    "--timeout",
+                    "30s",
+                    port_overrides={
+                        "DEV_CONTAINER_WAIT_INTERVAL": interval,
+                        "DEV_CONTAINER_MEMINFO_PATH": meminfo,
+                    },
+                )
+                elapsed = time.monotonic() - started
+                self.assertEqual(res.returncode, 0, res.stderr.decode())
+                calls = self._read_lines(sleep_log)
+                self.assertLessEqual(len(calls), expected_calls)
+                self.assertTrue(
+                    len(calls) == expected_calls or elapsed >= 2.0,
+                    f"interval={interval}: expected {expected_calls} sleeps (or 3s wall), got {len(calls)} in {elapsed:.2f}s",
+                )
+                if interval == "0.25":
+                    self.assertGreater(len(calls), 3)
+                self.assertTrue(all(c == interval for c in calls), calls)
+
 
 if __name__ == "__main__":
     unittest.main()

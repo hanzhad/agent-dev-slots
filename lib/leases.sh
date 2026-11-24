@@ -12,20 +12,63 @@ wait_deadline_check() {
 }
 REAP_LOCK_WAIT=${DEV_CONTAINER_REAP_LOCK_WAIT:-300}
 REAP_LOCK_DEADLINE=0
+wait_interval_us() {
+  local raw="$1" whole frac
+  if [[ "$raw" =~ ^([0-9]+)([.]([0-9]+))?$ ]]; then
+    whole="${BASH_REMATCH[1]}"
+    frac="${BASH_REMATCH[3]:-}"
+  elif [[ "$raw" =~ ^[.]([0-9]+)$ ]]; then
+    whole="0"
+    frac="${BASH_REMATCH[1]}"
+  else
+    return 1
+  fi
+  [[ "$whole$frac" == *[1-9]* ]] || return 1
+  whole="${whole#"${whole%%[!0]*}"}"
+  [[ -n "$whole" ]] || whole="0"
+  (( ${#whole} <= 9 )) || return 1
+  frac="${frac}000000"
+  frac="${frac:0:6}"
+  local us=$(( 10#$whole * 1000000 + 10#$frac ))
+  (( us > 0 )) || us=1
+  printf '%s\n' "$us"
+}
+wait_interval_spec() {
+  local raw="${DEV_CONTAINER_WAIT_INTERVAL:-1}" us=""
+  if us=$(wait_interval_us "$raw"); then
+    printf '%s %s\n' "$raw" "$us"
+  else
+    printf '1 1000000\n'
+  fi
+}
 lock_take() { ( set -C; : >"$1" ) 2>/dev/null; }
 lock_acquire() {
-  local waited=0
-  until lock_take "$LOCK_DIR"; do
-    waited=$((waited + 1))
+  if lock_take "$LOCK_DIR"; then
+    LOCK_HELD=1
+    return 0
+  fi
+  local interval interval_us
+  read -r interval interval_us <<<"$(wait_interval_spec)"
+  local start_sec=$SECONDS slept_us=0 wall_us=0 elapsed_us=0 next_report_us=30000000
+  while :; do
+    wall_us=$(( (SECONDS - start_sec) * 1000000 ))
+    elapsed_us=$(( slept_us > wall_us ? slept_us : wall_us ))
     (( LOCK_WAIT )) && wait_deadline_check
     if (( REAP_LOCK_DEADLINE )); then
       (( $(now_epoch) < REAP_LOCK_DEADLINE )) \
         || die "✖ reap could not get the host-wide lock at $LOCK_DIR within ${REAP_LOCK_WAIT}s and stopped here — every slot it had not reached was not looked at. 'ps' shows which dev-container holds it."
-    elif (( waited > 30 )); then
+    elif (( elapsed_us >= 30000000 )); then
       (( LOCK_WAIT )) || die "the host-wide lock at $LOCK_DIR was busy for 30s — another dev-container is holding it. 'acquire --wait' waits it out; if nothing else is running, a stuck previous run left it: remove it by hand (rm -rf $LOCK_DIR)."
-      (( waited % 60 == 31 )) && echo "▸ the host-wide lock at $LOCK_DIR has been busy for ${waited}s — still waiting (--wait)" >&2
+      if (( elapsed_us >= next_report_us )); then
+        echo "▸ the host-wide lock at $LOCK_DIR has been busy for $(( elapsed_us / 1000000 ))s — still waiting (--wait)" >&2
+        while (( next_report_us <= elapsed_us )); do
+          next_report_us=$(( next_report_us + 60000000 ))
+        done
+      fi
     fi
-    sleep "${DEV_CONTAINER_WAIT_INTERVAL:-1}"
+    sleep "$interval"
+    slept_us=$(( slept_us + interval_us ))
+    lock_take "$LOCK_DIR" && break
   done
   LOCK_HELD=1
 }

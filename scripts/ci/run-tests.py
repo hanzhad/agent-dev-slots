@@ -133,14 +133,6 @@ def _count_test_methods(source):
     )
 
 
-def _file_line_count(path):
-    try:
-        with open(path, "rb") as fh:
-            return sum(1 for _ in fh)
-    except OSError:
-        return 0
-
-
 def _file_weight(path, timings):
     measured = _lookup_timing_weight(timings, path)
     if measured is not None:

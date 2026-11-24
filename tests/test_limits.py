@@ -918,6 +918,179 @@ class MachineCapFromLimitsFile(DevContainerTestCase):
 
         self._assert_refused(result, 2, 2)
 
+    def _install_logging_sleep_stub(self):
+        sleep_log = os.path.join(self.harness.tmp, "sleep-calls.log")
+        real_sleep = shutil.which("sleep")
+        self.assertTrue(real_sleep, "sleep binary not found on PATH")
+        self.harness._write_stub(
+            "sleep",
+            f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "{sleep_log}"\nexec "{real_sleep}" 0.01\n',
+        )
+        return sleep_log
+
+    @staticmethod
+    def _read_lines(path):
+        if not os.path.isfile(path):
+            return []
+        with open(path, encoding="utf-8") as handle:
+            return [line.strip() for line in handle if line.strip()]
+
+    def test_wait_loop_respects_dev_container_wait_interval_and_defaults_to_one(self):
+        self._identity_repo()
+        self._write_limits({"machine_max": 1})
+        sleep_log = self._install_logging_sleep_stub()
+
+        # Subcase A: custom DEV_CONTAINER_WAIT_INTERVAL is forwarded to sleep in --wait loop.
+        lease = self._foreign_lease("alpha-slot-1")
+        log_a = os.path.join(self.harness.tmp, "wait-interval-custom.log")
+        proc_a = self.harness.spawn(
+            "acquire",
+            "--for",
+            "waiter-custom",
+            "--as",
+            self.OWNER,
+            "--wait",
+            port_overrides={"DEV_CONTAINER_WAIT_INTERVAL": "0.123"},
+            log=log_a,
+        )
+        self.addCleanup(lambda: proc_a.poll() is None and proc_a.kill())
+
+        wait_until(
+            lambda: len(self._read_lines(sleep_log)) >= 1,
+            timeout=15.0,
+            interval=0.02,
+            message="acquire --wait never invoked sleep",
+        )
+        os.remove(lease)
+        self.assertEqual(proc_a.wait(timeout=30), 0)
+        custom_calls = self._read_lines(sleep_log)
+        self.assertIn(
+            "0.123",
+            custom_calls,
+            f"expected --wait loop to sleep for DEV_CONTAINER_WAIT_INTERVAL=0.123, got {custom_calls}",
+        )
+        self.assertNotIn(
+            "1",
+            custom_calls,
+            f"--wait loop ignored DEV_CONTAINER_WAIT_INTERVAL and slept 1: {custom_calls}",
+        )
+
+        # Subcase B: unset DEV_CONTAINER_WAIT_INTERVAL preserves production default of 1.
+        os.remove(sleep_log)
+        self._write_limits({"machine_max": 1})
+        env_unset = self.harness._env(None)
+        env_unset.pop("DEV_CONTAINER_WAIT_INTERVAL", None)
+        proc_b = subprocess.Popen(
+            [
+                "bash",
+                self.harness.script,
+                "acquire",
+                "--for",
+                "waiter-default",
+                "--as",
+                self.OWNER,
+                "--wait",
+            ],
+            cwd=self.harness.tmp,
+            env=env_unset,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.addCleanup(lambda: proc_b.poll() is None and proc_b.kill())
+
+        wait_until(
+            lambda: len(self._read_lines(sleep_log)) >= 1,
+            timeout=15.0,
+            interval=0.02,
+            message="acquire --wait (default interval) never invoked sleep",
+        )
+        self._write_limits({"machine_max": 2})
+        _, err_b = proc_b.communicate(timeout=30)
+        self.assertEqual(proc_b.returncode, 0, err_b.decode())
+        default_calls = self._read_lines(sleep_log)
+        self.assertIn(
+            "1",
+            default_calls,
+            f"expected --wait loop default interval to be 1 when unset, got {default_calls}",
+        )
+
+    def test_lock_acquire_respects_dev_container_wait_interval_and_defaults_to_one(self):
+        self._identity_repo()
+        sleep_log = self._install_logging_sleep_stub()
+        lock = os.path.join(self.harness.state_dir, "lock")
+        self.addCleanup(lambda: os.path.isdir(lock) and os.rmdir(lock))
+
+        # Subcase A: custom DEV_CONTAINER_WAIT_INTERVAL is used in lock_acquire retries.
+        os.mkdir(lock)
+        proc_a = self.harness.spawn(
+            "acquire",
+            "--for",
+            "lock-custom",
+            "--as",
+            self.OWNER,
+            port_overrides={"DEV_CONTAINER_WAIT_INTERVAL": "0.07"},
+        )
+        self.addCleanup(lambda: proc_a.poll() is None and proc_a.kill())
+
+        wait_until(
+            lambda: len(self._read_lines(sleep_log)) >= 1,
+            timeout=15.0,
+            interval=0.02,
+            message="lock_acquire never invoked sleep while lock was held",
+        )
+        os.rmdir(lock)
+        _, err_a = proc_a.communicate(timeout=30)
+        self.assertEqual(proc_a.returncode, 0, err_a.decode())
+        custom_calls = self._read_lines(sleep_log)
+        self.assertIn(
+            "0.07",
+            custom_calls,
+            f"expected lock_acquire to sleep for DEV_CONTAINER_WAIT_INTERVAL=0.07, got {custom_calls}",
+        )
+        self.assertNotIn(
+            "1",
+            custom_calls,
+            f"lock_acquire ignored DEV_CONTAINER_WAIT_INTERVAL and slept 1: {custom_calls}",
+        )
+
+        # Subcase B: unset DEV_CONTAINER_WAIT_INTERVAL preserves production default of 1.
+        os.remove(sleep_log)
+        os.mkdir(lock)
+        env_unset = self.harness._env(None)
+        env_unset.pop("DEV_CONTAINER_WAIT_INTERVAL", None)
+        proc_b = subprocess.Popen(
+            [
+                "bash",
+                self.harness.script,
+                "acquire",
+                "--for",
+                "lock-default",
+                "--as",
+                self.OWNER,
+            ],
+            cwd=self.harness.tmp,
+            env=env_unset,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.addCleanup(lambda: proc_b.poll() is None and proc_b.kill())
+
+        wait_until(
+            lambda: len(self._read_lines(sleep_log)) >= 1,
+            timeout=15.0,
+            interval=0.02,
+            message="lock_acquire (default interval) never invoked sleep while lock was held",
+        )
+        os.rmdir(lock)
+        _, err_b = proc_b.communicate(timeout=30)
+        self.assertEqual(proc_b.returncode, 0, err_b.decode())
+        default_calls = self._read_lines(sleep_log)
+        self.assertIn(
+            "1",
+            default_calls,
+            f"expected lock_acquire default interval to be 1 when unset, got {default_calls}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

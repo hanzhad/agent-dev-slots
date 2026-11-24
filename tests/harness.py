@@ -1,4 +1,5 @@
 
+import atexit
 import hashlib
 import json
 import os
@@ -52,7 +53,7 @@ SLOT_PORT_BLOCK = 16
 SLOT_COUNT_HELD = 9
 DEFAULT_PORT_NAMES = ("SSH_PORT", "NOVNC_PORT", "VITE_DEV_PORT")
 OWNER_PORTS = {"SSH_PORT": "1101", "NOVNC_PORT": "1102", "VITE_DEV_PORT": "1103"}
-_PORT_FLOOR, _PORT_CEIL = 39000, 40000
+_PORT_FLOOR, _PORT_CEIL = 30000, 58000
 
 
 def _port_is_free(port):
@@ -69,7 +70,14 @@ def _port_is_free(port):
 def _free_port_base():
     width = SLOT_PORT_BLOCK * SLOT_COUNT_HELD
     span = (_PORT_CEIL - _PORT_FLOOR) // width
-    first = os.getpid() % span
+    slot_env = os.environ.get("DEV_CONTAINER_PORT_SLOT", "").strip()
+    if slot_env:
+        try:
+            first = int(slot_env) % span
+        except ValueError:
+            first = os.getpid() % span
+    else:
+        first = os.getpid() % span
     for step in range(span):
         base = _PORT_FLOOR + ((first + step) % span) * width
         if all(_port_is_free(base + offset) for offset in range(width)):
@@ -734,6 +742,102 @@ fi
 """
 
 
+_DEFAULT_PROJECT_ENV = (
+    f'PROJECT="{PROJECT_PREFIX}"\n'
+    'DEFAULT_BRANCH="master"\n'
+    f'SLOT_PORTS="{" ".join(DEFAULT_PORT_NAMES)}"\n'
+    'COMPOSE_FILES="docker-compose.yml"\n'
+)
+
+_TEMPLATE_CACHE_DIR = None
+_TEMPLATE_LOCK = threading.Lock()
+
+
+def _cleanup_template_cache():
+    global _TEMPLATE_CACHE_DIR
+    if _TEMPLATE_CACHE_DIR is not None:
+        shutil.rmtree(_TEMPLATE_CACHE_DIR, ignore_errors=True)
+        _TEMPLATE_CACHE_DIR = None
+
+
+def _ensure_template_cache(real_git_bin):
+    global _TEMPLATE_CACHE_DIR
+    with _TEMPLATE_LOCK:
+        if _TEMPLATE_CACHE_DIR is not None:
+            return _TEMPLATE_CACHE_DIR
+        cache_dir = tempfile.mkdtemp(prefix="dev-container-template-")
+        atexit.register(_cleanup_template_cache)
+        try:
+            docs_stub = os.path.join(cache_dir, "docs-repo-stub")
+            os.makedirs(docs_stub)
+            run_docs = lambda *args: subprocess.run(
+                [real_git_bin, "-C", docs_stub, *args],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            run_docs("init", "-q")
+            run_docs("config", "user.email", "fixture@example.com")
+            run_docs("config", "user.name", "fixture")
+            with open(os.path.join(docs_stub, "README.md"), "w", encoding="utf-8") as handle:
+                handle.write("docs repo stub\n")
+            run_docs("add", "-A")
+            run_docs("commit", "-q", "-m", "fixture")
+
+            fixture_tmpl = os.path.join(cache_dir, "fixture-repo")
+            os.makedirs(os.path.join(fixture_tmpl, "bin"))
+            os.makedirs(os.path.join(fixture_tmpl, ".devcontainer"))
+            os.makedirs(os.path.join(fixture_tmpl, ".local"))
+            shutil.copyfile(
+                os.path.join(REPO_ROOT, SCRIPT_REL),
+                os.path.join(fixture_tmpl, SCRIPT_REL),
+            )
+            shutil.copytree(
+                os.path.join(REPO_ROOT, "templates"),
+                os.path.join(fixture_tmpl, "templates"),
+            )
+            shutil.copytree(
+                os.path.join(REPO_ROOT, LIB_REL),
+                os.path.join(fixture_tmpl, LIB_REL),
+            )
+            st = os.stat(os.path.join(fixture_tmpl, SCRIPT_REL))
+            os.chmod(os.path.join(fixture_tmpl, SCRIPT_REL), st.st_mode | stat.S_IEXEC)
+            with open(os.path.join(fixture_tmpl, ".gitignore"), "w", encoding="utf-8") as handle:
+                handle.write(".env\n.slot-holder\ndocs/*\n")
+            with open(
+                os.path.join(fixture_tmpl, ".devcontainer", "docker-compose.yml"),
+                "w",
+                encoding="utf-8",
+            ) as handle:
+                handle.write("# fixture placeholder, unparsed — docker is stubbed\n")
+            with open(os.path.join(fixture_tmpl, ".local", ".gitkeep"), "w", encoding="utf-8"):
+                pass
+            install_stub = os.path.join(fixture_tmpl, ".devcontainer", "install.sh")
+            with open(install_stub, "w", encoding="utf-8") as handle:
+                handle.write(INSTALL_STUB)
+            os.chmod(install_stub, 0o755)
+            with open(os.path.join(fixture_tmpl, "project.env"), "w", encoding="utf-8") as handle:
+                handle.write(_DEFAULT_PROJECT_ENV)
+
+            run_fix = lambda *args: subprocess.run(
+                [real_git_bin, "-C", fixture_tmpl, *args],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            run_fix("init", "-q")
+            run_fix("config", "user.email", "fixture@example.com")
+            run_fix("config", "user.name", "fixture")
+            run_fix("add", "-A")
+            run_fix("commit", "-q", "-m", "fixture")
+            run_fix("remote", "add", "origin", "https://example.invalid/fixture.git")
+        except Exception:
+            shutil.rmtree(cache_dir, ignore_errors=True)
+            raise
+        _TEMPLATE_CACHE_DIR = cache_dir
+        return _TEMPLATE_CACHE_DIR
+
+
 class DevContainerHarness:
 
     def __init__(self):
@@ -768,82 +872,41 @@ class DevContainerHarness:
         self._write_stub("git", GIT_STUB)
 
     def _build_docs_repo_stub(self):
+        cache_dir = _ensure_template_cache(self.real_git_bin)
         self.docs_repo_stub = os.path.join(self.tmp, "docs-repo-stub")
-        os.makedirs(self.docs_repo_stub)
-        run = lambda *args: subprocess.run(
-            [self.real_git_bin, "-C", self.docs_repo_stub, *args],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+        shutil.copytree(
+            os.path.join(cache_dir, "docs-repo-stub"),
+            self.docs_repo_stub,
+            symlinks=True,
         )
-        run("init", "-q")
-        run("config", "user.email", "fixture@example.com")
-        run("config", "user.name", "fixture")
-        with open(os.path.join(self.docs_repo_stub, "README.md"), "w", encoding="utf-8") as handle:
-            handle.write("docs repo stub\n")
-        run("add", "-A")
-        run("commit", "-q", "-m", "fixture")
 
     def build_fixture_repo(self, with_parent_env=None, project_env=None):
-        os.makedirs(os.path.join(self.fixture_repo, "bin"))
-        os.makedirs(os.path.join(self.fixture_repo, ".devcontainer"))
-        os.makedirs(os.path.join(self.fixture_repo, ".local"))
-        shutil.copyfile(
-            os.path.join(REPO_ROOT, SCRIPT_REL),
-            os.path.join(self.fixture_repo, SCRIPT_REL),
-        )
+        cache_dir = _ensure_template_cache(self.real_git_bin)
         shutil.copytree(
-            os.path.join(REPO_ROOT, "templates"),
-            os.path.join(self.fixture_repo, "templates"),
+            os.path.join(cache_dir, "fixture-repo"),
+            self.fixture_repo,
+            symlinks=True,
         )
-        shutil.copytree(
-            os.path.join(REPO_ROOT, LIB_REL),
-            os.path.join(self.fixture_repo, LIB_REL),
-        )
-        st = os.stat(os.path.join(self.fixture_repo, SCRIPT_REL))
-        os.chmod(os.path.join(self.fixture_repo, SCRIPT_REL), st.st_mode | stat.S_IEXEC)
-        with open(
-            os.path.join(self.fixture_repo, ".gitignore"), "w", encoding="utf-8"
-        ) as handle:
-            handle.write(".env\n.slot-holder\ndocs/*\n")
-        with open(
-            os.path.join(self.fixture_repo, ".devcontainer", "docker-compose.yml"),
-            "w",
-            encoding="utf-8",
-        ) as handle:
-            handle.write("# fixture placeholder, unparsed — docker is stubbed\n")
-        with open(os.path.join(self.fixture_repo, ".local", ".gitkeep"), "w", encoding="utf-8"):
-            pass
-        install_stub = os.path.join(self.fixture_repo, ".devcontainer", "install.sh")
-        with open(install_stub, "w", encoding="utf-8") as handle:
-            handle.write(INSTALL_STUB)
-        os.chmod(install_stub, 0o755)
         if with_parent_env is not None:
-            with open(
-                os.path.join(self.fixture_repo, ".devcontainer", ".env"), "w", encoding="utf-8"
-            ) as handle:
+            env_path = os.path.join(self.fixture_repo, ".devcontainer", ".env")
+            with open(env_path, "w", encoding="utf-8") as handle:
                 handle.write(with_parent_env)
-            os.chmod(os.path.join(self.fixture_repo, ".devcontainer", ".env"), 0o600)
-        if project_env is None:
-            project_env = (
-                f'PROJECT="{PROJECT_PREFIX}"\n'
-                'DEFAULT_BRANCH="master"\n'
-                f'SLOT_PORTS="{" ".join(DEFAULT_PORT_NAMES)}"\n'
-                'COMPOSE_FILES="docker-compose.yml"\n'
+            os.chmod(env_path, 0o600)
+        if project_env is not None and project_env != _DEFAULT_PROJECT_ENV:
+            proj_env_path = os.path.join(self.fixture_repo, "project.env")
+            if project_env:
+                with open(proj_env_path, "w", encoding="utf-8") as handle:
+                    handle.write(project_env)
+            elif os.path.exists(proj_env_path):
+                os.remove(proj_env_path)
+            run = lambda *args: subprocess.run(
+                [self.real_git_bin, "-C", self.fixture_repo, *args],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
-        if project_env:
-            with open(os.path.join(self.fixture_repo, "project.env"), "w", encoding="utf-8") as handle:
-                handle.write(project_env)
-
-        run = lambda *args: subprocess.run(
-            ["git", "-C", self.fixture_repo, *args], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        run("init", "-q")
-        run("config", "user.email", "fixture@example.com")
-        run("config", "user.name", "fixture")
-        run("add", "-A")
-        run("commit", "-q", "-m", "fixture")
-        run("remote", "add", "origin", "https://example.invalid/fixture.git")
+            run("add", "-A")
+            run("commit", "-q", "--amend", "--no-edit")
 
     @property
     def script(self):

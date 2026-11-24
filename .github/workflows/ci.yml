@@ -4,21 +4,104 @@ on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      all: ${{ steps.plan.outputs.all }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      run_docker: ${{ steps.plan.outputs.run_docker }}
+      scope: ${{ steps.plan.outputs.scope }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Select CI plan
+        id: plan
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ] && [ -n "$BASE_SHA" ]; then
+            git diff --name-only "$BASE_SHA" HEAD || echo "__fail_closed__"
+          else
+            echo "__fail_closed__"
+          fi | python3 scripts/ci/select-ci-plan.py
+
+  test-leg:
+    needs: [changes]
+    if: ${{ needs.changes.outputs.matrix != '[]' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: ${{ fromJson(needs.changes.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run test leg
+        env:
+          ALL_TESTS: ${{ needs.changes.outputs.all }}
+          SCOPE: ${{ needs.changes.outputs.scope }}
+          LEG: ${{ matrix.leg }}
+        run: |
+          if [ "$ALL_TESTS" = "true" ]; then
+            shard_num="${LEG#shard-}"
+            python3 scripts/ci/run-tests.py --leg "$LEG" --shard "${shard_num}/6" --workers 2 --report test-report.json
+          else
+            printf '%s\n' $SCOPE > "$RUNNER_TEMP/selected-tests.txt"
+            python3 scripts/ci/run-tests.py --leg "$LEG" --files-from "$RUNNER_TEMP/selected-tests.txt" --workers 2 --report test-report.json
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: ${{ always() }}
+        with:
+          name: test-report-${{ matrix.leg }}
+          path: test-report.json
+          if-no-files-found: warn
+
   test:
+    needs: [changes, test-leg]
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - run: python3 -m unittest discover -s tests
+      - name: Verify upstream jobs
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          LEG_RESULT: ${{ needs.test-leg.result }}
+        run: |
+          if [ "$CHANGES_RESULT" != "success" ]; then
+            echo "changes job did not succeed ($CHANGES_RESULT)" >&2
+            exit 1
+          fi
+          if [ "$LEG_RESULT" != "success" ] && [ "$LEG_RESULT" != "skipped" ]; then
+            echo "test-leg job did not succeed ($LEG_RESULT)" >&2
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ needs.changes.outputs.matrix != '[]' }}
+        with:
+          pattern: test-report-*
+          path: reports
+      - name: Check test leg completeness
+        env:
+          SCOPE: ${{ needs.changes.outputs.scope }}
+        run: |
+          mkdir -p reports
+          git ls-files -- 'tests/test_*.py' | python3 scripts/ci/check-test-legs.py --scope "$SCOPE" reports
 
   scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           # The synthetic merge commit of a pull request is not part of what lands.
@@ -39,10 +122,17 @@ jobs:
           python3 scripts/scan.py --history --range "$base..HEAD"
 
   docker:
+    needs: [changes]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Skip docker tests when not needed
+        if: ${{ needs.changes.outputs.run_docker != 'true' }}
+        run: |
+          echo "Skipping real docker tests (run_docker=${{ needs.changes.outputs.run_docker }})."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ needs.changes.outputs.run_docker == 'true' }}
       - name: Real docker tests
+        if: ${{ needs.changes.outputs.run_docker == 'true' }}
         env:
           DEV_CONTAINER_DOCKER_TESTS: "1"
         run: python3 -m unittest discover -s tests/docker -v

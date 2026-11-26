@@ -35,9 +35,14 @@ migrate_identity_plan() {
 
 # Lease files that name LABEL's slots, one per line.
 migrate_identity_leases() {
-  local state="$1" label="$2" f
-  for f in "$state/leases/$label"-slot-*.json; do
-    [[ -f "$f" ]] && printf '%s\n' "$f"
+  local state="$1" label="$2" f b
+  for f in "$state/leases/$label"-slot-*.json "$state/leases/0-slot-"*"-$label.json"; do
+    [[ -f "$f" ]] || continue
+    b=$(basename "$f")
+    case "$b" in
+      0-slot-*) [[ "$b" =~ ^0-slot-[0-9]+-"$label"\.json$ ]] || continue ;;
+    esac
+    printf '%s\n' "$f"
   done
   return 0
 }

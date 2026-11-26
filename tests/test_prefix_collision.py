@@ -31,8 +31,8 @@ class PrefixCollisionCase(DevContainerTestCase):
         )
         self.a_sid = self.acquire_id(self.harness)
         self.b_sid = self.acquire_id(self.other)
-        self.assertTrue(self.a_sid.startswith("demo-slot-"), self.a_sid)
-        self.assertTrue(self.b_sid.startswith("demo-bar-slot-"), self.b_sid)
+        self.assertRegex(self.a_sid, r"^0-slot-\d+-demo$")
+        self.assertRegex(self.b_sid, r"^0-slot-\d+-demo-bar$")
 
     def acquire_id(self, harness):
         result = harness.run_acquire()
@@ -159,5 +159,5 @@ class CleanEvictAcquireTest(PrefixCollisionCase):
 
         again = self.acquire_id(self.harness)
 
-        self.assertTrue(again.startswith("demo-slot-"), again)
+        self.assertRegex(again, r"^0-slot-\d+-demo$")
         self.assert_untouched(self.b_sid)

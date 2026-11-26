@@ -69,10 +69,8 @@ cmd_resume() {
 
   activity_refresh
 
-  local check_name="$target"
-  [[ "$check_name" == "${SLOT_PROJECT_PREFIX}-"* ]] && check_name="${check_name#"${SLOT_PROJECT_PREFIX}-"}"
-
-  local check_sid="${SLOT_PROJECT_PREFIX}-${check_name}"
+  local check_name; check_name=$(slot_name_of "$target")
+  local check_sid; check_sid=$(slot_id_of "$target")
   local check_dir="$slots_dir/$check_name"
   [[ -d "$check_dir" ]] || check_dir="${DOCKER_STUB_STATE:+$DOCKER_STUB_STATE/volumes/${check_sid}-workspace}"
   if [[ -n "$check_dir" && -d "$check_dir" ]]; then

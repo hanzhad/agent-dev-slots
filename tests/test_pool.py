@@ -114,7 +114,14 @@ class PoolHarness(DevContainerHarness):
         return out[start:out.index('"', start)]
 
     def slot_name(self, slot_id):
+        if slot_id.startswith("0-") and slot_id.endswith("-" + self.prefix):
+            return slot_id[2 : -len("-" + self.prefix)]
         return slot_id[len(self.prefix) + 1:]
+
+    def slot_num(self, slot_id):
+        if slot_id.startswith("0-slot-"):
+            return int(slot_id.split("-", 3)[2])
+        return int(slot_id.rsplit("-", 1)[1])
 
     def lease_exists(self, slot_id):
         return os.path.isfile(os.path.join(self.state_dir, "leases", f"{slot_id}.json"))
@@ -233,7 +240,7 @@ class SharedBehaviour:
 
         slot_id = self.harness.slot_id(self.harness.acquire("worker"))
 
-        number = int(slot_id.rsplit("-", 1)[1])
+        number = self.harness.slot_num(slot_id)
         ports = self.harness.ports_of(slot_id)
         for index, name in enumerate(self.harness.port_names):
             self.assertEqual(int(ports[name]), slot_port(number, index), name)
@@ -331,7 +338,7 @@ class OnePool(PoolTestCase):
 
         for harness in (self.harness, *others, self.harness, *others):
             slot_id = harness.slot_id(harness.acquire("worker"))
-            numbers.append(slot_id.rsplit("-", 1)[1])
+            numbers.append(str(harness.slot_num(slot_id)))
             taken += list(harness.ports_of(slot_id).values())
 
         self.assertEqual(len(set(numbers)), 6, numbers)
@@ -650,6 +657,128 @@ class SeedCopiesOnlyAllowedKeysAndFiles(PoolTestCase):
         self.assertTrue(os.path.isfile(os.path.join(local, "settings.json")))
         self.assertFalse(os.path.exists(os.path.join(local, "credentials.json")))
         self.assertFalse(os.path.exists(os.path.join(local, "notes.txt")))
+
+
+class StrictMachineWideSlotNumbering(PoolTestCase):
+    """Slot number N is machine-wide across all projects and states."""
+
+    def _slot_num(self, slot_id):
+        if slot_id.startswith("0-slot-"):
+            return int(slot_id.split("-", 3)[2])
+        return int(slot_id.rsplit("-", 1)[1])
+
+    def _fresh_pair(self):
+        second = self.another(SecondHarness)
+        self.harness.build()
+        second.build()
+        self.harness.write_limits(machine_max=10, idle_limit=60)
+        self.harness.set_now(1700000000)
+        second.set_now(1700000000)
+        return second
+
+    def _plant_blocker(self, kind):
+        state = self.harness.state_dir
+        leases = os.path.join(state, "leases")
+        parked = os.path.join(state, "parked")
+        ports = os.path.join(state, "ports")
+        os.makedirs(leases, exist_ok=True)
+        os.makedirs(parked, exist_ok=True)
+        os.makedirs(ports, exist_ok=True)
+        now = self.harness.now_epoch()
+
+        if kind == "expired_new_lease":
+            with open(os.path.join(leases, "0-slot-1-demo.json"), "w", encoding="utf-8") as handle:
+                json.dump({"holder": "old", "project": "0-slot-1-demo", "since": now - 10000}, handle)
+        elif kind == "expired_legacy_lease":
+            with open(os.path.join(leases, "demo-slot-1.json"), "w", encoding="utf-8") as handle:
+                json.dump({"holder": "old", "project": "demo-slot-1", "since": now - 10000}, handle)
+        elif kind == "setup_reservation":
+            with open(os.path.join(leases, "0-slot-1-demo.json"), "w", encoding="utf-8") as handle:
+                json.dump(
+                    {"holder": "res", "project": "0-slot-1-demo", "since": now, "setup": "in-flight", "pid": os.getpid()},
+                    handle,
+                )
+        elif kind == "parked_new":
+            with open(os.path.join(parked, "0-slot-1-demo.json"), "w", encoding="utf-8") as handle:
+                json.dump({"holder": "parked", "project": "0-slot-1-demo", "since": now, "reason": "dirty"}, handle)
+        elif kind == "parked_legacy":
+            with open(os.path.join(parked, "demo-slot-1.json"), "w", encoding="utf-8") as handle:
+                json.dump({"holder": "parked", "project": "demo-slot-1", "since": now, "reason": "dirty"}, handle)
+        elif kind == "ports_new":
+            with open(os.path.join(ports, "0-slot-1-demo.ports"), "w", encoding="utf-8") as handle:
+                handle.write(f"SSH_PORT={slot_port(1, 0)}\n")
+        elif kind == "ports_legacy":
+            with open(os.path.join(ports, "demo-slot-1.ports"), "w", encoding="utf-8") as handle:
+                handle.write(f"SSH_PORT={slot_port(1, 0)}\n")
+        elif kind == "volume_by_label":
+            self.harness.write_volume_labels("custom-any-name-workspace", {"dev-container.slot-num": "1"})
+        elif kind == "volume_by_new_name":
+            os.makedirs(os.path.join(self.harness.volumes_dir, "0-slot-1-demo-workspace"), exist_ok=True)
+        elif kind == "volume_by_legacy_name":
+            os.makedirs(os.path.join(self.harness.volumes_dir, "demo-slot-1-workspace"), exist_ok=True)
+        elif kind == "port_in_use":
+            with open(os.path.join(self.harness.docker_state, "foreign.ports"), "w", encoding="utf-8") as handle:
+                handle.write(f"SSH_PORT={slot_port(1, 0)}\n")
+        else:
+            raise ValueError(kind)
+
+    def test_another_project_skips_slot_1_across_all_machine_wide_blockers(self):
+        kinds = (
+            "expired_new_lease",
+            "expired_legacy_lease",
+            "setup_reservation",
+            "parked_new",
+            "parked_legacy",
+            "ports_new",
+            "ports_legacy",
+            "volume_by_label",
+            "volume_by_new_name",
+            "volume_by_legacy_name",
+            "port_in_use",
+        )
+        for kind in kinds:
+            with self.subTest(kind=kind):
+                self.setUp()
+                second = self._fresh_pair()
+                self._plant_blocker(kind)
+
+                res = second.acquire("worker-b")
+                self.assertEqual(res.returncode, 0, self.output(res))
+                sid = second.slot_id(res)
+                self.assertEqual(sid, "0-slot-2-second", f"{kind}: got {sid}")
+                self.assertEqual(self._slot_num(sid), 2)
+
+    def test_stopped_slot_of_project_a_prevents_project_b_from_taking_same_number(self):
+        second = self._fresh_pair()
+        res_a = self.harness.acquire("worker-a")
+        self.assertEqual(res_a.returncode, 0, self.output(res_a))
+        sid_a = self.harness.slot_id(res_a)
+        self.assertEqual(sid_a, "0-slot-1-demo")
+
+        running_marker = os.path.join(self.harness.docker_state, f"{sid_a}.running")
+        if os.path.isfile(running_marker):
+            os.remove(running_marker)
+
+        res_b = second.acquire("worker-b")
+        self.assertEqual(res_b.returncode, 0, self.output(res_b))
+        sid_b = second.slot_id(res_b)
+        self.assertEqual(sid_b, "0-slot-2-second")
+
+    def test_multi_digit_slot_10_does_not_falsely_block_slot_1(self):
+        second = self._fresh_pair()
+        parked = os.path.join(self.harness.state_dir, "parked")
+        ports = os.path.join(self.harness.state_dir, "ports")
+        os.makedirs(parked, exist_ok=True)
+        os.makedirs(ports, exist_ok=True)
+        with open(os.path.join(parked, "0-slot-10-demo.json"), "w", encoding="utf-8") as handle:
+            json.dump({"holder": "p10", "project": "0-slot-10-demo", "since": 1700000000, "reason": "dirty"}, handle)
+        with open(os.path.join(ports, "0-slot-10-demo.ports"), "w", encoding="utf-8") as handle:
+            handle.write(f"SSH_PORT={slot_port(10, 0)}\n")
+        self.harness.write_volume_labels("0-slot-10-demo-workspace", {"dev-container.slot-num": "10"})
+
+        res = second.acquire("worker-b")
+        self.assertEqual(res.returncode, 0, self.output(res))
+        self.assertEqual(second.slot_id(res), "0-slot-1-second")
 
 
 if __name__ == "__main__":

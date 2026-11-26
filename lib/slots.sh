@@ -3,16 +3,40 @@
 slot_name_of() {
   local base; base=$(basename "$1")
   base=${base%-workspace}
+  if [[ "$base" =~ ^0-(slot-[0-9]+)-.+ ]]; then
+    echo "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  if [[ "$base" == "0-"*"-${SLOT_PROJECT_PREFIX}" ]]; then
+    base=${base#0-}
+    echo "${base%-"${SLOT_PROJECT_PREFIX}"}"
+    return 0
+  fi
   echo "${base#"${SLOT_PROJECT_PREFIX}"-}"
+}
+
+_sid_exists() {
+  local sid="$1"
+  [[ -f "$STATE/leases/${sid}.json" || -f "$STATE/parked/${sid}.json" || -f "$STATE/ports/${sid}.ports" || -f "$STATE/env/${sid}.env" ]] && return 0
+  command -v docker >/dev/null 2>&1 && docker volume inspect "${sid}-workspace" >/dev/null 2>&1 && return 0
+  return 1
 }
 
 slot_id_of() {
   local base; base=$(basename "$1")
   base=${base%-workspace}
   case "$base" in
-    "${SLOT_PROJECT_PREFIX}-"*) echo "$base" ;;
-    *) echo "${SLOT_PROJECT_PREFIX}-$base" ;;
+    0-slot-[0-9]*-*|"0-"*"-${SLOT_PROJECT_PREFIX}"|"${SLOT_PROJECT_PREFIX}-"*) echo "$base"; return 0 ;;
   esac
+  local new_sid="0-${base}-${SLOT_PROJECT_PREFIX}"
+  local legacy_sid="${SLOT_PROJECT_PREFIX}-${base}"
+  if _sid_exists "$new_sid"; then
+    echo "$new_sid"
+  elif _sid_exists "$legacy_sid"; then
+    echo "$legacy_sid"
+  else
+    echo "$new_sid"
+  fi
 }
 
 slot_is_ours() {
@@ -66,8 +90,14 @@ slot_is_ours() {
 #      slots, "<label>-slot-*". That never claims "demo-bar-slot-1" for "demo", at
 #      the price of skipping a hand-named legacy slot - skipped, never touched.
 sid_is_this_projects() {
-  local sid="$1" root="" mine theirs
-  case "$sid" in "${SLOT_PROJECT_PREFIX}-"*) ;; *) return 1 ;; esac
+  local sid="$1" root="" mine theirs is_new=0
+  if [[ "$sid" =~ ^0-slot-[0-9]+-"${SLOT_PROJECT_PREFIX}"$ ]]; then
+    is_new=1
+  elif [[ "$sid" == "0-"*"-${SLOT_PROJECT_PREFIX}" ]]; then
+    :
+  else
+    case "$sid" in "${SLOT_PROJECT_PREFIX}-"*) ;; *) return 1 ;; esac
+  fi
   root=$(lease_field "$(lease_file_of "$sid")" repo_root 2>/dev/null) || root=""
   if [[ -z "$root" ]]; then
     root=$(docker volume inspect "$(slot_volume_of "$sid")" --format '{{index .Labels "dev-container.repo-root"}}' 2>/dev/null || true)
@@ -78,6 +108,7 @@ sid_is_this_projects() {
     [[ "$mine" == "$theirs" ]]
     return
   fi
+  (( is_new )) && return 0
   [[ "${sid#"${SLOT_PROJECT_PREFIX}"-}" == slot-* ]]
 }
 
@@ -89,7 +120,7 @@ foreign_slot_exists() {
     if [[ -n "$proj_lbl" && "$proj_lbl" != "$SLOT_PROJECT_PREFIX" ]]; then
       return 0
     fi
-  done < <(docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E -- "-${name}-workspace$" || true)
+  done < <(docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E -- "(^0-${name}-.+|-${name})-workspace$" || true)
   return 1
 }
 
@@ -595,15 +626,26 @@ slot_index_of() {
   echo "${BASH_REMATCH[1]}"
 }
 
-# A number belongs to a live lease of any project, never to a folder: every
-# project's slots draw from the same numbers, and a number's block of ports is
-# the same for all of them, so two live slots never share a port.
+# A number belongs to any slot of any project (live, expired, reserved, parked,
+# ported, volume-backed, or port-active), so two projects never share a slot
+# number or its port block.
 pool_number_taken() {
-  local f
-  for f in "$STATE"/leases/*-slot-"$1".json; do
-    [[ -f "$f" ]] || continue
-    lease_is_live "$f" && return 0
+  local n="$1" f
+  for f in \
+    "$STATE/leases/0-slot-$n-"*.json "$STATE/leases/"*-"slot-$n.json" \
+    "$STATE/parked/0-slot-$n-"*.json "$STATE/parked/"*-"slot-$n.json" \
+    "$STATE/ports/0-slot-$n-"*.ports "$STATE/ports/"*-"slot-$n.ports"; do
+    [[ -f "$f" ]] && return 0
   done
+  if command -v docker >/dev/null 2>&1; then
+    if [[ -n "$(docker volume ls --filter "label=dev-container.slot-num=$n" --format '{{.Name}}' 2>/dev/null)" ]]; then
+      return 0
+    fi
+    if docker volume ls --format '{{.Name}}' 2>/dev/null | grep -Eq "^(0-slot-${n}-.+-workspace|.*-slot-${n}-workspace)$"; then
+      return 0
+    fi
+  fi
+  pool_block_in_use "$n" && return 0
   return 1
 }
 
@@ -634,7 +676,7 @@ default_slot_name() {
 
 create_slot() {
   local name="$1"
-  local proj="${SLOT_PROJECT_PREFIX}-${name}"
+  local proj; proj=$(slot_id_of "$name")
   local vol; vol=$(slot_volume_of "$proj")
 
   if docker volume inspect "$vol" >/dev/null 2>&1; then
@@ -654,13 +696,16 @@ create_slot() {
   excludes_nl=$(slot_repos_paths_nl "$catalog")
   excludes_sp=$(printf '%s' "$excludes_nl" | tr '\n' ' ')
 
+  local slot_num; slot_num=$(slot_index_of "$name" 2>/dev/null || true)
   echo "▸ creating workspace volume $vol"
-  docker volume create \
-    --label "dev-container.sid=$proj" \
-    --label "dev-container.project=$SLOT_PROJECT_PREFIX" \
-    --label "dev-container.origin=$origin_url" \
-    --label "dev-container.repo-root=$repo_root" \
-    "$vol" >/dev/null || die "creating the volume $vol failed — the reason is above this line."
+  local -a vol_labels=(
+    --label "dev-container.sid=$proj"
+    --label "dev-container.project=$SLOT_PROJECT_PREFIX"
+    --label "dev-container.origin=$origin_url"
+    --label "dev-container.repo-root=$repo_root"
+  )
+  [[ -z "$slot_num" ]] || vol_labels+=(--label "dev-container.slot-num=$slot_num")
+  docker volume create "${vol_labels[@]}" "$vol" >/dev/null || die "creating the volume $vol failed — the reason is above this line."
   spec_reset "$proj"
 
   rm -f "$(slot_env_file_of "$proj")" "$(slot_overlay_of "$proj")"
@@ -875,7 +920,7 @@ try_acquire_once() {
   local idx; idx=$(slot_index_of "$name")
   if (( idx <= SLOT_INDEX_CEILING )); then
     echo "▸ creating '$name' ($(machine_in_use)/$MACHINE_CAP leased on this machine)"
-    ACQUIRE_SETUP=create ACQUIRED_DIR="" ACQUIRED_ID="${SLOT_PROJECT_PREFIX}-${name}" ACQUIRED_NAME="$name"
+    ACQUIRE_SETUP=create ACQUIRED_DIR="" ACQUIRED_ID=$(slot_id_of "$name") ACQUIRED_NAME="$name"
     return 0
   fi
 

@@ -24,8 +24,8 @@ mkdir -p "$img"
 events="$state/image-events.log"
 next="${IMAGE_STUB_NEXT:?}"
 proj_of() {
-  if [[ "$1" =~ ^(demo-[a-z0-9-]+)-app(:.*)?$ ]]; then printf '%s' "${BASH_REMATCH[1]}"; return; fi
-  printf '%s' "$1" | grep -oE 'demo-[a-z]+-[0-9]+' | head -1
+  if [[ "$1" =~ ^(0-[a-z0-9-]+|demo-[a-z0-9-]+)-app(:.*)?$ ]]; then printf '%s' "${BASH_REMATCH[1]}"; return; fi
+  printf '%s' "$1" | grep -oE '(0-slot-[0-9]+-[a-z0-9-]+|demo-[a-z]+-[0-9]+)' | head -1
 }
 drop() { find "$img" -maxdepth 1 -name "$1" -delete; }
 do_build() {
@@ -358,7 +358,7 @@ class SlotImages(ImageHarnessMixin, DevContainerTestCase):
         super().setUp()
         self.harness.build_fixture_repo(with_parent_env=IDENTITY)
         self.use_images()
-        self.project = PROJECT_PREFIX + "-slot-1"
+        self.project = self.harness.slot_project_of("slot-1")
 
     def test_a_leftover_image_is_removed_or_bypassed_before_a_fresh_slot_builds(self):
         self.plant_image(self.project, label="old")
@@ -458,7 +458,7 @@ class RestartInstall(ImageHarnessMixin, DevContainerTestCase):
             ports_content="SSH_PORT=39220" + NL + "NOVNC_PORT=39230" + NL + "VITE_DEV_PORT=39240" + NL,
         )
         self.use_images()
-        self.project = PROJECT_PREFIX + "-slot-1"
+        self.project = self.harness.slot_project_of("slot-1")
 
     def install_calls(self):
         path = os.path.join(self.harness.docker_state, self.project + ".install-calls")

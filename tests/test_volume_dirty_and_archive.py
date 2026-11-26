@@ -759,7 +759,7 @@ class _NoStubStateVolumeCase(DevContainerTestCase):
         data["since"] = self.harness.now_epoch() - age_seconds
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(data, handle)
-        prefix = f"{PROJECT_PREFIX}-{name}"
+        prefix = self.harness.slot_project_of(name)
         for kind in ("run", "cpu"):
             stamp = os.path.join(self.harness.state_dir, "activity", f"{prefix}.{kind}")
             if os.path.exists(stamp):
@@ -985,7 +985,7 @@ class TestVolumeDirtyChecksWithoutStubState(_NoStubStateVolumeCase):
 
     def test_release_refuses_when_facts_probe_fails(self):
         name = self.acquire_vol("h-fail", with_docs=False)
-        sid = f"{PROJECT_PREFIX}-{name}"
+        sid = self.harness.slot_project_of(name)
         with open(os.path.join(self.harness.docker_state, f"{sid}.factsfail"), "w", encoding="utf-8"):
             pass
 
@@ -1210,7 +1210,7 @@ class TestVolumeDirtyChecksWithoutStubState(_NoStubStateVolumeCase):
                 f.write("holder=host-nogit\n")
             if corrupt:
                 os.makedirs(os.path.join(hdir, ".git"), exist_ok=True)
-            sid_h = f"{PROJECT_PREFIX}-{hname}"
+            sid_h = self.harness.slot_project_of(hname)
             with open(os.path.join(self.harness.state_dir, "ports", f"{sid_h}.ports"), "w", encoding="utf-8") as f:
                 f.write(f"SSH_PORT={43100 + idx}\nNOVNC_PORT={43110 + idx}\nVITE_DEV_PORT={43120 + idx}\n")
             with open(os.path.join(self.harness.state_dir, "env", f"{sid_h}.env"), "w", encoding="utf-8") as f:
@@ -1228,7 +1228,7 @@ class TestVolumeDirtyChecksWithoutStubState(_NoStubStateVolumeCase):
             'slot_acquire_verdict "$1" "$2" 0 >/dev/null && echo "VERDICT=0:$ACQUIRE_REASON" || echo "VERDICT=1:$ACQUIRE_REASON"\n'
         )
         res_clean = subprocess.run(
-            ["bash", "-c", probe, self.harness.script, host_clean, f"{PROJECT_PREFIX}-slot-91"],
+            ["bash", "-c", probe, self.harness.script, host_clean, self.harness.slot_project_of("slot-91")],
             cwd=self.harness.tmp,
             env=env,
             stdout=subprocess.PIPE,
@@ -1242,7 +1242,7 @@ class TestVolumeDirtyChecksWithoutStubState(_NoStubStateVolumeCase):
         self.assertIn("VERDICT=0:acquirable", out_clean)
 
         res_bad = subprocess.run(
-            ["bash", "-c", probe, self.harness.script, host_bad, f"{PROJECT_PREFIX}-slot-92"],
+            ["bash", "-c", probe, self.harness.script, host_bad, self.harness.slot_project_of("slot-92")],
             cwd=self.harness.tmp,
             env=env,
             stdout=subprocess.PIPE,
@@ -1542,7 +1542,7 @@ class TestVolumeRescueArchiveWithoutStubState(_NoStubStateVolumeCase):
 
         # Case 1: helper extraction fails during archive
         s1 = self.acquire_vol("arch-fail-helper", with_docs=False, now=since)
-        sid1 = f"{PROJECT_PREFIX}-{s1}"
+        sid1 = self.harness.slot_project_of(s1)
         with open(os.path.join(self.harness.slot_dir(s1), "important.txt"), "w", encoding="utf-8") as f:
             f.write("must not be lost\n")
         self.expire_lease(s1)
@@ -1661,7 +1661,7 @@ class TestVolumeRescueArchiveWithoutStubState(_NoStubStateVolumeCase):
 
         # 4. Parity: non-repo host-dir slot -> archive_and_clean_slot removes without parking
         host_name = "slot-9"
-        host_sid = f"{PROJECT_PREFIX}-{host_name}"
+        host_sid = self.harness.slot_project_of(host_name)
         host_dir = os.path.join(self.harness.slots_dir, host_name)
         os.makedirs(os.path.join(host_dir, ".devcontainer"), exist_ok=True)
         with open(os.path.join(host_dir, ".devcontainer", ".slot-holder"), "w", encoding="utf-8") as f:

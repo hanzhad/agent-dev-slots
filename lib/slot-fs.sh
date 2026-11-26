@@ -14,7 +14,7 @@ cmd_fs() {
     *) fs_refuse "unsupported fs operation: $op" ;;
   esac
 
-  local name="${slot#"${SLOT_PROJECT_PREFIX}-"}"
+  local name; name=$(slot_name_of "$slot")
   [[ -n "$name" && "$name" != -* && "$name" =~ ^[a-zA-Z0-9_-]+$ ]] \
     || fs_refuse "invalid slot name: $slot"
 

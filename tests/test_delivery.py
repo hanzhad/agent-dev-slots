@@ -1,6 +1,7 @@
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -1536,7 +1537,7 @@ class ReleaseWipesADeliveredSlot(ListVerdictTestCase):
             json.dump(
                 {
                     "holder": "test",
-                    "project": PROJECT_PREFIX + "-rel",
+                    "project": self.harness.slot_project_of("rel"),
                     "since": int(time.time()),
                     "ttl_seconds": 14400,
                     "key": self.key,
@@ -1567,7 +1568,7 @@ class ReleaseWipesADeliveredSlot(ListVerdictTestCase):
             return handle.read()
 
     def _running(self):
-        return os.path.isfile(os.path.join(self.harness.docker_state, f"{PROJECT_PREFIX}-rel.running"))
+        return os.path.isfile(self.harness.running_path("rel"))
 
     def _assert_wiped(self, result):
         self.assertEqual(result.returncode, 0, result.stderr.decode())
@@ -1592,7 +1593,7 @@ class ReleaseWipesADeliveredSlot(ListVerdictTestCase):
         result = self._release()
 
         self._assert_wiped(result)
-        self.assertRegex(self._docker_log(), rf"-p {PROJECT_PREFIX}-rel .*down -v")
+        self.assertRegex(self._docker_log(), rf"-p {re.escape(self.harness.slot_project_of('rel'))} .*down -v")
         self.assertIn("removed", result.stdout.decode())
 
     def test_2_the_lease_is_still_there_when_the_project_is_taken_down(self):
@@ -1603,7 +1604,7 @@ class ReleaseWipesADeliveredSlot(ListVerdictTestCase):
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         seen = [line for line in self._docker_log().splitlines() if line.startswith("DOWN-LEASES")]
         self.assertEqual(len(seen), 1, self._docker_log())
-        self.assertIn(f"{PROJECT_PREFIX}-rel.json", seen[0], "the lease was gone before the teardown ran")
+        self.assertIn(f"{self.harness.slot_project_of('rel')}.json", seen[0], "the lease was gone before the teardown ran")
 
     def test_3_a_branch_pushed_with_its_pull_request_still_open_counts_as_delivered(self):
         tip = self._commit_on(self.slot, "feat-open", push_as="feat-open")
@@ -1807,7 +1808,7 @@ class DocsRepoSitsAtMastersPin(ListVerdictTestCase):
                 {
                     "holder": holder,
                     "owner": "-",
-                    "project": PROJECT_PREFIX + "-" + name,
+                    "project": self.harness.slot_project_of(name),
                     "since": int(time.time()) - 60,
                     "ttl_seconds": 14400,
                     "key": key,

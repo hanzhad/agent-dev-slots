@@ -168,6 +168,9 @@ elif [[ "$verb" == check ]]; then
 elif [[ "$verb" == verdict ]]; then
   cmd_verdict "$@"
   exit 0
+elif [[ "$verb" == clean && "${1:-}" == --all ]]; then
+  shift
+  cmd_clean_all "$@"
 elif [[ "$verb" == clean ]]; then
   cmd_clean "$@"
   exit 0
@@ -177,9 +180,6 @@ elif [[ "$verb" == status ]]; then
 elif [[ "$verb" == reap && "${1:-}" == --all ]]; then
   shift
   cmd_reap_all "$@"
-elif [[ "$verb" == clean && "${1:-}" == --all ]]; then
-  shift
-  cmd_clean_all "$@"
 elif [[ "$verb" == adopt ]]; then
   cmd_adopt "$@"
 elif [[ "$verb" == migrate-names ]]; then

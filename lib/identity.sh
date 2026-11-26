@@ -87,9 +87,13 @@ project_seed_owner() {
 # Roots that state already on this machine ties to BASE: a lease records its
 # repo_root, a volume carries it as a label.
 project_evidence_roots() {
-  local base="$1" f v
-  for f in "$STATE/leases/$base"-slot-*.json; do
+  local base="$1" f v b
+  for f in "$STATE/leases/$base"-slot-*.json "$STATE/leases/0-slot-"*"-$base.json"; do
     [[ -f "$f" ]] || continue
+    b=$(basename "$f")
+    case "$b" in
+      0-slot-*) [[ "$b" =~ ^0-slot-[0-9]+-"$base"\.json$ ]] || continue ;;
+    esac
     jq -r '.repo_root // empty' "$f" 2>/dev/null || true
   done
   command -v docker >/dev/null 2>&1 || return 0
@@ -159,4 +163,31 @@ resolve_project_identity() {
   fi
   PROJECT_LABEL=$label
   SLOT_PROJECT_PREFIX=$label
+}
+
+# Unique repo roots from both active/expired leases and the project registry,
+# so orphan stacks/volumes with no lease file are still visited by reap/clean.
+collect_all_project_roots() {
+  local skip_prefix="${1:-}" f root
+  local -a roots=()
+  for f in "$STATE"/leases/*.json; do
+    [[ -f "$f" ]] || continue
+    root=$(jq -r '.repo_root // empty' "$f" 2>/dev/null) || root=""
+    if [[ -z "$root" ]]; then
+      if [[ -n "$skip_prefix" ]]; then
+        [[ -n "$(jq -r '.pid // empty' "$f" 2>/dev/null)" ]] \
+          || echo "$skip_prefix lease '$(basename "$f" .json)' records no repo_root (it predates that field) — skipped" >&2
+      fi
+      continue
+    fi
+    roots+=("$root")
+  done
+  for f in "$STATE"/projects/*.json; do
+    [[ -f "$f" ]] || continue
+    root=$(jq -r '.root // .repo_root // empty' "$f" 2>/dev/null) || root=""
+    [[ -n "$root" ]] || continue
+    roots+=("$root")
+  done
+  (( ${#roots[@]} > 0 )) || return 0
+  printf '%s\n' "${roots[@]}" | sort -u
 }

@@ -339,7 +339,7 @@ class DbTargetPrintsComposeCoordinatesForAHostCaller(DevContainerTestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         out = result.stdout.decode()
-        self.assertIn(f"DB_RESTORE_PROJECT=demo-{name}", out)
+        self.assertIn(f"DB_RESTORE_PROJECT={self.harness.slot_project_of(name)}", out)
         self.assertIn("DB_RESTORE_COMPOSE_ARGS=", out)
         self.assertIn(compose_file, out)
         self.assertNotIn("exec", out)
@@ -367,7 +367,7 @@ class DbTargetPrintsComposeCoordinatesForAHostCaller(DevContainerTestCase):
             check=True,
         )
         out = evaluated.stdout.decode()
-        self.assertIn(f"PROJECT=demo-{name}", out)
+        self.assertIn(f"PROJECT={self.harness.slot_project_of(name)}", out)
         self.assertIn(f"-f {compose_file}", out)
 
     def test_refuses_a_free_slot_and_prints_nothing(self):
@@ -512,7 +512,7 @@ class ComposeFromTheMainCheckout(DevContainerTestCase):
             where = f"{call['verb']}: {call}"
             self.assertEqual(self._real(call["project_dir"]), main, "project directory is not main's .devcontainer/ -- " + where)
             self.assertTrue(call["files"], "no -f file -- " + where)
-            overlay = self._real(os.path.join(self.harness.state_dir, "overlays", f"{PROJECT_PREFIX}-{name}.yml"))
+            overlay = self._real(self.harness.overlay_path(name))
             volume_overlay = self._real(os.path.join(self.harness.state_dir, "compose", "slot-volume.yml"))
             for path in call["files"]:
                 if self._real(path) in (overlay, volume_overlay):

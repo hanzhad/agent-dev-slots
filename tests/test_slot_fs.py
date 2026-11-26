@@ -98,7 +98,7 @@ class SlotFsTestCase(DevContainerTestCase):
         return self.harness.acquired_slot_name(res)
 
     def token_path(self, name):
-        sid = f"{PROJECT_PREFIX}-{name}"
+        sid = self.harness.slot_project_of(name)
         return os.path.join(self.harness.state_dir, "lease-tokens", f"{sid}.token")
 
     def read_lease_token(self, name):

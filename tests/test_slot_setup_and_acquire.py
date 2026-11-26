@@ -931,7 +931,7 @@ exec "$(dirname "$0")/docker-real" "$@"
     def test_acquire_builds_the_image_before_the_stack_runs(self):
         name = self._acquire()
 
-        self._assert_built_before_the_stack_ran(f"{PROJECT_PREFIX}-{name}")
+        self._assert_built_before_the_stack_ran(self.harness.slot_project_of(name))
 
     def test_release_removes_the_slots_image_with_its_containers(self):
         name = self._acquire()
@@ -939,7 +939,7 @@ exec "$(dirname "$0")/docker-real" "$@"
         result = self.harness.run("release", name, "--for", "first")
 
         self.assertEqual(result.returncode, 0, result.stderr.decode())
-        self._assert_image_removed(f"{PROJECT_PREFIX}-{name}")
+        self._assert_image_removed(self.harness.slot_project_of(name))
 
     def test_down_removes_the_slots_image_with_its_containers(self):
         name = self._acquire()
@@ -948,11 +948,11 @@ exec "$(dirname "$0")/docker-real" "$@"
         result = self.harness.run("down", name)
 
         self.assertEqual(result.returncode, 0, result.stderr.decode())
-        self._assert_image_removed(f"{PROJECT_PREFIX}-{name}")
+        self._assert_image_removed(self.harness.slot_project_of(name))
 
     def test_reap_keeps_the_directory_of_an_orphan_with_a_foreign_origin(self):
         name = self._acquire()
-        project = f"{PROJECT_PREFIX}-{name}"
+        project = self.harness.slot_project_of(name)
         slot = self.harness.slot_dir(name)
         self.harness.free_slot(name)
         subprocess.run(
@@ -972,7 +972,7 @@ exec "$(dirname "$0")/docker-real" "$@"
 
     def test_restart_of_a_leased_slot_does_not_build(self):
         name = self._acquire()
-        project = f"{PROJECT_PREFIX}-{name}"
+        project = self.harness.slot_project_of(name)
         # the image carries the hash the engine itself computes: the commit plus the compose dir
         head = subprocess.run(
             ["bash", "-c",

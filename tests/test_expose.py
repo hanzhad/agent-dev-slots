@@ -136,7 +136,7 @@ class TestExposePlanEngine(DevContainerTestCase):
         since = 1700000000
         self.harness.set_now(since)
         name = self._acquire("expose-holder")
-        sid = f"{PROJECT_PREFIX}-{name}"
+        sid = self.harness.slot_project_of(name)
         lease = self._read_lease(name)
         idx = int(name.rsplit("-", 1)[1])
 
@@ -229,7 +229,7 @@ class TestExposePlanEngine(DevContainerTestCase):
         parked_path = self.harness.parked_path(name)
         os.makedirs(os.path.dirname(parked_path), exist_ok=True)
         with open(parked_path, "w", encoding="utf-8") as handle:
-            json.dump({"holder": "real-holder", "project": f"{PROJECT_PREFIX}-{name}", "since": since, "reason": "dirty"}, handle)
+            json.dump({"holder": "real-holder", "project": self.harness.slot_project_of(name), "since": since, "reason": "dirty"}, handle)
         assert_refused(name, "3000")
 
     def test_expose_plan_excludes_forbidden_ports_and_refuses_exhausted_block(self):

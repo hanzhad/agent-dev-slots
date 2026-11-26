@@ -236,7 +236,7 @@ class SettingsFromProjectEnv(DevContainerTestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         name = self.harness.acquired_slot_name(result)
-        calls = os.path.join(self.harness.docker_state, f"{PROJECT_PREFIX}-{name}.install-calls")
+        calls = os.path.join(self.harness.docker_state, f"{self.harness.slot_project_of(name)}.install-calls")
         self.assertTrue(os.path.isfile(calls), "install.sh was not run from the compose directory")
 
 

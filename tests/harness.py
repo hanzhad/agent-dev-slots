@@ -939,7 +939,7 @@ class DevContainerHarness:
         return os.path.join(self.docker_state, "volumes")
 
     def volume_name(self, name):
-        return f"{self.project_prefix}-{name}-workspace"
+        return f"{self.slot_project_of(name)}-workspace"
 
     def volume_exists(self, name):
         vol = self.volume_name(name) if not name.endswith("-workspace") else name
@@ -984,7 +984,12 @@ class DevContainerHarness:
             return vol_path
         if os.path.isdir(self.volumes_dir):
             for entry in os.listdir(self.volumes_dir):
-                if (entry == name or entry.endswith(f"-{name}-workspace") or entry == f"{name}-workspace") and os.path.isdir(os.path.join(self.volumes_dir, entry)):
+                if (
+                    entry == name
+                    or (entry.startswith(f"0-{name}-") and entry.endswith("-workspace"))
+                    or entry.endswith(f"-{name}-workspace")
+                    or entry == f"{name}-workspace"
+                ) and os.path.isdir(os.path.join(self.volumes_dir, entry)):
                     return os.path.join(self.volumes_dir, entry)
         return os.path.join(self.slots_dir, name)
 
@@ -1077,8 +1082,32 @@ class DevContainerHarness:
             out.close()
         return proc
 
+    def slot_project_of(self, name):
+        prefix = self.project_prefix
+        if name.startswith("0-slot-") or name.startswith(prefix + "-"):
+            return name
+        new_sid = f"0-{name}-{prefix}"
+        legacy_sid = f"{prefix}-{name}"
+        if (
+            os.path.exists(os.path.join(self.state_dir, "leases", f"{new_sid}.json"))
+            or os.path.exists(os.path.join(self.state_dir, "parked", f"{new_sid}.json"))
+            or os.path.exists(os.path.join(self.state_dir, "ports", f"{new_sid}.ports"))
+            or os.path.exists(os.path.join(self.state_dir, "env", f"{new_sid}.env"))
+            or os.path.exists(os.path.join(self.volumes_dir, f"{new_sid}-workspace"))
+        ):
+            return new_sid
+        if (
+            os.path.exists(os.path.join(self.state_dir, "leases", f"{legacy_sid}.json"))
+            or os.path.exists(os.path.join(self.state_dir, "parked", f"{legacy_sid}.json"))
+            or os.path.exists(os.path.join(self.state_dir, "ports", f"{legacy_sid}.ports"))
+            or os.path.exists(os.path.join(self.state_dir, "env", f"{legacy_sid}.env"))
+            or os.path.exists(os.path.join(self.volumes_dir, f"{legacy_sid}-workspace"))
+        ):
+            return legacy_sid
+        return new_sid
+
     def hold_compose_up(self, name, then_fail=False):
-        project = f"{PROJECT_PREFIX}-{name}"
+        project = self.slot_project_of(name)
         with open(os.path.join(self.docker_state, f"{project}.hold-up"), "w", encoding="utf-8"):
             pass
         if then_fail:
@@ -1086,7 +1115,7 @@ class DevContainerHarness:
                 pass
 
     def wait_until_compose_up_held(self, name, timeout=60):
-        project = f"{PROJECT_PREFIX}-{name}"
+        project = self.slot_project_of(name)
         marker = os.path.join(self.docker_state, f"{project}.up-held")
         wait_until(
             lambda: os.path.isfile(marker),
@@ -1096,7 +1125,7 @@ class DevContainerHarness:
         )
 
     def let_compose_up_go(self, name):
-        project = f"{PROJECT_PREFIX}-{name}"
+        project = self.slot_project_of(name)
         path = os.path.join(self.docker_state, f"{project}.hold-up")
         if os.path.isfile(path):
             os.remove(path)
@@ -1137,20 +1166,38 @@ class DevContainerHarness:
             args += ["--as", owner]
         return self.run(*args)
 
-    def acquired_slot_name(self, result):
+    def acquired_slot_name(self, result, prefix=None):
         stdout = result.stdout.decode()
         match = re.search(r'"id": "([^"]+)"', stdout)
         assert match, stdout
         slot_id = match.group(1)
-        prefix = PROJECT_PREFIX + "-"
-        assert slot_id.startswith(prefix), slot_id
-        return slot_id[len(prefix):]
+        prefix = prefix or self.project_prefix
+        if slot_id.startswith("0-") and slot_id.endswith("-" + prefix):
+            return slot_id[2 : -len("-" + prefix)]
+        m = re.match(r"^0-(slot-\d+)-.+", slot_id)
+        if m:
+            return m.group(1)
+        if slot_id.startswith(prefix + "-"):
+            return slot_id[len(prefix) + 1 :]
+        raise AssertionError(slot_id)
 
     def lease_path(self, name):
-        return os.path.join(self.state_dir, "leases", f"{PROJECT_PREFIX}-{name}.json")
+        return os.path.join(self.state_dir, "leases", f"{self.slot_project_of(name)}.json")
+
+    def lease_token_path(self, name):
+        return os.path.join(self.state_dir, "lease-tokens", f"{self.slot_project_of(name)}.token")
+
+    def overlay_path(self, name):
+        return os.path.join(self.state_dir, "overlays", f"{self.slot_project_of(name)}.yml")
+
+    def seen_path(self, name):
+        return os.path.join(self.state_dir, "seen", self.slot_project_of(name))
+
+    def running_path(self, name):
+        return os.path.join(self.docker_state, f"{self.slot_project_of(name)}.running")
 
     def parked_path(self, name):
-        return os.path.join(self.state_dir, "parked", f"{PROJECT_PREFIX}-{name}.json")
+        return os.path.join(self.state_dir, "parked", f"{self.slot_project_of(name)}.json")
 
     def holder_path(self, name):
         return os.path.join(self.slot_dir(name), ".devcontainer", ".slot-holder")
@@ -1178,7 +1225,7 @@ class DevContainerHarness:
             return values
 
     def break_published_port(self, name, key):
-        project = f"{PROJECT_PREFIX}-{name}"
+        project = self.slot_project_of(name)
         path = os.path.join(self.docker_state, f"{project}.ports")
         values = {}
         if os.path.isfile(path):
@@ -1193,19 +1240,19 @@ class DevContainerHarness:
                 handle.write(f"{k}={v}\n")
 
     def mark_running(self, name):
-        project = f"{PROJECT_PREFIX}-{name}"
+        project = self.slot_project_of(name)
         path = os.path.join(self.docker_state, f"{project}.running")
         with open(path, "w", encoding="utf-8"):
             pass
 
     def mark_stopped(self, name):
-        project = f"{PROJECT_PREFIX}-{name}"
+        project = self.slot_project_of(name)
         path = os.path.join(self.docker_state, f"{project}.running")
         if os.path.isfile(path):
             os.remove(path)
 
     def bundle_head_sha(self, name):
-        project = f"{PROJECT_PREFIX}-{name}"
+        project = self.slot_project_of(name)
         bundle_dir = os.path.join(self.state_dir, "rescue")
         bundles = [
             f for f in os.listdir(bundle_dir)
@@ -1226,20 +1273,20 @@ class DevContainerHarness:
         ).stdout.decode()
 
     def set_container_procs(self, name, procs):
-        project = f"{PROJECT_PREFIX}-{name}"
+        project = self.slot_project_of(name)
         path = os.path.join(self.docker_state, f"{project}.procs")
         with open(path, "w", encoding="utf-8") as handle:
             for proc in procs:
                 handle.write(f"{proc}\n")
 
     def fail_container_ps(self, name):
-        project = f"{PROJECT_PREFIX}-{name}"
+        project = self.slot_project_of(name)
         path = os.path.join(self.docker_state, f"{project}.psfail")
         with open(path, "w", encoding="utf-8"):
             pass
 
     def env_path(self, name):
-        return os.path.join(self.state_dir, "env", f"{PROJECT_PREFIX}-{name}.env")
+        return os.path.join(self.state_dir, "env", f"{self.slot_project_of(name)}.env")
 
     def read_env(self, name):
         path = self.env_path(name)
@@ -1253,7 +1300,7 @@ class DevContainerHarness:
         return values
 
     def ports_path(self, name):
-        return os.path.join(self.state_dir, "ports", f"{PROJECT_PREFIX}-{name}.ports")
+        return os.path.join(self.state_dir, "ports", f"{self.slot_project_of(name)}.ports")
 
     def read_ports(self, name):
         path = self.ports_path(name)
@@ -1392,7 +1439,7 @@ class ListVerdictTestCase(DevContainerTestCase):
                 {
                     "holder": holder,
                     "owner": "-",
-                    "project": PROJECT_PREFIX + "-" + name,
+                    "project": self.harness.slot_project_of(name),
                     "since": self.harness.now_epoch() - age_seconds,
                     "key": "/dev/null",
                     "ssh_port": TEST_SSH_PORT,
@@ -1408,7 +1455,7 @@ class ListVerdictTestCase(DevContainerTestCase):
             json.dump(
                 {
                     "holder": holder,
-                    "project": PROJECT_PREFIX + "-" + name,
+                    "project": self.harness.slot_project_of(name),
                     "since": self.harness.now_epoch(),
                     "reason": reason,
                 },

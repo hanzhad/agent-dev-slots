@@ -246,7 +246,7 @@ class SlotHolderFile(DevContainerTestCase):
             json.dump(
                 {
                     "holder": holder,
-                    "project": PROJECT_PREFIX + "-" + name,
+                    "project": self.harness.slot_project_of(name),
                     "since": int(time.time()) - age_seconds,
                     "ttl_seconds": ttl,
                     "key": "/dev/null",
@@ -261,7 +261,7 @@ class SlotHolderFile(DevContainerTestCase):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as handle:
             handle.write(
-                f"holder={holder}\nowner=-\nslot_id={PROJECT_PREFIX}-{name}\n"
+                f"holder={holder}\nowner=-\nslot_id={self.harness.slot_project_of(name)}\n"
                 "since_epoch=0\nsince_iso=1970-01-01T00:00:00Z\n"
             )
 
@@ -278,7 +278,7 @@ class SlotHolderFile(DevContainerTestCase):
         holder = self.harness.read_holder(name)
         self.assertEqual(holder["holder"], "task-7")
         self.assertEqual(holder["owner"], "Session A [aaaa]")
-        self.assertEqual(holder["slot_id"], f"{PROJECT_PREFIX}-{name}")
+        self.assertEqual(holder["slot_id"], self.harness.slot_project_of(name))
         self.assertEqual(int(holder["since_epoch"]), lease["since"])
         self.assertNotIn("expiry_epoch", holder)
         self.assertNotIn("ttl_seconds", lease)
@@ -347,9 +347,7 @@ class ReleaseStopsTheSlotsContainers(DevContainerTestCase):
     _write_lease = SlotHolderFile._write_lease
 
     def _running(self, name):
-        return os.path.isfile(
-            os.path.join(self.harness.docker_state, f"{PROJECT_PREFIX}-{name}.running")
-        )
+        return os.path.isfile(self.harness.running_path(name))
 
     def _docker_log(self):
         with open(self.harness.docker_log, encoding="utf-8") as handle:
@@ -370,7 +368,7 @@ class ReleaseStopsTheSlotsContainers(DevContainerTestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         self.assertFalse(self._running(name), result.stdout.decode())
-        self.assertRegex(self._docker_log(), rf"-p {PROJECT_PREFIX}-{name} .*down -v")
+        self.assertRegex(self._docker_log(), rf"-p {re.escape(self.harness.slot_project_of(name))} .*down -v")
         self.assertFalse(os.path.isdir(self.harness.slot_dir(name)))
         self.assertFalse(os.path.isfile(self.harness.lease_path(name)))
         self.assertIn("removed", result.stdout.decode())
@@ -466,7 +464,7 @@ class ParkAVerbForGivingBackADirtySlot(DevContainerTestCase):
         self.assertTrue(os.path.isfile(marker_path), park.stdout.decode())
         with open(marker_path, encoding="utf-8") as handle:
             marker = json.load(handle)
-        self.assertEqual(marker["project"], f"{PROJECT_PREFIX}-{name}")
+        self.assertEqual(marker["project"], self.harness.slot_project_of(name))
         self.assertEqual(marker["holder"], "task-11")
         self.assertIn("uncommitted", marker["reason"])
         self.assertIsInstance(marker["since"], int)
@@ -593,7 +591,7 @@ class IdleLeaseIsListedAsIdle(DevContainerTestCase):
             json.dump(
                 {
                     "holder": "task-12",
-                    "project": PROJECT_PREFIX + "-" + name,
+                    "project": self.harness.slot_project_of(name),
                     "since": self.harness.now_epoch() - age_seconds,
                     "key": "/dev/null",
                     "ssh_port": 39226,
@@ -718,7 +716,7 @@ class ReleaseAcceptsTheAcquireShapedSlotFlag(DevContainerTestCase):
         acquired = self.harness.run_acquire()
         self.assertEqual(acquired.returncode, 0, acquired.stderr.decode())
         name = self.harness.acquired_slot_name(acquired)
-        prefixed = f"{PROJECT_PREFIX}-{name}"
+        prefixed = self.harness.slot_project_of(name)
 
         result = self.harness.run("release", prefixed, "--for", "test")
 
@@ -815,7 +813,7 @@ class NowEpochClockInjection(DevContainerTestCase):
         acquired = self.harness.run_acquire(holder="seen-holder", owner="Agent [seen]")
         self.assertEqual(acquired.returncode, 0, acquired.stderr.decode())
         name = self.harness.acquired_slot_name(acquired)
-        sid = f"{PROJECT_PREFIX}-{name}"
+        sid = self.harness.slot_project_of(name)
 
         self.harness.mark_running(name)
         self.harness.set_container_procs(name, ["sshd", "sshd"])
@@ -854,7 +852,7 @@ class NowEpochClockInjection(DevContainerTestCase):
         acquired = self.harness.run_acquire(holder="future-holder", owner="Agent [fut]")
         self.assertEqual(acquired.returncode, 0, acquired.stderr.decode())
         name = self.harness.acquired_slot_name(acquired)
-        sid = f"{PROJECT_PREFIX}-{name}"
+        sid = self.harness.slot_project_of(name)
 
         self.harness.mark_running(name)
         self.harness.set_container_procs(name, ["sshd", "sshd"])

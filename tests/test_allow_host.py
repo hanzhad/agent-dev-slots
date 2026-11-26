@@ -100,7 +100,7 @@ class PerSlotHosts(AllowHostCase):
 
 class Status(test_status_json.StatusCase):
     def test_status_shows_the_effective_list_and_the_slots_own_hosts(self):
-        sid = f"{PROJECT_PREFIX}-slot-1"
+        sid = self.harness.slot_project_of("slot-1")
         self.write_lease("slot-1", self.harness.tmp, age_seconds=30)
         self.write_ports_file(sid)
         os.makedirs(os.path.join(self.state, "env"), exist_ok=True)

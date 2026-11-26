@@ -64,8 +64,8 @@ class SingleProjectTest(IdentityCase):
         first = self.acquire_id(self.harness)
         second = self.acquire_id(self.harness)
 
-        self.assertTrue(first.startswith(PROJECT_PREFIX + "-slot-"), first)
-        self.assertTrue(second.startswith(PROJECT_PREFIX + "-slot-"), second)
+        self.assertRegex(first, rf"^0-slot-\d+-{re.escape(PROJECT_PREFIX)}$")
+        self.assertRegex(second, rf"^0-slot-\d+-{re.escape(PROJECT_PREFIX)}$")
 
 
 class SameProjectTwoRootsTest(IdentityCase):
@@ -74,8 +74,8 @@ class SameProjectTwoRootsTest(IdentityCase):
         first = self.acquire_id(self.harness)
         second = self.acquire_id(other)
 
-        self.assertTrue(first.startswith(PROJECT_PREFIX + "-slot-"), first)
-        self.assertTrue(second.startswith(f"{PROJECT_PREFIX}_{other.project_key}-slot-"), second)
+        self.assertRegex(first, rf"^0-slot-\d+-{re.escape(PROJECT_PREFIX)}$")
+        self.assertRegex(second, rf"^0-slot-\d+-{re.escape(PROJECT_PREFIX)}_{re.escape(other.project_key)}$")
         self.assertEqual(self.label_owner(PROJECT_PREFIX), self.harness.project_key)
         self.assertEqual(self.label_owner(f"{PROJECT_PREFIX}_{other.project_key}"), other.project_key)
         self.assertEqual(self.registry(other)["base"], PROJECT_PREFIX)
@@ -97,12 +97,12 @@ class StickyLabelTest(IdentityCase):
         other = self.another_root()
         self.acquire_id(self.harness)
         label = f"{PROJECT_PREFIX}_{other.project_key}"
-        self.assertTrue(self.acquire_id(other).startswith(label + "-"))
+        self.assertRegex(self.acquire_id(other), rf"^0-slot-\d+-{re.escape(label)}$")
 
         shutil.rmtree(self.harness.fixture_repo)
         again = self.acquire_id(other)
 
-        self.assertTrue(again.startswith(label + "-slot-"), again)
+        self.assertRegex(again, rf"^0-slot-\d+-{re.escape(label)}$")
         self.assertEqual(self.registry(other)["label"], label)
         self.assertEqual(self.label_owner(PROJECT_PREFIX), self.harness.project_key)
 
@@ -127,7 +127,7 @@ class NoProjectEnvTest(IdentityCase):
 
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         slot_id = re.search(r'"id": "([^"]+)"', result.stdout.decode()).group(1)
-        self.assertTrue(slot_id.startswith("fixture-repo-slot-"), slot_id)
+        self.assertRegex(slot_id, r"^0-slot-\d+-fixture-repo$")
 
 
 class SeedingTest(IdentityCase):
@@ -139,13 +139,13 @@ class SeedingTest(IdentityCase):
 
         copy_id = self.acquire_id(self.harness)
 
-        self.assertTrue(original.startswith(PROJECT_PREFIX + "-slot-"), original)
-        self.assertTrue(copy_id.startswith(f"{PROJECT_PREFIX}_{self.harness.project_key}-slot-"), copy_id)
+        self.assertRegex(original, rf"^0-slot-\d+-{re.escape(PROJECT_PREFIX)}$")
+        self.assertRegex(copy_id, rf"^0-slot-\d+-{re.escape(PROJECT_PREFIX)}_{re.escape(self.harness.project_key)}$")
         self.assertEqual(self.label_owner(PROJECT_PREFIX), other.project_key)
 
         # The original, when it runs, finds its label waiting.
         again = self.acquire_id(other)
-        self.assertTrue(again.startswith(PROJECT_PREFIX + "-slot-"), again)
+        self.assertRegex(again, rf"^0-slot-\d+-{re.escape(PROJECT_PREFIX)}$")
         self.assertEqual(self.registry(other)["label"], PROJECT_PREFIX)
 
 

@@ -144,7 +144,7 @@ class TestSlotGetEngine(DevContainerTestCase):
         self._build()
         self.harness.make_bare_slot("dir-slot")
         slot_dir = self.harness.slot_dir("dir-slot")
-        lease_file = self.harness.lease_path("dir-slot")
+        lease_file = os.path.join(self.harness.state_dir, "leases", f"{PROJECT_PREFIX}-dir-slot.json")
         os.makedirs(os.path.dirname(lease_file), exist_ok=True)
         with open(lease_file, "w", encoding="utf-8") as handle:
             json.dump(
@@ -292,7 +292,7 @@ class TestSlotGetEngine(DevContainerTestCase):
         since = 1700000000
         self.harness.set_now(since)
         name = self._acquire("get-owner")
-        sid = f"{PROJECT_PREFIX}-{name}"
+        sid = self.harness.slot_project_of(name)
 
         self._assert_refused(self.harness.run("get", "slot-99", "--stdout", "ok.bin"), "missing slot")
 

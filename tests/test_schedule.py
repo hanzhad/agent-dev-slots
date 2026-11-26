@@ -100,14 +100,15 @@ class ScheduleCase(test_pool.PoolTestCase):
         )
 
     def write_lease(self, name, repo_root, age_seconds=60):
-        path = os.path.join(self.state, "leases", f"{PROJECT_PREFIX}-{name}.json")
+        sid = self.harness.slot_project_of(name)
+        path = os.path.join(self.state, "leases", f"{sid}.json")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(
                 {
                     "holder": "task",
                     "owner": "-",
-                    "project": f"{PROJECT_PREFIX}-{name}",
+                    "project": sid,
                     "since": self.harness.now_epoch() - age_seconds,
                     "key": "/dev/null",
                     "ssh_port": test_pool.slot_port(1, 0),
@@ -365,6 +366,75 @@ class ReapAll(ScheduleCase):
 
         self.assertEqual(result.returncode, 0, self.output(result))
         self.assertIn(gone, self.read_log("fast"))
+
+    def _register_project(self, key, root, label="demo"):
+        projects_dir = os.path.join(self.state, "projects")
+        os.makedirs(projects_dir, exist_ok=True)
+        with open(os.path.join(projects_dir, f"{key}.json"), "w", encoding="utf-8") as handle:
+            json.dump({"project_key": key, "label": label, "repo_root": root}, handle)
+
+    def test_reap_all_visits_registered_project_roots_even_with_zero_leases(self):
+        self._register_project(self.harness.project_key, self.harness.fixture_repo, "demo")
+        self._register_project(self.second.project_key, self.second.fixture_repo, "second")
+
+        result = self.engine("reap", "--all")
+
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertEqual(len(self.git_calls_naming(self.harness.fixture_repo)), 1)
+        self.assertEqual(len(self.git_calls_naming(self.second.fixture_repo)), 1)
+
+    def test_reap_all_deduplicates_root_present_in_both_projects_and_leases(self):
+        self._register_project(self.harness.project_key, self.harness.fixture_repo, "demo")
+        self.write_lease("one", self.harness.fixture_repo)
+
+        result = self.engine("reap", "--all")
+
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertEqual(len(self.git_calls_naming(self.harness.fixture_repo)), 1)
+
+    def test_clean_all_visits_registered_project_roots_and_cleans_orphan_volume_with_zero_leases(self):
+        root = os.path.realpath(self.harness.fixture_repo)
+        self._register_project(self.harness.project_key, root, "demo")
+        vol = "0-slot-1-demo-workspace"
+        vol_dir = os.path.join(self.harness.volumes_dir, vol)
+        os.makedirs(vol_dir, exist_ok=True)
+        subprocess.run(
+            [self.harness.real_git_bin, "-C", vol_dir, "init", "-q"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        subprocess.run(
+            [self.harness.real_git_bin, "-C", vol_dir, "config", "user.email", "fixture@example.com"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        subprocess.run(
+            [self.harness.real_git_bin, "-C", vol_dir, "config", "user.name", "fixture"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        with open(os.path.join(vol_dir, "README.md"), "w", encoding="utf-8") as handle:
+            handle.write("clean\n")
+        subprocess.run(
+            [self.harness.real_git_bin, "-C", vol_dir, "add", "-A"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        subprocess.run(
+            [self.harness.real_git_bin, "-C", vol_dir, "commit", "-q", "-m", "init"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.harness.write_volume_labels(
+            vol,
+            {
+                "dev-container.sid": "0-slot-1-demo",
+                "dev-container.project": "demo",
+                "dev-container.slot-num": "1",
+                "dev-container.repo-root": root,
+                "dev-container.origin": "https://example.invalid/fixture.git",
+            },
+        )
+
+        result = self.engine("clean", "--all")
+
+        self.assertEqual(result.returncode, 0, self.output(result))
+        self.assertFalse(os.path.isdir(vol_dir), f"clean --all left orphan volume {vol_dir}")
 
 
 class Boot(ScheduleCase):

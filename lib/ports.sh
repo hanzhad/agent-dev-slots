@@ -13,7 +13,7 @@ slot_port_clash() {
       while IFS== read -r other_name other_port || [[ -n "$other_name" ]]; do
         if [[ "$other_port" == "$port" ]]; then
           mine=$(basename "$other" .ports)
-          PORT_CLASH_REASON="$name $port is also ${mine#"${SLOT_PROJECT_PREFIX}-"}'s"
+          PORT_CLASH_REASON="$name $port is also $(slot_name_of "$mine")'s"
           [[ "$other_name" == "$name" ]] || PORT_CLASH_REASON+=" $other_name"
           return 0
         fi

@@ -52,7 +52,7 @@ class TestArchive(DevContainerTestCase):
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(data, handle)
 
-        prefix = f"{PROJECT_PREFIX}-{name}"
+        prefix = self.harness.slot_project_of(name)
         for kind in ("run", "cpu"):
             stamp = os.path.join(self.harness.state_dir, "activity", f"{prefix}.{kind}")
             if os.path.exists(stamp):
@@ -269,7 +269,7 @@ class TestArchive(DevContainerTestCase):
         slot_dir = self.harness.slot_dir(name)
 
         self._expire_lease(name, age_seconds=10000)
-        prefix = f"{PROJECT_PREFIX}-{name}"
+        prefix = self.harness.slot_project_of(name)
         act_dir = os.path.join(self.harness.state_dir, "activity")
         os.makedirs(act_dir, exist_ok=True)
         with open(os.path.join(act_dir, f"{prefix}.run"), "w", encoding="utf-8") as handle:

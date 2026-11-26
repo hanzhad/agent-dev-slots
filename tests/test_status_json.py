@@ -77,7 +77,7 @@ class TestStatusJsonSlots(StatusCase):
         self.assertEqual(data.get("slots"), [])
 
     def test_slots_reports_live_lease(self):
-        sid = f"{PROJECT_PREFIX}-slot-1"
+        sid = self.harness.slot_project_of("slot-1")
         self.write_lease("slot-1", self.harness.tmp, age_seconds=30)
         self.write_ports_file(sid, ssh=42016, novnc=42017, vite=42018)
 
@@ -130,6 +130,55 @@ class TestStatusJsonSlots(StatusCase):
         data = json.loads(result.stdout.decode())
         slots = data.get("slots", [])
         self.assertEqual(len(slots), 0)
+
+    def test_slots_include_project_label_and_slot_num_for_both_new_and_legacy_sids(self):
+        new_sid = f"0-slot-1-{PROJECT_PREFIX}"
+        legacy_sid = f"{PROJECT_PREFIX}-slot-2"
+        leases_dir = os.path.join(self.state, "leases")
+        os.makedirs(leases_dir, exist_ok=True)
+        now = int(time.time())
+        with open(os.path.join(leases_dir, f"{new_sid}.json"), "w", encoding="utf-8") as handle:
+            json.dump({
+                "holder": "task-new",
+                "owner": "-",
+                "project": new_sid,
+                "project_label": PROJECT_PREFIX,
+                "slot_num": 1,
+                "repo_root": self.harness.fixture_repo,
+                "since": now - 10,
+                "key": "/dev/null",
+                "ssh_port": 42016,
+            }, handle)
+        with open(os.path.join(leases_dir, f"{legacy_sid}.json"), "w", encoding="utf-8") as handle:
+            json.dump({
+                "holder": "task-legacy",
+                "owner": "-",
+                "project": legacy_sid,
+                "repo_root": self.harness.fixture_repo,
+                "since": now - 10,
+                "key": "/dev/null",
+                "ssh_port": 42032,
+            }, handle)
+
+        result = self.engine("status", "--json")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        slots = json.loads(result.stdout.decode()).get("slots", [])
+        by_project = {s.get("project"): s for s in slots}
+        self.assertIn(new_sid, by_project)
+        self.assertIn(legacy_sid, by_project)
+
+        self.assertEqual(by_project[new_sid].get("project_label"), PROJECT_PREFIX)
+        self.assertIs(type(by_project[new_sid].get("slot_num")), int)
+        self.assertEqual(by_project[new_sid].get("slot_num"), 1)
+
+        self.assertEqual(by_project[legacy_sid].get("project_label"), PROJECT_PREFIX)
+        self.assertIs(type(by_project[legacy_sid].get("slot_num")), int)
+        self.assertEqual(by_project[legacy_sid].get("slot_num"), 2)
+
+        filtered = self.engine("status", "--json", "--project", PROJECT_PREFIX)
+        self.assertEqual(filtered.returncode, 0, self.output(filtered))
+        filtered_projects = {s.get("project") for s in json.loads(filtered.stdout.decode()).get("slots", [])}
+        self.assertEqual(filtered_projects, {new_sid, legacy_sid})
 
 
 class TestStatusJsonCleaners(StatusCase):

@@ -37,7 +37,7 @@ cmd_get() {
   [[ -n "$slot" && -n "$rel_src" ]] || die "get requires: $CALLER get <slot> --stdout <rel-src> [--max-bytes <N>]"
   [[ "$max_bytes" =~ ^[1-9][0-9]*$ ]] || die "get: --max-bytes must be a positive integer, got '$max_bytes'"
 
-  local name="${slot#"${SLOT_PROJECT_PREFIX}-"}"
+  local name; name=$(slot_name_of "$slot")
   valid_name "$name"
 
   local sid

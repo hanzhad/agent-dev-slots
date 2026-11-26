@@ -283,15 +283,6 @@ sync_slot_ssh_key() {
   upsert_env_var "$env_file" SSH_PUBLIC_KEY "$value"
 }
 
-slot_name_of() {
-  local sid="$1"
-  if [[ "$sid" == "${SLOT_PROJECT_PREFIX}-"* ]]; then
-    echo "${sid#"${SLOT_PROJECT_PREFIX}-"}"
-  else
-    echo "$sid"
-  fi
-}
-
 compose_running() {
   local dir="" proj=""
   if (( $# == 1 )); then

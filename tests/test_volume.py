@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -546,6 +547,130 @@ class VolumeSlotEvict(DevContainerTestCase):
         ).stdout.decode()
         self.assertEqual(refs_before, refs_after, "evict pushed branches to remote")
         self.assertNotIn("rescue", refs_after)
+
+
+class CanonicalZeroSlotNamingAndLabels(DevContainerTestCase):
+    def test_acquire_uses_0_slot_N_project_format_compose_name_volume_label_and_lease_fields(self):
+        self.harness.build_fixture_repo(with_parent_env=MAIN_ENV)
+        result = self.harness.run("acquire", "--for", "test-holder")
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+
+        match = re.search(r'"id": "([^"]+)"', result.stdout.decode())
+        self.assertIsNotNone(match, result.stdout.decode())
+        sid = match.group(1)
+        self.assertEqual(sid, f"0-slot-1-{PROJECT_PREFIX}")
+
+        expected_vol = f"{sid}-workspace"
+        self.assertIn(expected_vol, self.harness.volume_names())
+
+        labels = self.harness.volume_labels(expected_vol)
+        self.assertEqual(labels.get("dev-container.sid"), sid)
+        self.assertEqual(labels.get("dev-container.project"), PROJECT_PREFIX)
+        self.assertEqual(labels.get("dev-container.slot-num"), "1")
+        self.assertEqual(labels.get("dev-container.repo-root"), os.path.realpath(self.harness.fixture_repo))
+        self.assertEqual(labels.get("dev-container.origin"), "https://example.invalid/fixture.git")
+
+        env_path = os.path.join(self.harness.state_dir, "env", f"{sid}.env")
+        self.assertTrue(os.path.isfile(env_path), f"missing env file {env_path}")
+        with open(env_path, encoding="utf-8") as handle:
+            env_text = handle.read()
+        self.assertIn(f"COMPOSE_PROJECT_NAME={sid}", env_text)
+
+        with open(self.harness.docker_log, encoding="utf-8") as handle:
+            self.assertIn(f"COMPOSE_PROJECT_NAME={sid}", handle.read())
+
+        lease_path = os.path.join(self.harness.state_dir, "leases", f"{sid}.json")
+        self.assertTrue(os.path.isfile(lease_path), f"missing lease file {lease_path}")
+        with open(lease_path, encoding="utf-8") as handle:
+            lease = json.load(handle)
+        self.assertEqual(lease.get("project"), sid)
+        self.assertEqual(lease.get("project_label"), PROJECT_PREFIX)
+        self.assertIs(type(lease.get("slot_num")), int)
+        self.assertEqual(lease.get("slot_num"), 1)
+
+
+class LegacySlotTransition(DevContainerTestCase):
+    def _plant_legacy_slot(self, slot_num=2, holder="legacy-worker"):
+        name = f"slot-{slot_num}"
+        sid = f"{PROJECT_PREFIX}-{name}"
+        vol = f"{sid}-workspace"
+        vol_dir = os.path.join(self.harness.volumes_dir, vol)
+        os.makedirs(os.path.join(vol_dir, ".devcontainer"), exist_ok=True)
+        with open(
+            os.path.join(vol_dir, ".devcontainer", "docker-compose.yml"),
+            "w",
+            encoding="utf-8",
+        ) as handle:
+            handle.write("# fixture placeholder\n")
+        os.makedirs(os.path.join(vol_dir, "docs", "repo", ".git"), exist_ok=True)
+        subprocess.run(
+            [self.harness.real_git_bin, "-C", vol_dir, "init", "-q"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        subprocess.run(
+            [self.harness.real_git_bin, "-C", vol_dir, "remote", "add", "origin", "https://example.invalid/fixture.git"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.harness.write_volume_labels(
+            vol,
+            {
+                "dev-container.sid": sid,
+                "dev-container.project": PROJECT_PREFIX,
+                "dev-container.repo-root": os.path.realpath(self.harness.fixture_repo),
+                "dev-container.origin": "https://example.invalid/fixture.git",
+            },
+        )
+        ports_text = "SSH_PORT=41032\nNOVNC_PORT=41033\nVITE_DEV_PORT=41034\n"
+        ports_path = os.path.join(self.harness.state_dir, "ports", f"{sid}.ports")
+        os.makedirs(os.path.dirname(ports_path), exist_ok=True)
+        with open(ports_path, "w", encoding="utf-8") as handle:
+            handle.write(ports_text)
+        env_path = os.path.join(self.harness.state_dir, "env", f"{sid}.env")
+        os.makedirs(os.path.dirname(env_path), exist_ok=True)
+        with open(env_path, "w", encoding="utf-8") as handle:
+            handle.write(f"COMPOSE_PROJECT_NAME={sid}\n{MAIN_ENV}{ports_text}")
+        lease_path = os.path.join(self.harness.state_dir, "leases", f"{sid}.json")
+        os.makedirs(os.path.dirname(lease_path), exist_ok=True)
+        with open(lease_path, "w", encoding="utf-8") as handle:
+            json.dump(
+                {
+                    "holder": holder,
+                    "owner": "-",
+                    "project": sid,
+                    "repo_root": os.path.realpath(self.harness.fixture_repo),
+                    "since": self.harness.now_epoch() - 30,
+                    "key": "/dev/null",
+                    "ssh_port": 41032,
+                },
+                handle,
+            )
+        with open(os.path.join(self.harness.docker_state, f"{sid}.running"), "w", encoding="utf-8"):
+            pass
+        return name, sid, lease_path
+
+    def test_legacy_slot_remains_readable_runnable_and_releasable_alongside_new_acquire(self):
+        self.harness.build_fixture_repo(with_parent_env=MAIN_ENV)
+        name, legacy_sid, legacy_lease = self._plant_legacy_slot(slot_num=2, holder="legacy-worker")
+
+        listed = self.harness.run("list")
+        self.assertEqual(listed.returncode, 0, listed.stderr.decode())
+        self.assertIn(name, listed.stdout.decode())
+
+        ran = self.harness.run("run", name, "--", "echo", "legacy-ok")
+        self.assertEqual(ran.returncode, 0, ran.stderr.decode())
+        self.assertEqual(ran.stdout.decode().strip(), "legacy-ok")
+
+        acquired = self.harness.run("acquire", "--for", "new-worker")
+        self.assertEqual(acquired.returncode, 0, acquired.stderr.decode())
+        match = re.search(r'"id": "([^"]+)"', acquired.stdout.decode())
+        self.assertIsNotNone(match, acquired.stdout.decode())
+        new_sid = match.group(1)
+        self.assertEqual(new_sid, f"0-slot-1-{PROJECT_PREFIX}")
+
+        released = self.harness.run("release", name, "--for", "legacy-worker")
+        self.assertEqual(released.returncode, 0, released.stderr.decode())
+        self.assertFalse(os.path.exists(legacy_lease))
+        self.assertTrue(os.path.exists(os.path.join(self.harness.state_dir, "leases", f"{new_sid}.json")))
 
 
 if __name__ == "__main__":

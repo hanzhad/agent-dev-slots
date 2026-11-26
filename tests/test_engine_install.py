@@ -38,6 +38,13 @@ class EngineInstall(FakeDockerCase):
         self.assertEqual(option_values(call, "--name"), ["dev-container"])
         self.assertEqual(option_values(call, "--restart"), ["unless-stopped"])
 
+    def test_the_container_carries_0_engine_compose_labels(self):
+        call = self.installed()
+        self.assertEqual(option_values(call, "--name"), ["dev-container"])
+        labels = option_values(call, "-l", "--label")
+        self.assertIn("com.docker.compose.project=0-engine", labels)
+        self.assertIn("com.docker.compose.service=engine", labels)
+
     def test_the_image_is_built_locally_and_the_container_runs_that_image(self):
         call = self.installed()
         builds = self.calls_of("build")

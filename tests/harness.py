@@ -1166,20 +1166,35 @@ class DevContainerHarness:
             args += ["--as", owner]
         return self.run(*args)
 
-    def acquired_slot_name(self, result):
+    def acquired_slot_name(self, result, prefix=None):
         stdout = result.stdout.decode()
         match = re.search(r'"id": "([^"]+)"', stdout)
         assert match, stdout
         slot_id = match.group(1)
-        prefix = self.project_prefix
+        prefix = prefix or self.project_prefix
         if slot_id.startswith("0-") and slot_id.endswith("-" + prefix):
             return slot_id[2 : -len("-" + prefix)]
+        m = re.match(r"^0-(slot-\d+)-.+", slot_id)
+        if m:
+            return m.group(1)
         if slot_id.startswith(prefix + "-"):
             return slot_id[len(prefix) + 1 :]
         raise AssertionError(slot_id)
 
     def lease_path(self, name):
         return os.path.join(self.state_dir, "leases", f"{self.slot_project_of(name)}.json")
+
+    def lease_token_path(self, name):
+        return os.path.join(self.state_dir, "lease-tokens", f"{self.slot_project_of(name)}.token")
+
+    def overlay_path(self, name):
+        return os.path.join(self.state_dir, "overlays", f"{self.slot_project_of(name)}.yml")
+
+    def seen_path(self, name):
+        return os.path.join(self.state_dir, "seen", self.slot_project_of(name))
+
+    def running_path(self, name):
+        return os.path.join(self.docker_state, f"{self.slot_project_of(name)}.running")
 
     def parked_path(self, name):
         return os.path.join(self.state_dir, "parked", f"{self.slot_project_of(name)}.json")

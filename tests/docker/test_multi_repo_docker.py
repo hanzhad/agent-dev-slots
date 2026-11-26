@@ -197,7 +197,7 @@ class TestMultiRepoDocker(RealEngineCase):
         checkout = os.path.join(self.projects, "mrproj")
         compose_dir = os.path.join(checkout, ".devcontainer")
         proj_prefix = f"dct{self.uid}mr"
-        sid = f"{proj_prefix}-slot-1"
+        sid = f"0-slot-1-{proj_prefix}"
         self.addCleanup(self._cleanup_slot, compose_dir, sid)
 
         write(

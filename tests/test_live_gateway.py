@@ -147,7 +147,7 @@ class LiveGatewayTestCase(DevContainerTestCase):
         os.environ["LG_WATCH"] = " ".join(WATCH)
         self.logs = []
         self.name = self.start_project(self.harness, PROJECT_PREFIX)
-        self.sid = f"{PROJECT_PREFIX}-{self.name}"
+        self.sid = self.harness.slot_project_of(self.name)
         self.reset_events()
 
     # -- the project and its slots ---------------------------------------
@@ -171,9 +171,7 @@ class LiveGatewayTestCase(DevContainerTestCase):
             "acquire", "--for", holder, port_overrides=self.state_for(harness)
         )
         self.assertEqual(result.returncode, 0, text(result))
-        match = re.search(r'"id": "([^"]+)"', result.stdout.decode())
-        self.assertTrue(match, result.stdout.decode())
-        return match.group(1)[len(project) + 1:]
+        return harness.acquired_slot_name(result, prefix=project)
 
     def configure(self, harness, project, **keys):
         values = dict(LIVE_KEYS)

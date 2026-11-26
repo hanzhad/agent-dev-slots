@@ -100,14 +100,15 @@ class ScheduleCase(test_pool.PoolTestCase):
         )
 
     def write_lease(self, name, repo_root, age_seconds=60):
-        path = os.path.join(self.state, "leases", f"{PROJECT_PREFIX}-{name}.json")
+        sid = self.harness.slot_project_of(name)
+        path = os.path.join(self.state, "leases", f"{sid}.json")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(
                 {
                     "holder": "task",
                     "owner": "-",
-                    "project": f"{PROJECT_PREFIX}-{name}",
+                    "project": sid,
                     "since": self.harness.now_epoch() - age_seconds,
                     "key": "/dev/null",
                     "ssh_port": test_pool.slot_port(1, 0),

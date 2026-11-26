@@ -970,12 +970,12 @@ class TestToolboxCliAndLifecycle(DevContainerTestCase):
         return self.harness.acquired_slot_name(result)
 
     def _overlay(self, name):
-        path = os.path.join(self.harness.state_dir, "overlays", f"{PROJECT_PREFIX}-{name}.yml")
+        path = self.harness.overlay_path(name)
         self.assertTrue(os.path.isfile(path), f"missing overlay {path}")
         return read_text(path)
 
     def _toolbox_marker(self, name):
-        return os.path.join(self.harness.state_dir, "toolbox", f"{PROJECT_PREFIX}-{name}")
+        return os.path.join(self.harness.state_dir, "toolbox", self.harness.slot_project_of(name))
 
     def test_acquire_with_toolbox_builds_lazily_writes_state_renders_overlay_and_runs_toolbox(self):
         self._setup_token_auth()
@@ -988,7 +988,7 @@ class TestToolboxCliAndLifecycle(DevContainerTestCase):
         )
         self.assertEqual(acq.returncode, 0, output_of(acq))
         name = self._acquired_name(acq)
-        sid = f"{PROJECT_PREFIX}-{name}"
+        sid = self.harness.slot_project_of(name)
 
         self.assertTrue(os.path.isfile(self._toolbox_marker(name)), "toolbox state file missing")
         builds = [ln for ln in self._tb_lines() if ln.startswith("BUILD ")]

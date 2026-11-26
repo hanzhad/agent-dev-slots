@@ -98,7 +98,7 @@ class ProvisionCase(DevContainerTestCase):
         return self.harness.acquired_slot_name(result)
 
     def sid(self, name):
-        return f"{PROJECT_PREFIX}-{name}"
+        return self.harness.slot_project_of(name)
 
     def sandbox(self, name):
         return os.path.join(self.harness.docker_state, self.sid(name) + ".container")

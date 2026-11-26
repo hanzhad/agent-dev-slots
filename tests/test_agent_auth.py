@@ -293,7 +293,7 @@ class AuthTestCase(DevContainerTestCase):
         result = self.harness.run_acquire()
         self.assertEqual(result.returncode, 0, text(result))
         self.name = self.harness.acquired_slot_name(result)
-        self.sid = f"{PROJECT_PREFIX}-{self.name}"
+        self.sid = self.harness.slot_project_of(self.name)
         self.clear_calls()
         return self.name
 
@@ -1351,7 +1351,7 @@ class ContainerEnvCopiesTheTokenIntoTheSlotEnv(AuthTestCase):
         acquired = self.harness.run_acquire()
         self.assertEqual(acquired.returncode, 0, text(acquired))
         name = self.harness.acquired_slot_name(acquired)
-        self.sid = f"{PROJECT_PREFIX}-{name}"
+        self.sid = self.harness.slot_project_of(name)
         restarted = self.harness.run("restart", name)
         ran = self.harness.run("run", name, "--", "true")
 
@@ -1808,9 +1808,7 @@ class TheTokenCacheBelongsToTheProject(AuthTestCase):
         )
         acquired = self.other.run("acquire", "--for", "test")
         self.assertEqual(acquired.returncode, 0, text(acquired))
-        found = re.search("other-(slot-[0-9]+)", acquired.stdout.decode())
-        self.assertTrue(found, acquired.stdout.decode())
-        self.other_name = found.group(1)
+        self.other_name = self.other.acquired_slot_name(acquired, prefix="other")
         self.clear_calls()
 
     def run_other(self):

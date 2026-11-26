@@ -718,7 +718,7 @@ class TestMultiRepoFactsCollection(DevContainerTestCase, MultiRepoSetupMixin):
             origin_url="https://github.com/acme/primary.git",
         )
         self.harness.make_bare_slot("slot-fetch", local_identity=("demo-agent", "demo-agent@example.com"))
-        sid = f"{PROJECT_PREFIX}-slot-fetch"
+        sid = self.harness.slot_project_of("slot-fetch")
         slot_dir = self.harness.slot_dir("slot-fetch")
         shutil.rmtree(os.path.join(slot_dir, "docs"), ignore_errors=True)
         self.real_git(slot_dir, "remote", "set-url", "origin", "https://github.com/acme/primary.git")
@@ -1512,7 +1512,7 @@ class TestMultiRepoLifecycleIntegration(DevContainerTestCase, MultiRepoSetupMixi
             ports_content="SSH_PORT=42016\n",
             local_identity=("stale-user", "stale@example.com"),
         )
-        sid = f"{PROJECT_PREFIX}-slot-rst"
+        sid = self.harness.slot_project_of("slot-rst")
         slot_dir = self.harness.slot_dir("slot-rst")
         shutil.rmtree(os.path.join(slot_dir, "docs"), ignore_errors=True)
         self.real_git(slot_dir, "remote", "set-url", "origin", "https://github.com/acme/primary.git")
@@ -2035,7 +2035,7 @@ class TestMultiRepoVolumeRescueArchive(DevContainerTestCase, MultiRepoSetupMixin
 
         # 3. Host-directory slot parity via archive_and_clean_slot
         host_name = "slot-19"
-        host_sid = f"{PROJECT_PREFIX}-{host_name}"
+        host_sid = self.harness.slot_project_of(host_name)
         host_dir = os.path.join(self.harness.slots_dir, host_name)
         os.makedirs(os.path.join(host_dir, ".devcontainer"), exist_ok=True)
         subprocess.run(
@@ -2114,7 +2114,7 @@ class TestMultiRepoSlotFsGuardsAndDiffSubdir(DevContainerTestCase, MultiRepoSetu
         return self.harness.acquired_slot_name(res)
 
     def _read_token(self, name):
-        path = os.path.join(self.harness.state_dir, "lease-tokens", f"{PROJECT_PREFIX}-{name}.token")
+        path = self.harness.lease_token_path(name)
         with open(path, encoding="utf-8") as handle:
             return handle.read().strip()
 

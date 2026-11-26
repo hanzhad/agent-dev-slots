@@ -425,7 +425,7 @@ class InstallRefusesAnUncleanCheckout(DevContainerTestCase):
         return h.acquired_slot_name(result)
 
     def install_calls(self, name):
-        path = os.path.join(self.harness.docker_state, f"{PROJECT_PREFIX}-{name}.install-calls")
+        path = os.path.join(self.harness.docker_state, f"{self.harness.slot_project_of(name)}.install-calls")
         return len(read(path).splitlines()) if os.path.isfile(path) else 0
 
     def make_dirty(self):
@@ -506,7 +506,7 @@ class InstallBuildsTheImageFromTheCommit(DevContainerTestCase):
         subprocess.run(["git", "-C", self.harness.fixture_repo, "commit", "-q", "-m", name], check=True)
 
     def overlay(self, name):
-        return read(os.path.join(self.harness.state_dir, "overlays", f"{PROJECT_PREFIX}-{name}.yml"))
+        return read(self.harness.overlay_path(name))
 
     def label_commit(self, name):
         found = re.search(re.escape(self.LABEL) + r': "?([0-9a-f]+)', self.overlay(name))

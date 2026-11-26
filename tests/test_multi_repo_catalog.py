@@ -701,7 +701,7 @@ class MultiRepoIntegrationBase(DevContainerTestCase):
                 os.remove(p)
 
     def repos_state_path(self, name):
-        return os.path.join(self.harness.state_dir, "repos", f"{PROJECT_PREFIX}-{name}.json")
+        return os.path.join(self.harness.state_dir, "repos", f"{self.harness.slot_project_of(name)}.json")
 
 
 class TestAcquireAndAttachCatalogRepos(MultiRepoIntegrationBase):

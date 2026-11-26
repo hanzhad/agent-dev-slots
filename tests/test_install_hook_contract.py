@@ -61,7 +61,7 @@ class InstallHookInAVolumeSlot(DevContainerTestCase):
     def _seen(self, result):
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         name = self.harness.acquired_slot_name(result)
-        path = os.path.join(self.harness.docker_state, f"{PROJECT_PREFIX}-{name}.hook-seen")
+        path = os.path.join(self.harness.docker_state, f"{self.harness.slot_project_of(name)}.hook-seen")
         self.assertTrue(os.path.isfile(path), "the install hook did not run")
         seen = {}
         with open(path, encoding="utf-8") as handle:
@@ -76,7 +76,7 @@ class InstallHookInAVolumeSlot(DevContainerTestCase):
 
     def test_compose_project_name_is_the_slots_project(self):
         name, seen = self._seen(self._acquire_with_hook())
-        self.assertEqual(seen["COMPOSE_PROJECT_NAME"], f"{PROJECT_PREFIX}-{name}")
+        self.assertEqual(seen["COMPOSE_PROJECT_NAME"], self.harness.slot_project_of(name))
 
     def test_the_hook_is_the_one_in_the_compose_directory(self):
         _, seen = self._seen(self._acquire_with_hook())
@@ -86,7 +86,7 @@ class InstallHookInAVolumeSlot(DevContainerTestCase):
     def test_the_hook_runs_before_the_image_is_built(self):
         name, seen = self._seen(self._acquire_with_hook())
         self.assertEqual(seen["image_built"], "no")
-        built = os.path.join(self.harness.docker_state, f"{PROJECT_PREFIX}-{name}.image-hash")
+        built = os.path.join(self.harness.docker_state, f"{self.harness.slot_project_of(name)}.image-hash")
         self.assertTrue(os.path.isfile(built), "acquire never built the image")
 
     def test_the_engines_overlay_variables_are_not_set(self):
@@ -165,7 +165,7 @@ class InstallHookAbsent(DevContainerTestCase):
         acquired = h.run_acquire()
         self.assertEqual(acquired.returncode, 0, acquired.stderr.decode())
         name = h.acquired_slot_name(acquired)
-        calls = os.path.join(h.docker_state, f"{PROJECT_PREFIX}-{name}.install-calls")
+        calls = os.path.join(h.docker_state, f"{h.slot_project_of(name)}.install-calls")
 
         def count():
             with open(calls, encoding="utf-8") as handle:
@@ -177,7 +177,7 @@ class InstallHookAbsent(DevContainerTestCase):
         without_drift = count()
         self.assertIn("already matches pnpm-lock.yaml", reused.stdout.decode())
         self.assertEqual(h.run("release", name, "--for", "test").returncode, 0)
-        with open(os.path.join(h.docker_state, f"{PROJECT_PREFIX}-{name}.lockfile-drift"), "w"):
+        with open(os.path.join(h.docker_state, f"{h.slot_project_of(name)}.lockfile-drift"), "w"):
             pass
         drifted = h.run("acquire", "--for", "test", port_overrides={"PNPM_STORE_VOLUME": "store-x"})
         self.assertEqual(drifted.returncode, 0, drifted.stderr.decode())

@@ -133,7 +133,7 @@ class EvictSurvivesARefusedRescuePush(DevContainerTestCase):
 
         bundles = os.listdir(os.path.join(self.harness.state_dir, "rescue"))
         self.assertTrue(
-            any(name.startswith(PROJECT_PREFIX + "-refused") for name in bundles),
+            any(name.startswith(self.harness.slot_project_of("refused")) for name in bundles),
             "no bundle was written for a slot whose push was refused: " + str(bundles),
         )
         self.assertFalse(
@@ -201,7 +201,7 @@ class EvictSurvivesARefusedRescuePush(DevContainerTestCase):
         stdout = result.stdout.decode()
         stderr = result.stderr.decode()
         self.assertEqual(result.returncode, 0, stderr)
-        self.assertIn("rescue/demo-signatures/", stdout)
+        self.assertIn(f"rescue/{self.harness.slot_project_of('signatures')}/", stdout)
         self.assertEqual(
             stdout.count("▸ pushing"), 1,
             "a branch was offered after the remote had already named its rule:\n" + stdout,
@@ -500,7 +500,7 @@ class EvictTwiceInOneDayWritesDistinctBundles(DevContainerTestCase):
         result = self.harness.run("evict", "twice", "--yes")
         self.assertEqual(result.returncode, 0, result.stderr.decode())
 
-        project = f"{PROJECT_PREFIX}-twice"
+        project = self.harness.slot_project_of("twice")
         bundle_dir = os.path.join(self.harness.state_dir, "rescue")
         bundles = sorted(
             f for f in os.listdir(bundle_dir)
@@ -1158,7 +1158,7 @@ exec "$(dirname "$0")/docker-real" "$@"
         result = self.harness.run_acquire(holder="first")
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         name = self.harness.acquired_slot_name(result)
-        project = f"{PROJECT_PREFIX}-{name}"
+        project = self.harness.slot_project_of(name)
         slot = self.harness.slot_dir(name)
         self.harness.free_slot(name)
         self._git("-C", slot, "remote", "set-url", "origin", "/nonexistent/other.git")

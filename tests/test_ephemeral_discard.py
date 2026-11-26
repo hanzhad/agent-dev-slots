@@ -128,7 +128,7 @@ class _EphemeralTestCase(DevContainerTestCase):
             return json.load(handle)
 
     def _token_path(self, name):
-        return os.path.join(self.harness.state_dir, "lease-tokens", f"{PROJECT_PREFIX}-{name}.token")
+        return self.harness.lease_token_path(name)
 
     def _rescue_files(self):
         found = []
@@ -251,7 +251,7 @@ class TestAcquireEphemeral(_EphemeralTestCase):
 
         def compose_up_started():
             if proc.poll() is not None and not os.path.isfile(
-                os.path.join(self.harness.docker_state, f"{PROJECT_PREFIX}-slot-1.up-held")
+                os.path.join(self.harness.docker_state, f"{self.harness.slot_project_of('slot-1')}.up-held")
             ):
                 out = ""
                 if os.path.isfile(log):
@@ -259,7 +259,7 @@ class TestAcquireEphemeral(_EphemeralTestCase):
                         out = handle.read()
                 raise AssertionError(f"acquire --ephemeral exited early (rc={proc.returncode}): {out}")
             return os.path.isfile(
-                os.path.join(self.harness.docker_state, f"{PROJECT_PREFIX}-slot-1.up-held")
+                os.path.join(self.harness.docker_state, f"{self.harness.slot_project_of('slot-1')}.up-held")
             )
 
         wait_until(
@@ -292,8 +292,8 @@ class TestAcquireEphemeral(_EphemeralTestCase):
 
         status = self._status_json()
         by_slot = {entry["slot"]: entry for entry in status.get("slots", [])}
-        eph_entry = by_slot.get(f"{PROJECT_PREFIX}-slot-1")
-        norm_entry = by_slot.get(f"{PROJECT_PREFIX}-{norm_name}")
+        eph_entry = by_slot.get(self.harness.slot_project_of("slot-1"))
+        norm_entry = by_slot.get(self.harness.slot_project_of(norm_name))
         self.assertIsNotNone(eph_entry, status)
         self.assertIs(eph_entry.get("ephemeral"), True, eph_entry)
         self.assertEqual(eph_entry.get("idle_limit"), 900, eph_entry)
@@ -389,7 +389,7 @@ class TestAcquireEphemeral(_EphemeralTestCase):
 
         self.harness.set_now(since + 901)
         slots = self._status_json().get("slots", [])
-        self.assertEqual([s["slot"] for s in slots], [f"{PROJECT_PREFIX}-{keep_name}"])
+        self.assertEqual([s["slot"] for s in slots], [self.harness.slot_project_of(keep_name)])
 
         reaped = self.harness.run("reap")
         self.assertEqual(reaped.returncode, 0, reaped.stderr.decode())
@@ -558,7 +558,7 @@ class TestReleaseDiscardAndEphemeralTeardown(_EphemeralTestCase):
         self.harness.set_now(since + 901)
         env = self.harness._env(None)
         env["DEV_CONTAINER_LIB"] = "1"
-        sid = f"{PROJECT_PREFIX}-{name}"
+        sid = self.harness.slot_project_of(name)
         res = subprocess.run(
             ["bash", "-c", '. "$0"; archive_and_clean_slot "" "$1" "$2"', self.harness.script, sid, name],
             cwd=self.harness.tmp,

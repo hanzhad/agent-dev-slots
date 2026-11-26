@@ -93,6 +93,8 @@ sid_is_this_projects() {
   local sid="$1" root="" mine theirs is_new=0
   if [[ "$sid" =~ ^0-slot-[0-9]+-"${SLOT_PROJECT_PREFIX}"$ ]]; then
     is_new=1
+  elif [[ "$sid" == "0-"*"-${SLOT_PROJECT_PREFIX}" ]]; then
+    :
   else
     case "$sid" in "${SLOT_PROJECT_PREFIX}-"*) ;; *) return 1 ;; esac
   fi

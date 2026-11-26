@@ -208,7 +208,7 @@ class TwoTierSessionAndMachineLimits(ProjectLimitsTestCase):
 
         other_u2 = other.run_acquire(holder="o1", owner="Agent [u2]")
         self.assertEqual(other_u2.returncode, 0, other_u2.stderr.decode())
-        self.assertTrue(self.acquired_id(other_u2).startswith("other-"))
+        self.assertRegex(self.acquired_id(other_u2), r"^0-slot-\d+-other$")
         other_u2_second = other.run_acquire(holder="o2", owner="Agent [u2]")
         self.assertEqual(other_u2_second.returncode, 4, other_u2_second.stderr.decode())
 

@@ -77,7 +77,7 @@ class TestStatusJsonSlots(StatusCase):
         self.assertEqual(data.get("slots"), [])
 
     def test_slots_reports_live_lease(self):
-        sid = f"{PROJECT_PREFIX}-slot-1"
+        sid = self.harness.slot_project_of("slot-1")
         self.write_lease("slot-1", self.harness.tmp, age_seconds=30)
         self.write_ports_file(sid, ssh=42016, novnc=42017, vite=42018)
 

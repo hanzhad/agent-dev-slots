@@ -209,21 +209,9 @@ cmd_schedule() {
 # own root, so what it reads and reaps is that project's.
 cmd_clean_all() {
   [[ $# -eq 0 ]] || die "unknown flag to clean --all: $1"
-  local f root
-  local -a roots=()
-  for f in "$STATE"/leases/*.json; do
-    [[ -f "$f" ]] || continue
-    root=$(jq -r '.repo_root // empty' "$f" 2>/dev/null) || root=""
-    if [[ -z "$root" ]]; then
-      [[ -n "$(jq -r '.pid // empty' "$f" 2>/dev/null)" ]] \
-        || echo "? lease '$(basename "$f" .json)' records no repo_root (it predates that field) — skipped" >&2
-      continue
-    fi
-    roots+=("$root")
-  done
-  (( ${#roots[@]} > 0 )) || exit 0
-  local rc
+  local root rc
   while IFS= read -r root; do
+    [[ -n "$root" ]] || continue
     if [[ ! -d "$root" ]]; then
       echo "? $root is not reachable — its leases were not looked at" >&2
       continue
@@ -232,28 +220,15 @@ cmd_clean_all() {
     rc=0
     DEV_CONTAINER_REPO_ROOT="$root" DEV_CONTAINER_CALLER_PWD="$root" bash "$engine_src" clean || rc=$?
     (( rc == 0 )) || echo "? clean of $root exited $rc — going on to the next project" >&2
-  done < <(printf '%s\n' "${roots[@]}" | sort -u)
+  done < <(collect_all_project_roots "?")
   exit 0
 }
 
 cmd_reap_all() {
   [[ $# -eq 0 ]] || die "unknown flag to reap --all: $1"
-  local f root
-  local -a roots=()
-  for f in "$STATE"/leases/*.json; do
-    [[ -f "$f" ]] || continue
-    root=$(jq -r '.repo_root // empty' "$f" 2>/dev/null) || root=""
-    if [[ -z "$root" ]]; then
-      # A reservation (it carries a pid) is an acquire still in flight, not a lease.
-      [[ -n "$(jq -r '.pid // empty' "$f" 2>/dev/null)" ]] \
-        || echo "▸ lease '$(basename "$f" .json)' records no repo_root (it predates that field) — skipped" >&2
-      continue
-    fi
-    roots+=("$root")
-  done
-  (( ${#roots[@]} > 0 )) || exit 0
-  local rc
+  local root rc
   while IFS= read -r root; do
+    [[ -n "$root" ]] || continue
     if [[ ! -d "$root" ]]; then
       echo "▸ $root is not reachable — its leases were not looked at" >&2
       continue
@@ -262,7 +237,7 @@ cmd_reap_all() {
     rc=0
     DEV_CONTAINER_REPO_ROOT="$root" DEV_CONTAINER_CALLER_PWD="$root" bash "$engine_src" reap || rc=$?
     (( rc == 0 )) || echo "⚠ reap of $root exited $rc — going on to the next project" >&2
-  done < <(printf '%s\n' "${roots[@]}" | sort -u)
+  done < <(collect_all_project_roots "▸")
   exit 0
 }
 

@@ -92,7 +92,7 @@ cmd_expose_plan() {
   read -r target_host target_port <<<"$parsed_target"
 
   valid_name "$name"
-  name="${name#"${SLOT_PROJECT_PREFIX}-"}"
+  name=$(slot_name_of "$name")
 
   local sid
   sid=$(slot_id_of "$name")

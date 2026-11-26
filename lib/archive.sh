@@ -574,16 +574,9 @@ clean_project_slots() {
 }
 
 clean_all_projects() {
-  local f root
-  local -a roots=()
-  for f in "$STATE"/leases/*.json; do
-    [[ -f "$f" ]] || continue
-    root=$(jq -r '.repo_root // empty' "$f" 2>/dev/null) || root=""
-    [[ -n "$root" && -d "$root" ]] && roots+=("$root")
-  done
   local r
-  for r in $(printf '%s\n' "${roots[@]}" | sort -u); do
-    [[ -d "$r" ]] || continue
+  while IFS= read -r r; do
+    [[ -n "$r" && -d "$r" ]] || continue
     DEV_CONTAINER_REPO_ROOT="$r" DEV_CONTAINER_CALLER_PWD="$r" bash "$engine_src" clean || true
-  done
+  done < <(collect_all_project_roots)
 }

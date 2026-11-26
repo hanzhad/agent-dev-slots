@@ -20,6 +20,27 @@ status_slots_json() {
     [[ -n "$project" ]] || project="$sid"
     repo_root=$(lease_field "$f" repo_root 2>/dev/null || true)
 
+    local project_label slot_num slot_num_json="null"
+    project_label=$(lease_field "$f" project_label 2>/dev/null || true)
+    if [[ -z "$project_label" ]]; then
+      if [[ "$project" =~ ^0-slot-[0-9]+-(.+)$ ]]; then
+        project_label="${BASH_REMATCH[1]}"
+      elif [[ "$project" =~ ^(.+)-slot-[0-9]+$ ]]; then
+        project_label="${BASH_REMATCH[1]}"
+      fi
+    fi
+    slot_num=$(lease_field "$f" slot_num 2>/dev/null || true)
+    if [[ ! "$slot_num" =~ ^[0-9]+$ ]]; then
+      if [[ "$project" =~ ^0-slot-([0-9]+)-.+$ ]]; then
+        slot_num="${BASH_REMATCH[1]}"
+      elif [[ "$project" =~ -slot-([0-9]+)$ ]]; then
+        slot_num="${BASH_REMATCH[1]}"
+      else
+        slot_num=""
+      fi
+    fi
+    [[ "$slot_num" =~ ^[0-9]+$ ]] && slot_num_json="$slot_num"
+
     if [[ -n "$filter" ]]; then
       if [[ -n "$want_root" ]]; then
         local canon_lroot="$repo_root"
@@ -28,7 +49,7 @@ status_slots_json() {
         fi
         [[ -n "$canon_lroot" && "$canon_lroot" == "$want_root" ]] || continue
       else
-        [[ "$sid" == "${filter}-slot-"* || "$project" == "${filter}-slot-"* || "$project" == "$filter" ]] || continue
+        [[ "$project_label" == "$filter" || "$sid" == "${filter}-slot-"* || "$project" == "${filter}-slot-"* || "$project" == "$filter" ]] || continue
       fi
     fi
 
@@ -64,6 +85,8 @@ status_slots_json() {
     obj=$(jq -n \
       --arg slot "$sid" \
       --arg project "$project" \
+      --arg project_label "$project_label" \
+      --argjson slot_num "$slot_num_json" \
       --arg holder "$holder" \
       --arg repo_root "$repo_root" \
       --argjson last_activity "$last_activity" \
@@ -73,7 +96,7 @@ status_slots_json() {
       --argjson ephemeral "$is_ephemeral" \
       --argjson idle_limit "$lease_idle_limit" \
       --argjson repos "$repos_json" \
-      '{slot: $slot, project: $project, holder: $holder, repo_root: (if $repo_root == "" then null else $repo_root end), last_activity: $last_activity, last_activity_timestamp: $last_activity, ports: $ports, allowed_hosts: $allowed, slot_hosts: $slot_hosts, ephemeral: $ephemeral, idle_limit: $idle_limit, repos: $repos}')
+      '{slot: $slot, project: $project, project_label: (if $project_label == "" then null else $project_label end), slot_num: $slot_num, holder: $holder, repo_root: (if $repo_root == "" then null else $repo_root end), last_activity: $last_activity, last_activity_timestamp: $last_activity, ports: $ports, allowed_hosts: $allowed, slot_hosts: $slot_hosts, ephemeral: $ephemeral, idle_limit: $idle_limit, repos: $repos}')
     slot_objs+=("$obj")
   done
 

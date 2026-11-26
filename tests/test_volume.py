@@ -21,7 +21,7 @@ class VolumeCreationAndLabels(DevContainerTestCase):
         result = self.harness.run("acquire", "--for", "test-holder")
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         name = self.harness.acquired_slot_name(result)
-        expected_vol = f"{PROJECT_PREFIX}-{name}-workspace"
+        expected_vol = self.harness.volume_name(name)
         self.assertEqual(self.harness.volume_names(), [expected_vol])
         self.assertTrue(self.harness.volume_exists(name))
 
@@ -31,7 +31,7 @@ class VolumeCreationAndLabels(DevContainerTestCase):
         self.assertEqual(result.returncode, 0, result.stderr.decode())
         name = self.harness.acquired_slot_name(result)
         labels = self.harness.volume_labels(name)
-        sid = f"{PROJECT_PREFIX}-{name}"
+        sid = self.harness.slot_project_of(name)
         self.assertEqual(labels.get("dev-container.sid"), sid)
         self.assertEqual(labels.get("dev-container.project"), PROJECT_PREFIX)
         self.assertEqual(labels.get("dev-container.origin"), "https://example.invalid/fixture.git")
@@ -495,7 +495,7 @@ class VolumeSlotEvict(DevContainerTestCase):
         acq = self.harness.run("acquire", "--for", "test-evict")
         self.assertEqual(acq.returncode, 0, acq.stderr.decode())
         name = self.harness.acquired_slot_name(acq)
-        sid = f"{PROJECT_PREFIX}-{name}"
+        sid = self.harness.slot_project_of(name)
 
         env_file = os.path.join(self.harness.state_dir, "env", f"{sid}.env")
         self.assertTrue(os.path.isfile(env_file), f"env file missing: {env_file}")
@@ -609,6 +609,30 @@ class LegacySlotTransition(DevContainerTestCase):
         )
         subprocess.run(
             [self.harness.real_git_bin, "-C", vol_dir, "remote", "add", "origin", "https://example.invalid/fixture.git"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        subprocess.run(
+            [self.harness.real_git_bin, "-C", vol_dir, "config", "user.email", "fixture@example.com"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        subprocess.run(
+            [self.harness.real_git_bin, "-C", vol_dir, "config", "user.name", "fixture"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        subprocess.run(
+            [self.harness.real_git_bin, "-C", vol_dir, "add", ".devcontainer"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        subprocess.run(
+            [self.harness.real_git_bin, "-C", vol_dir, "commit", "-q", "-m", "init"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        subprocess.run(
+            [self.harness.real_git_bin, "-C", vol_dir, "branch", "-M", "main"],
+            check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        subprocess.run(
+            [self.harness.real_git_bin, "-C", vol_dir, "update-ref", "refs/remotes/origin/main", "HEAD"],
             check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         self.harness.write_volume_labels(

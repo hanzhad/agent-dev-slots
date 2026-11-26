@@ -170,9 +170,8 @@ cmd_release() {
   [[ -n "$name" ]] || usage
   valid_name "$name"
   (( RELEASE_SKIP_HOLDER_CHECK == 1 )) && force=1
-  name="${name#"${SLOT_PROJECT_PREFIX}-"}"
-
   local sid; sid=$(slot_id_of "$name")
+  name=$(slot_name_of "$sid")
   local dir="$slots_dir/$name"
   if ! slot_exists "$sid"; then
     if foreign_slot_exists "$name"; then
@@ -548,7 +547,7 @@ cmd_reap() {
     [[ -f "$f" ]] || continue
     local sid; sid=$(basename "$f" .json)
     sid_is_this_projects "$sid" || continue
-    local name=${sid#"${SLOT_PROJECT_PREFIX}"-}
+    local name; name=$(slot_name_of "$sid")
     local dir="$slots_dir/$name"
     slot_exists "$sid" || continue
     [[ -d "$dir" ]] || dir=""
@@ -1337,14 +1336,14 @@ cmd_attach() {
   [[ -n "$name" ]] || die "attach needs a slot name: $CALLER attach <slot> --repo <alias>[,<alias>]... [--for <holder>]"
   valid_name "$name"
   (( ${#COLLECTED_REPO_ALIASES[@]} > 0 )) || die "attach requires --repo <alias>[,<alias>]..."
-  name="${name#"${SLOT_PROJECT_PREFIX}-"}"
+  local sid; sid=$(slot_id_of "$name")
+  name=$(slot_name_of "$sid")
 
   local catalog="${SLOT_REPOS_CATALOG:-$(slot_repos_catalog_json)}"
   local requested_json
   requested_json=$(slot_repos_select_for_attach "$catalog" "${COLLECTED_REPO_ALIASES[@]}")
 
-  local sid dir="$slots_dir/$name"
-  sid=$(slot_id_of "$name")
+  local dir="$slots_dir/$name"
   if ! slot_exists "$sid"; then
     if foreign_slot_exists "$name"; then
       die "'$name': not this project's own slot."

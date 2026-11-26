@@ -106,14 +106,18 @@ remove_lease_key_files() {
 write_lease() {
   local file="$1" holder="$2" project="$3" since="$4" key="$5" ssh_port="$6" owner="$7" root="$8" token_sha256="${9:-}" ephemeral="${10:-0}" idle_limit="${11:-}" repos_json="${12:-[]}"
   [[ -n "$repos_json" ]] || repos_json="[]"
+  local slot_num="" project_label="${SLOT_PROJECT_PREFIX:-}"
+  slot_num=$(slot_index_of "$project" 2>/dev/null || true)
   jq -n --arg holder "$holder" --arg project "$project" \
+        --arg project_label "$project_label" \
+        --arg slot_num "$slot_num" \
         --argjson since "$since" \
         --arg key "$key" --argjson ssh_port "$ssh_port" --arg owner "$owner" --arg repo_root "$root" \
         --arg lease_token_sha256 "$token_sha256" \
         --arg ephemeral "$ephemeral" \
         --arg idle_limit "$idle_limit" \
         --argjson repos "$repos_json" \
-    '{holder:$holder, project:$project, since:$since, key:$key, ssh_port:$ssh_port, owner:$owner, repo_root:$repo_root, repos:$repos} + (if $lease_token_sha256 == "" then {} else {lease_token_sha256:$lease_token_sha256} end) + (if ($ephemeral == "1" or $ephemeral == "true") then {ephemeral:true} else {} end) + (if ($idle_limit | test("^[1-9][0-9]*$")) then {idle_limit:($idle_limit | tonumber)} else {} end)' \
+    '{holder:$holder, project:$project, since:$since, key:$key, ssh_port:$ssh_port, owner:$owner, repo_root:$repo_root, repos:$repos} + (if $project_label == "" then {} else {project_label:$project_label} end) + (if ($slot_num | test("^[0-9]+$")) then {slot_num:($slot_num | tonumber)} else {} end) + (if $lease_token_sha256 == "" then {} else {lease_token_sha256:$lease_token_sha256} end) + (if ($ephemeral == "1" or $ephemeral == "true") then {ephemeral:true} else {} end) + (if ($idle_limit | test("^[1-9][0-9]*$")) then {idle_limit:($idle_limit | tonumber)} else {} end)' \
     >"$file.tmp.$$"
   mv "$file.tmp.$$" "$file"
 }

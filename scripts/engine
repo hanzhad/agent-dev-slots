@@ -77,6 +77,8 @@ install_engine() {
   docker rm -f "$name" >/dev/null 2>&1 || true
 
   set -- run -d --name "$name" --restart unless-stopped \
+    --label com.docker.compose.project=0-engine \
+    --label com.docker.compose.service=engine \
     --user "$uid:$gid" --group-add "$socket_gid" \
     -e "HOME=$HOME" -e "DEV_CONTAINER_HOME=$state" -e "DEV_CONTAINER_PROJECTS_ROOT=$root" \
     --tmpfs "$HOME:uid=$uid,gid=$gid,mode=0700,size=64m" \

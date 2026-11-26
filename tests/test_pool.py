@@ -114,7 +114,14 @@ class PoolHarness(DevContainerHarness):
         return out[start:out.index('"', start)]
 
     def slot_name(self, slot_id):
+        if slot_id.startswith("0-") and slot_id.endswith("-" + self.prefix):
+            return slot_id[2 : -len("-" + self.prefix)]
         return slot_id[len(self.prefix) + 1:]
+
+    def slot_num(self, slot_id):
+        if slot_id.startswith("0-slot-"):
+            return int(slot_id.split("-", 3)[2])
+        return int(slot_id.rsplit("-", 1)[1])
 
     def lease_exists(self, slot_id):
         return os.path.isfile(os.path.join(self.state_dir, "leases", f"{slot_id}.json"))
@@ -233,7 +240,7 @@ class SharedBehaviour:
 
         slot_id = self.harness.slot_id(self.harness.acquire("worker"))
 
-        number = int(slot_id.rsplit("-", 1)[1])
+        number = self.harness.slot_num(slot_id)
         ports = self.harness.ports_of(slot_id)
         for index, name in enumerate(self.harness.port_names):
             self.assertEqual(int(ports[name]), slot_port(number, index), name)
@@ -331,7 +338,7 @@ class OnePool(PoolTestCase):
 
         for harness in (self.harness, *others, self.harness, *others):
             slot_id = harness.slot_id(harness.acquire("worker"))
-            numbers.append(slot_id.rsplit("-", 1)[1])
+            numbers.append(str(harness.slot_num(slot_id)))
             taken += list(harness.ports_of(slot_id).values())
 
         self.assertEqual(len(set(numbers)), 6, numbers)

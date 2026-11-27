@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -148,10 +149,27 @@ class PureCallerHelpers(unittest.TestCase):
         real_sleep = shutil.which("sleep")
         self.assertTrue(real_sleep)
 
+        hold_fifo = os.path.join(tmp, "hold.fifo")
+        os.mkfifo(hold_fifo)
+        hold_fd = os.open(hold_fifo, os.O_RDWR | os.O_NONBLOCK)
+
+        def close_hold_fd():
+            nonlocal hold_fd
+            if hold_fd is not None:
+                try:
+                    os.close(hold_fd)
+                except OSError:
+                    pass
+                hold_fd = None
+
+        self.addCleanup(close_hold_fd)
+
         mid_bin = os.path.join(tmp, "mid ) one")
         leaf_bin = os.path.join(tmp, "leaf (two) )")
-        os.symlink(real_sleep, mid_bin)
-        os.symlink(real_sleep, leaf_bin)
+        for script_path in (mid_bin, leaf_bin):
+            with open(script_path, "w", encoding="utf-8") as handle:
+                handle.write(f"#!/bin/sh\nexec <{shlex.quote(hold_fifo)}\nIFS= read -r _ || :\n")
+            os.chmod(script_path, 0o755)
 
         no_ps_bin = os.path.join(tmp, "no-ps-bin")
         os.makedirs(no_ps_bin)
@@ -169,7 +187,7 @@ class PureCallerHelpers(unittest.TestCase):
             [
                 "bash",
                 "-c",
-                'bash -c \'"$1" 60 & echo $! > "$3"; exec "$2" 60\' bash "$1" "$2" "$3" & echo $! > "$4"; wait',
+                'bash -c \'"$1" & echo $! > "$3"; exec "$2"\' bash "$1" "$2" "$3" & echo $! > "$4"; wait',
                 "bash",
                 leaf_bin,
                 mid_bin,
@@ -180,6 +198,7 @@ class PureCallerHelpers(unittest.TestCase):
         )
 
         def cleanup_root_holder():
+            close_hold_fd()
             if root_holder.poll() is None:
                 try:
                     os.killpg(root_holder.pid, signal.SIGKILL)
@@ -211,10 +230,12 @@ class PureCallerHelpers(unittest.TestCase):
                     os.path.isfile(f"/proc/{mid_pid}/stat")
                     and ") " in _read_text(f"/proc/{mid_pid}/stat")
                     and "mid ) one" in _read_text(f"/proc/{mid_pid}/stat")
+                    and os.path.isfile(f"/proc/{leaf_pid}/stat")
+                    and "leaf (two) )" in _read_text(f"/proc/{leaf_pid}/stat")
                 ),
                 timeout=5.0,
                 interval=0.02,
-                message="mid process did not exec weird comm name",
+                message="descendant processes did not exec weird comm names",
             )
 
         env = dict(os.environ)

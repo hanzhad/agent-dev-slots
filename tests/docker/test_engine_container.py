@@ -34,7 +34,18 @@ def base_image():
 class ListedTools(RealEngineCase):
     def test_the_packages_added_to_the_base_are_exactly_the_allow_list(self):
         world = set(self.inside("cat", "/etc/apk/world").stdout.split())
-        base = set(docker("run", "--rm", "--entrypoint", "cat", base_image(), "/etc/apk/world").stdout.split())
+        base_ref = base_image()
+        if docker("image", "inspect", base_ref, check=False).returncode != 0:
+            # containerd-snapshotter can transiently fail with "lease does not exist"
+            # right after BuildKit cache import/export in CI.
+            for attempt in range(3):
+                pulled = docker("pull", base_ref, check=False)
+                if pulled.returncode == 0:
+                    break
+                if "lease does not exist" not in pulled.stderr or attempt == 2:
+                    raise AssertionError(f"docker pull {base_ref} failed: {pulled.stderr}")
+                time.sleep(1)
+        base = set(docker("run", "--rm", "--entrypoint", "cat", base_ref, "/etc/apk/world").stdout.split())
         self.assertEqual(world - base, listed_tools())
 
     def test_every_listed_package_is_installed(self):

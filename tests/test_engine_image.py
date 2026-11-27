@@ -10,7 +10,7 @@ TOOLS = os.path.join(REPO_ROOT, "image", "tools.txt")
 # What the engine needs at run time, by the package that carries it.
 REQUIRED = {
     "bash", "coreutils", "git", "jq", "docker-cli", "docker-cli-compose",
-    "docker-cli-buildx", "openssh-keygen", "openssl", "curl", "tar", "tini", "github-cli",
+    "docker-cli-buildx", "openssh-keygen", "openssl", "curl", "tar", "tini", "github-cli", "perl",
 }
 
 

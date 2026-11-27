@@ -357,6 +357,29 @@ class SlotCopyFilesAndOverlays(DevContainerTestCase):
         with open(dest, encoding="utf-8") as f:
             self.assertEqual(f.read(), "API_SECRET=supersecret\n")
 
+    def test_up_with_secrets_on_stopped_volume_slot_does_not_invoke_compose_run(self):
+        self.harness.build_fixture_repo(with_parent_env=MAIN_ENV)
+        with open(os.path.join(self.harness.main_devcontainer(), "docker-compose.secrets.yml"), "w", encoding="utf-8") as f:
+            f.write("services: {}\n")
+        secret_file = os.path.join(self.harness.fixture_repo, ".env.test.local")
+        with open(secret_file, "w", encoding="utf-8") as f:
+            f.write("API_SECRET=supersecret\n")
+
+        acq = self.harness.run("acquire", "--for", "task-secrets")
+        self.assertEqual(acq.returncode, 0, acq.stderr.decode())
+        name = self.harness.acquired_slot_name(acq)
+        self.harness.mark_stopped(name)
+
+        with open(self.harness.docker_log, encoding="utf-8") as f:
+            before = len(f.read().splitlines())
+        result = self.harness.run("up", name, "--secrets", "--for", "task-secrets")
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        with open(self.harness.docker_log, encoding="utf-8") as f:
+            new_lines = f.read().splitlines()[before:]
+        compose_runs = [l for l in new_lines if "compose " in l and " run " in f" {l} "]
+        self.assertEqual(compose_runs, [], f"cmd_up --secrets invoked compose run on stopped volume slot: {compose_runs}")
+        self.assertTrue(any(l.startswith("ARGS: run ") for l in new_lines), new_lines)
+
 
 class AbandonedAndForeignVolumeReap(DevContainerTestCase):
     def test_reap_pass_3_removes_stopped_unleased_volume_slot_and_frees_number(self):

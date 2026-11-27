@@ -134,8 +134,8 @@ apply_checkout_git_identity() {
     else
       subs=(docs/repo docs/fix)
     fi
-    slot_sh "$sid" sh -c \
-      'set -e; gname=$1; gemail=$2; shift 2; for repo in "$@"; do [ -e "$repo/.git" ] || continue; git -C "$repo" config --local user.name "$gname"; [ -z "$gemail" ] || git -C "$repo" config --local user.email "$gemail"; git -C "$repo" config --local gpg.format ssh; git -C "$repo" config --local user.signingkey /home/node/.ssh/container_signing.pub; git -C "$repo" config --local commit.gpgsign true; git -C "$repo" config --local tag.gpgsign true; git -C "$repo" config --local core.checkStat minimal; done' \
+    slot_exec_stream "$sid" sh -c \
+      'set -e; gname=$1; gemail=$2; shift 2; for repo in "$@"; do [ -e "$repo/.git" ] || continue; git -C "$repo" -c safe.directory="*" config --local user.name "$gname"; [ -z "$gemail" ] || git -C "$repo" -c safe.directory="*" config --local user.email "$gemail"; git -C "$repo" -c safe.directory="*" config --local gpg.format ssh; git -C "$repo" -c safe.directory="*" config --local user.signingkey /home/node/.ssh/container_signing.pub; git -C "$repo" -c safe.directory="*" config --local commit.gpgsign true; git -C "$repo" -c safe.directory="*" config --local tag.gpgsign true; git -C "$repo" -c safe.directory="*" config --local core.checkStat minimal; done' \
       sh "$name" "$email" "." ${subs[@]+"${subs[@]}"} || die "could not set the git identity inside '$sid' — the reason is above this line."
   fi
   echo "▸ synced this checkout's local git identity to '$name' (from $env_file)"

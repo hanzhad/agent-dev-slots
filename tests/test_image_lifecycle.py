@@ -33,10 +33,10 @@ drop_unused_stale_images slot NEW
 cat "$LOG"
 """
 
-# build_slot_image against a shell `docker` that holds one image tag whose id
-# the "build" moves along IDS (space separated, one step per build). Every
-# `rmi` is written to the log; BUSY names an id a container still uses and
-# RMI_FAIL makes `rmi` fail. Nothing here touches a real docker.
+# build_slot_image against a shell `docker` that holds one tagged image and
+# moves superseded IDs into a dangling list on each build. Every `image rm` is
+# written to the log; BUSY names an id a container still uses and RMI_FAIL
+# makes `image rm` fail. Nothing here touches a real docker.
 SUPERSEDE_SCRIPT = r"""
 set -u
 source "$REPO/lib/images.sh"
@@ -44,27 +44,53 @@ die() { echo "die: $*" >&2; exit 1; }
 STATE=$(mktemp -d)
 LOG=$STATE/log
 : >"$LOG"
+: >"$STATE/dangling"
 set -- $IDS
 echo "$1" >"$STATE/id"
 shift
 STEPS=("$@")
 docker() {
   case "$1 $2" in
-    "image ls") echo slot-app:latest ;;
+    "image ls")
+      if [[ " $* " == *"dangling=true"* ]]; then
+        cat "$STATE/dangling"
+      elif [[ " $* " == *"--format {{.ID}}"* ]]; then
+        cat "$STATE/id" "$STATE/dangling" | sort -u
+      else
+        echo slot-app:latest
+      fi ;;
     "image inspect")
       if [[ "$*" == *Labels* ]]; then echo H; else cat "$STATE/id"; fi ;;
     "ps -aq") [[ " $* " == *"ancestor=${BUSY:-none}"* ]] && echo abc123 ;;
     "ps -a") [[ " $* " == *"ancestor=${BUSY:-none}"* ]] && echo abc123 ;;
-    rmi*) echo "rmi $2" >>"$LOG"; [[ -z "${RMI_FAIL:-}" ]] ;;
+    "image rm")
+      local id="${@: -1}"
+      echo "rm $id" >>"$LOG"
+      [[ -z "${RMI_FAIL:-}" ]] || return 1
+      grep -Fxv -- "$id" "$STATE/dangling" >"$STATE/dangling.tmp" || true
+      mv "$STATE/dangling.tmp" "$STATE/dangling"
+      ;;
   esac
 }
 slot_build_hash() { echo H; }
-slot_compose() { echo "${STEPS[$STEP]}" >"$STATE/id"; STEP=$((STEP + 1)); }
+slot_compose() {
+  local old new
+  old=$(cat "$STATE/id")
+  new="${STEPS[$STEP]}"
+  if [[ "$new" != "$old" ]]; then
+    echo "$old" >>"$STATE/dangling"
+  fi
+  echo "$new" >"$STATE/id"
+  STEP=$((STEP + 1))
+}
 drop_unused_stale_images() { :; }
 STEP=0
 for _ in "${STEPS[@]}"; do
   build_slot_image "" slot || { echo "BUILD_FAILED"; break; }
 done
+if [[ -n "${EXTRA_SWEEP:-}" ]]; then
+  sweep_dangling_slot_images slot
+fi
 cat "$LOG"
 """
 
@@ -149,28 +175,98 @@ class SupersededImages(unittest.TestCase):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
         )
 
-    def rmis(self, result):
-        return [line for line in result.stdout.splitlines() if line.startswith("rmi ")]
+    def rms(self, result):
+        return [line for line in result.stdout.splitlines() if line.startswith("rm ")]
 
-    def test_two_consecutive_rebuilds_remove_each_superseded_id_once(self):
-        result = self.run_script("sha256:A sha256:B sha256:C")
-        self.assertEqual(self.rmis(result), ["rmi sha256:A", "rmi sha256:B"])
-        self.assertNotIn("rmi sha256:C", result.stdout)
+    def test_two_consecutive_rebuilds_remove_each_dangling_id_once_and_sweep_is_idempotent(self):
+        result = self.run_script("sha256:A sha256:B sha256:C", EXTRA_SWEEP="1")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.rms(result), ["rm sha256:A", "rm sha256:B"])
+        self.assertNotIn("rm sha256:C", result.stdout)
 
-    def test_an_old_image_a_container_uses_is_never_removed(self):
+    def test_a_dangling_image_a_container_uses_is_never_removed(self):
         result = self.run_script("sha256:A sha256:B", BUSY="sha256:A")
-        self.assertEqual(self.rmis(result), [])
+        self.assertEqual(self.rms(result), [])
         self.assertNotIn("BUILD_FAILED", result.stdout)
 
-    def test_a_failing_rmi_is_logged_and_the_build_still_succeeds(self):
+    def test_a_failing_rm_is_logged_and_the_build_still_succeeds(self):
         result = self.run_script("sha256:A sha256:B", RMI_FAIL="1")
         self.assertNotIn("BUILD_FAILED", result.stdout)
-        self.assertEqual(self.rmis(result), ["rmi sha256:A"])
+        self.assertEqual(self.rms(result), ["rm sha256:A"])
         self.assertIn("sha256:A", result.stderr)
 
     def test_an_unchanged_id_is_not_removed(self):
         result = self.run_script("sha256:A sha256:A")
-        self.assertEqual(self.rmis(result), [])
+        self.assertEqual(self.rms(result), [])
+
+    def test_slot_image_names_filters_dangling_and_none_and_slot_images_current_rejects_empty(self):
+        script = r"""
+        set -u
+        source "$REPO/lib/images.sh"
+        ARGS_LOG=$(mktemp)
+        docker() {
+          case "$1 $2" in
+            "image ls")
+              echo "$*" >> "$ARGS_LOG"
+              printf '%s\n' '<none>:<none>' '<none>:latest' 'slot-app:<none>' 'slot-app:latest'
+              ;;
+            "image inspect") echo H ;;
+          esac
+        }
+        names=$(slot_image_names slot)
+        echo "NAMES=$names"
+        echo "ARGS=$(cat "$ARGS_LOG")"
+        docker() {
+          case "$1 $2" in
+            "image ls") : ;;
+          esac
+        }
+        if slot_images_current slot H; then echo "EMPTY=0"; else echo "EMPTY=1"; fi
+        """
+        res = subprocess.run(
+            ["bash", "-c", script],
+            env={**os.environ, "REPO": REPO_ROOT},
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+        )
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("NAMES=slot-app:latest\n", res.stdout)
+        self.assertIn("dangling=false", res.stdout)
+        self.assertIn("EMPTY=1", res.stdout)
+
+    def test_remove_slot_images_removes_dangling_images_by_id(self):
+        script = r"""
+        set -u
+        source "$REPO/lib/images.sh"
+        STATE=$(mktemp -d)
+        echo "sha256:dangling1" > "$STATE/ids"
+        LOG="$STATE/log"
+        : > "$LOG"
+        docker() {
+          case "$1 $2" in
+            "image ls")
+              if [[ " $* " == *"--format {{.ID}}"* ]]; then
+                cat "$STATE/ids"
+              else
+                :
+              fi ;;
+            "image rm")
+              echo "rm ${@: -1}" >> "$LOG"
+              : > "$STATE/ids"
+              ;;
+          esac
+        }
+        remove_slot_images slot
+        echo "RC=$?"
+        cat "$LOG"
+        """
+        res = subprocess.run(
+            ["bash", "-c", script],
+            env={**os.environ, "REPO": REPO_ROOT},
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
+        )
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("RC=0", res.stdout)
+        self.assertIn("rm sha256:dangling1", res.stdout)
 
 
 class BuildsUseTheCacheUnlessAskedNot(DevContainerTestCase):

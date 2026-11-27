@@ -133,7 +133,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$verb" "$*" "${GH_TOKEN-UNSET}" "${COMPOS
 if [[ "$verb" == up && -f "$envfile" ]]; then
   { echo UP; cat "$envfile"; } >> "$fake/up-env.log"
 fi
-if [[ "$verb" == run && "${cmd[*]-}" != *dev-container-clone* ]]; then
+if [[ "${1:-}" == compose && "$verb" == run && "${cmd[*]-}" != *dev-container-clone* ]]; then
   if [[ -n "${WORKSPACE_DIR:-}" ]]; then
     if [[ -d "$WORKSPACE_DIR" ]]; then
       cd "$WORKSPACE_DIR"

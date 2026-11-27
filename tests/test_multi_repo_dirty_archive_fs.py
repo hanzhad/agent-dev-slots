@@ -175,14 +175,14 @@ if [[ -n "$project" && -f "$DOCKER_STUB_STATE/$project.helperfail" ]]; then
   esac
 fi
 
-if [[ "${1:-}" == compose && "$*" == *dev-container-clone* ]]; then
+if [[ ( "${1:-}" == compose || "${1:-}" == run ) && "$*" == *dev-container-clone* ]]; then
   vol="${SLOT_WORKSPACE_VOLUME:-${project}-workspace}"
-  voldir="$DOCKER_STUB_STATE/volumes/$vol"
-  mkdir -p "$voldir"
   src="" origin="" prev=""
   seen_ws=0
   for a in "$@"; do
-    if [[ "$prev" == "-v" && "$a" == *:/src* ]]; then
+    if [[ "$prev" == "-v" && "$a" == *:/workspace* ]]; then
+      vol="${a%%:/workspace*}"
+    elif [[ "$prev" == "-v" && "$a" == *:/src* ]]; then
       src="${a%%:/src*}"
     fi
     if (( seen_ws )) && [[ -z "$origin" ]]; then
@@ -191,6 +191,8 @@ if [[ "${1:-}" == compose && "$*" == *dev-container-clone* ]]; then
     [[ "$a" == "/workspace" ]] && seen_ws=1
     prev="$a"
   done
+  voldir="$DOCKER_STUB_STATE/volumes/$vol"
+  mkdir -p "$voldir"
   if [[ -n "$src" && -d "$src" ]]; then
     rm -rf "$voldir"
     mkdir -p "$voldir"

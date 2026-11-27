@@ -6,6 +6,7 @@ git                 # clones, branch proofs, merge-tree --write-tree
 jq                  # leases and state are JSON
 docker-cli          # the client; the daemon is the host's, through the mounted socket
 docker-cli-compose  # docker compose, for the slot stacks
+docker-cli-buildx   # BuildKit builder for docker compose build
 openssh-keygen      # lease keys
 openssl             # signing for the project's own key files
 curl                # HTTP calls the engine makes

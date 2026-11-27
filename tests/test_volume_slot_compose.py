@@ -16,6 +16,19 @@ set -u
 
 calls_log="${STRICT_DOCKER_CALLS_LOG:-/dev/null}"
 echo "$@" >> "$calls_log"
+if [[ -n "${STRICT_DOCKER_ENV_LOG:-}" ]]; then
+  printf '%s\tBUILDKIT=%s\tATTEST=%s\tGH=%s\tGITHUB=%s\n' \
+    "$1 ${2:-}" \
+    "${DOCKER_BUILDKIT-UNSET}" \
+    "${BUILDX_NO_DEFAULT_ATTESTATIONS-UNSET}" \
+    "${GH_TOKEN-UNSET}" \
+    "${GITHUB_TOKEN-UNSET}" >> "$STRICT_DOCKER_ENV_LOG"
+fi
+
+if [[ "${1:-}" == buildx && "${2:-}" == version ]]; then
+  [[ -z "${STRICT_DOCKER_NO_BUILDX:-}" ]] || exit 1
+  exit 0
+fi
 
 if [[ "${1:-}" == compose ]]; then
   skip_next=0
@@ -50,12 +63,12 @@ if [[ "${1:-}" == compose ]]; then
   elif [[ "$verb_seen" == exec ]]; then
     exit 0
   elif [[ "$verb_seen" == ps ]]; then
-    echo "app"
+    [[ -z "${STRICT_DOCKER_STOPPED:-}" ]] && echo "app"
     exit 0
   elif [[ "$verb_seen" == port ]]; then
     echo "42001"
     exit 0
-  elif [[ "$verb_seen" == up || "$verb_seen" == down || "$verb_seen" == stop || "$verb_seen" == rm ]]; then
+  elif [[ "$verb_seen" == up || "$verb_seen" == down || "$verb_seen" == stop || "$verb_seen" == rm || "$verb_seen" == build ]]; then
     exit 0
   fi
 elif [[ "${1:-}" == volume ]]; then
@@ -227,6 +240,105 @@ class VolumeSlotComposeTestCase(DevContainerTestCase):
             readme,
             "README.md must document agent git identity env var GIT_USER_EMAIL",
         )
+
+    def test_slot_compose_sets_buildkit_only_for_build_and_up_and_memoizes_scrubbed_probe(self):
+        env_log = os.path.join(self.harness.tmp, "strict_docker_env.log")
+        slot_id = f"{PROJECT_PREFIX}-slot-1"
+        script = f"""
+        unset DOCKER_BUILDKIT BUILDX_NO_DEFAULT_ATTESTATIONS
+        export GH_TOKEN=secret-gh GITHUB_TOKEN=secret-github
+        source "{ENGINE}"
+        slot_compose "{slot_id}" "{slot_id}" config --format json >/dev/null
+        slot_compose "{slot_id}" "{slot_id}" ps -q >/dev/null
+        slot_compose "{slot_id}" "{slot_id}" exec -T app true
+        slot_compose "{slot_id}" "{slot_id}" build
+        slot_compose "{slot_id}" "{slot_id}" up -d
+        """
+        proc = self._call_bash(script, STRICT_DOCKER_ENV_LOG=env_log)
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode())
+        with open(env_log, encoding="utf-8") as f:
+            lines = [l.strip() for l in f if l.strip()]
+
+        buildx_probes = [l for l in lines if l.startswith("buildx version\t")]
+        self.assertEqual(len(buildx_probes), 1, f"expected 1 memoized buildx probe, got: {lines}")
+        self.assertIn("GH=UNSET\tGITHUB=UNSET", buildx_probes[0])
+
+        compose_lines = [l for l in lines if l.startswith("compose ")]
+        non_build_lines = compose_lines[:4]
+        build_up_lines = compose_lines[4:]
+        for line in non_build_lines:
+            self.assertIn("BUILDKIT=UNSET", line, line)
+        for line in build_up_lines:
+            self.assertIn("BUILDKIT=1\tATTEST=1", line, line)
+
+    def test_slot_compose_buildkit_fallback_without_buildx_and_respects_explicit_zero(self):
+        env_log = os.path.join(self.harness.tmp, "strict_docker_env.log")
+        slot_id = f"{PROJECT_PREFIX}-slot-1"
+        script_nobx = f"""
+        unset DOCKER_BUILDKIT BUILDX_NO_DEFAULT_ATTESTATIONS
+        source "{ENGINE}"
+        slot_compose "{slot_id}" "{slot_id}" build
+        """
+        proc = self._call_bash(script_nobx, STRICT_DOCKER_ENV_LOG=env_log, STRICT_DOCKER_NO_BUILDX="1")
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode())
+        with open(env_log, encoding="utf-8") as f:
+            lines = [l.strip() for l in f if l.strip()]
+        compose_build = [l for l in lines if l.startswith("compose ")][-1]
+        self.assertIn("BUILDKIT=UNSET\tATTEST=1", compose_build)
+
+        script_zero = f"""
+        export DOCKER_BUILDKIT=0
+        unset BUILDX_NO_DEFAULT_ATTESTATIONS
+        source "{ENGINE}"
+        slot_compose "{slot_id}" "{slot_id}" up -d
+        """
+        proc_zero = self._call_bash(script_zero, STRICT_DOCKER_ENV_LOG=env_log)
+        self.assertEqual(proc_zero.returncode, 0, proc_zero.stderr.decode())
+        with open(env_log, encoding="utf-8") as f:
+            lines = [l.strip() for l in f if l.strip()]
+        compose_up = [l for l in lines if l.startswith("compose ")][-1]
+        self.assertIn("BUILDKIT=0\tATTEST=1", compose_up)
+
+    def test_slot_helper_run_and_online_pass_uid_and_gid(self):
+        slot_id = f"{PROJECT_PREFIX}-slot-1"
+        script = f"""
+        source "{ENGINE}"
+        slot_helper_run "{slot_id}" true
+        slot_helper_run_online "{slot_id}" true
+        CONTAINER_UID=1001 CONTAINER_GID=1002 slot_helper_run "{slot_id}" true
+        CONTAINER_UID=1001 CONTAINER_GID=1002 slot_helper_run_online "{slot_id}" true
+        """
+        proc = self._call_bash(script)
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode())
+        with open(self.strict_calls_log, encoding="utf-8") as f:
+            runs = [l.strip() for l in f if l.strip().startswith("run ")]
+        self.assertEqual(len(runs), 4, runs)
+        self.assertIn("--user 1000:1000", runs[0])
+        self.assertIn("--user 1000:1000", runs[1])
+        self.assertIn("--user 1001:1002", runs[2])
+        self.assertIn("--user 1001:1002", runs[3])
+
+    def test_volume_only_git_identity_and_holder_helpers_use_slot_exec_stream_not_compose_run(self):
+        slot_id = f"{PROJECT_PREFIX}-slot-1"
+        script = f"""
+        unset DOCKER_STUB_STATE
+        source "{ENGINE}"
+        mkdir -p "$STATE/leases" "$STATE/env"
+        printf 'GIT_USER_NAME=Bot\\nGIT_USER_EMAIL=bot@example.com\\n' > "$STATE/env/{slot_id}.env"
+        echo '{{"holder":"task-65","owner":"Agent [a]","since":1700000000}}' > "$STATE/leases/{slot_id}.json"
+        apply_checkout_git_identity "{slot_id}"
+        write_holder_file "" "task-65" "Agent [a]" "{slot_id}" "1700000000"
+        clear_holder_file "{slot_id}"
+        """
+        proc = self._call_bash(script, STRICT_DOCKER_STOPPED="1")
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode())
+        with open(self.strict_calls_log, encoding="utf-8") as f:
+            calls = [l.strip() for l in f if l.strip()]
+        compose_runs = [c for c in calls if c.startswith("compose ") and " run " in f" {c} "]
+        self.assertEqual(compose_runs, [], f"unexpected compose run on stopped volume slot: {compose_runs}")
+        helper_runs = [c for c in calls if c.startswith("run ")]
+        self.assertGreaterEqual(len(helper_runs), 3, calls)
+        self.assertTrue(any('safe.directory="*"' in c for c in helper_runs), helper_runs)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,10 @@
 # shellcheck shell=bash disable=SC2034,SC2154
 
+if ! declare -F ensure_buildkit_env >/dev/null 2>&1; then
+  # shellcheck source=./toolbox.sh
+  source "$(CDPATH= cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/toolbox.sh"
+fi
+
 main_compose_dir="$repo_root/$COMPOSE_DIR"
 compose_file_of() {
   local files
@@ -140,6 +145,9 @@ slot_compose() {
     compose_args_of "$proj"
     scope=(-p "$proj" "${COMPOSE_ARGS[@]}")
   fi
+  case "${1:-}" in
+    build|up) ensure_buildkit_env ;;
+  esac
   (
     if [[ -n "$proj" ]]; then
       export WORKSPACE_DIR="$wsdir" SLOT_WORKSPACE_VOLUME="$wsvol" SLOT_ENV_FILE="$env_file" COMPOSE_PROJECT_NAME="$proj"
@@ -313,7 +321,7 @@ slot_helper_run() {
   local sid="$1"; shift
   local vol; vol=$(slot_volume_of "$sid")
   local image="${DEV_CONTAINER_ENGINE_IMAGE:-dev-container-engine:local}"
-  local uid="${CONTAINER_UID:-1000}"
+  local uid="${CONTAINER_UID:-1000}:${CONTAINER_GID:-1000}"
   docker run --rm -i --network none --cap-drop ALL --security-opt no-new-privileges \
     --user "$uid" -v "$vol:/workspace" -w /workspace "$image" "$@"
 }
@@ -324,7 +332,7 @@ slot_helper_run_online() {
   local sid="$1"; shift
   local vol; vol=$(slot_volume_of "$sid")
   local image="${DEV_CONTAINER_ENGINE_IMAGE:-dev-container-engine:local}"
-  local uid="${CONTAINER_UID:-1000}"
+  local uid="${CONTAINER_UID:-1000}:${CONTAINER_GID:-1000}"
   docker run --rm -i --cap-drop ALL --security-opt no-new-privileges \
     --user "$uid" ${FORGE_CONTAINER_ENV[@]+"${FORGE_CONTAINER_ENV[@]}"} \
     -v "$vol:/workspace" -w /workspace "$image" "$@"
@@ -366,6 +374,7 @@ install_slot() {
     echo "▸ installing dependencies into '$proj'"
   fi
   local ws="${dir:-slot-workspace}"
+  ensure_buildkit_env
   # The hook runs on the host with no forge credential: scrub the token names
   # the engine and gh read, whatever the caller's shell holds.
   local -a scrub=(-u GH_TOKEN -u GITHUB_TOKEN)

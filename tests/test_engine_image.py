@@ -10,7 +10,7 @@ TOOLS = os.path.join(REPO_ROOT, "image", "tools.txt")
 # What the engine needs at run time, by the package that carries it.
 REQUIRED = {
     "bash", "coreutils", "git", "jq", "docker-cli", "docker-cli-compose",
-    "openssh-keygen", "openssl", "curl", "tar", "tini", "github-cli",
+    "docker-cli-buildx", "openssh-keygen", "openssl", "curl", "tar", "tini", "github-cli",
 }
 
 
@@ -59,6 +59,11 @@ class EngineImageDefinition(unittest.TestCase):
     def test_the_allow_list_has_no_duplicates(self):
         listed = tools()
         self.assertEqual(len(listed), len(set(listed)), listed)
+
+    def test_dockerfile_enables_buildkit_and_disables_default_attestations(self):
+        text = "\n".join(read_lines(DOCKERFILE))
+        self.assertRegex(text, r"(?m)^ENV\s+.*\bDOCKER_BUILDKIT=1\b")
+        self.assertRegex(text, r"(?m)^ENV\s+.*\bBUILDX_NO_DEFAULT_ATTESTATIONS=1\b")
 
 
 if __name__ == "__main__":

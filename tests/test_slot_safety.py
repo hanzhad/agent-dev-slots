@@ -24,6 +24,7 @@ mkdir -p "$img"
 events="$state/image-events.log"
 next="${IMAGE_STUB_NEXT:?}"
 proj_of() {
+  if [[ "$1" =~ ^id-(dangling-)?(.+)$ ]]; then printf '%s' "${BASH_REMATCH[2]}"; return; fi
   if [[ "$1" =~ ^(0-[a-z0-9-]+|demo-[a-z0-9-]+)-app(:.*)?$ ]]; then printf '%s' "${BASH_REMATCH[1]}"; return; fi
   printf '%s' "$1" | grep -oE '(0-slot-[0-9]+-[a-z0-9-]+|demo-[a-z]+-[0-9]+)' | head -1
 }
@@ -42,6 +43,10 @@ do_build() {
   h=$(printf '%s' "$*" | grep -oE 'build-hash=[^ ]+' | head -1 | cut -d= -f2)
   [[ -n "$h" ]] || h=$(env | grep -iE 'build_hash=' | head -1 | cut -d= -f2)
   if [[ -f "$state/$p.build-noop" ]]; then [[ -f "$img/$p.present" ]] || : > "$img/$p.present"; return 0; fi
+  if [[ -f "$img/$p.present" && -f "$state/$p.dangling-on-rebuild" ]]; then
+    echo "id-dangling-$p" > "$state/$p.dangling"
+  fi
+  rm -f "$state/$p.untagged"
   : > "$img/$p.present"
   if [[ -n "$h" ]]; then printf '%s' "$h" > "$img/$p.label"; else drop "$p.label"; fi
 }
@@ -70,6 +75,7 @@ case "$first:$sub" in
         if [[ " $* " == *" --build "* ]]; then
           do_build "$project" "$@" || exit 1
         fi
+        [[ -f "$state/$project.unpin-on-up" ]] && rm -f "$state/$project.in-use"
         echo "up $project" >> "$events"
         ;;
       down) [[ " $* " == *" --rmi "* ]] && echo "down-rmi $project" >> "$events" ;;
@@ -95,23 +101,44 @@ case "$first:$sub" in
   *:rm)
     echo "rm-arg ${@: -1}" >> "$events"
     for a in "$@"; do
+      if [[ "$a" == id-dangling-* ]]; then
+        p="${a#id-dangling-}"
+        rm -f "$state/$p.dangling"
+        echo "rm-dangling $p" >> "$events"
+        continue
+      fi
       p=$(proj_of "$a")
-      [[ -n "$p" ]] && { drop "$p.present"; drop "$p.label"; rm -f "$state/$p.untagged"; echo "rm $p" >> "$events"; }
+      [[ -n "$p" ]] && { drop "$p.present"; drop "$p.label"; rm -f "$state/$p.untagged" "$state/$p.dangling"; echo "rm $p" >> "$events"; }
     done
     exit 0
     ;;
   *:ls)
-    want=""
+    want="" dangling_filter=""
     for a in "$@"; do
-      case "$a" in label=dev-container.compose-project=*) want="${a#label=dev-container.compose-project=}" ;; esac
+      case "$a" in
+        label=dev-container.compose-project=*) want="${a#label=dev-container.compose-project=}" ;;
+        dangling=true) dangling_filter=true ;;
+        dangling=false) dangling_filter=false ;;
+      esac
     done
     for f in "$img"/*.present; do
       [[ -f "$f" ]] || continue
       name=$(basename "$f" .present)
       [[ -z "$want" || "$name" == "$want" ]] || continue
-      if [[ " $* " == *"{{.ID}}"* ]]; then echo "id-$name"
-      elif [[ -f "$state/$name.untagged" ]]; then echo "<none>:<none>"
-      else echo "$name-app:latest"; fi
+      if [[ "$dangling_filter" == true ]]; then
+        [[ -f "$state/$name.untagged" ]] && { [[ " $* " == *"{{.ID}}"* ]] && echo "id-$name" || echo "<none>:<none>"; }
+        [[ -f "$state/$name.dangling" ]] && cat "$state/$name.dangling"
+      elif [[ "$dangling_filter" == false ]]; then
+        [[ -f "$state/$name.untagged" ]] && continue
+        if [[ " $* " == *"{{.ID}}"* ]]; then echo "id-$name"
+        else echo "$name-app:latest"; fi
+      else
+        if [[ " $* " == *"{{.ID}}"* ]]; then
+          echo "id-$name"
+          [[ -f "$state/$name.dangling" ]] && cat "$state/$name.dangling"
+        elif [[ -f "$state/$name.untagged" ]]; then echo "<none>:<none>"
+        else echo "$name-app:latest"; fi
+      fi
     done
     exit 0
     ;;
@@ -446,6 +473,57 @@ class SlotImages(ImageHarnessMixin, DevContainerTestCase):
         self.assertFalse(self.running(self.project))
         self.assertFalse(os.path.isfile(self.harness.lease_path("slot-1")))
         self.assertNotIn("up " + self.project, self.events())
+
+    def test_acquire_builds_image_once_and_clones_with_engine_helper_container(self):
+        custom_img = "dct99-engine:local"
+        env = dict(self.extra_env)
+        env["DEV_CONTAINER_ENGINE_IMAGE"] = custom_img
+        result = self.harness.run("acquire", "--for", "test", port_overrides=env)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        builds = [e for e in self.events() if e.startswith("build " + self.project)]
+        self.assertEqual(len(builds), 1, f"expected single build during acquire, got {builds}: {self.events()}")
+        with open(self.harness.docker_log, encoding="utf-8") as handle:
+            docker_lines = handle.read().splitlines()
+        clone_compose = [l for l in docker_lines if "compose " in l and "dev-container-clone" in l]
+        self.assertEqual(clone_compose, [], f"create_slot used compose run for clone: {clone_compose}")
+        clone_runs = [l for l in docker_lines if l.startswith("ARGS: run ") and "dev-container-clone" in l]
+        self.assertEqual(len(clone_runs), 1, docker_lines)
+        self.assertIn("--network none", clone_runs[0])
+        self.assertIn("--user 0", clone_runs[0])
+        self.assertIn(custom_img, clone_runs[0])
+        self.assertNotIn("--entrypoint", clone_runs[0])
+
+    def test_restart_sweeps_dangling_image_after_compose_up_unpins_old_container(self):
+        acq = self.engine("acquire", "--for", "test")
+        self.assertEqual(acq.returncode, 0, acq.stderr.decode())
+        self.mark(self.project, "in-use")
+        self.mark(self.project, "dangling-on-rebuild")
+        self.mark(self.project, "unpin-on-up")
+        git(self.harness.fixture_repo, "commit", "-q", "--allow-empty", "-m", "new commit")
+        res = self.engine("restart", "slot-1")
+        self.assertEqual(res.returncode, 0, res.stderr.decode())
+        events = self.events()
+        self.assertIn("up " + self.project, events)
+        self.assertIn("rm-dangling " + self.project, events)
+        self.assertGreater(events.index("rm-dangling " + self.project), events.index("up " + self.project))
+
+    def test_image_stub_proj_of_resolves_arbitrary_and_dangling_ids(self):
+        for project in ("myproj", "demo-foo-7"):
+            self.plant_image(project, label="h1")
+            self.mark(project, "in-use")
+            for image_id in (f"id-{project}", f"id-dangling-{project}"):
+                ps = subprocess.run(
+                    ["docker", "ps", "-q", "--filter", f"ancestor={image_id}"],
+                    env=self.harness._env(self.extra_env),
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True,
+                )
+                self.assertEqual(ps.stdout.strip(), "abc123", f"ps failed for {image_id}")
+                insp = subprocess.run(
+                    ["docker", "inspect", image_id],
+                    env=self.harness._env(self.extra_env),
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True,
+                )
+                self.assertIn("h1", insp.stdout, f"inspect failed for {image_id}")
 
 
 class RestartInstall(ImageHarnessMixin, DevContainerTestCase):

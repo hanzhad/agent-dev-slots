@@ -24,7 +24,7 @@ mkdir -p "$img"
 events="$state/image-events.log"
 next="${IMAGE_STUB_NEXT:?}"
 proj_of() {
-  if [[ "$1" =~ ^id-(?:dangling-)?(.+)$ ]]; then printf '%s' "${BASH_REMATCH[1]}"; return; fi
+  if [[ "$1" =~ ^id-(dangling-)?(.+)$ ]]; then printf '%s' "${BASH_REMATCH[2]}"; return; fi
   if [[ "$1" =~ ^(0-[a-z0-9-]+|demo-[a-z0-9-]+)-app(:.*)?$ ]]; then printf '%s' "${BASH_REMATCH[1]}"; return; fi
   printf '%s' "$1" | grep -oE '(0-slot-[0-9]+-[a-z0-9-]+|demo-[a-z]+-[0-9]+)' | head -1
 }
@@ -506,6 +506,24 @@ class SlotImages(ImageHarnessMixin, DevContainerTestCase):
         self.assertIn("up " + self.project, events)
         self.assertIn("rm-dangling " + self.project, events)
         self.assertGreater(events.index("rm-dangling " + self.project), events.index("up " + self.project))
+
+    def test_image_stub_proj_of_resolves_arbitrary_and_dangling_ids(self):
+        for project in ("myproj", "demo-foo-7"):
+            self.plant_image(project, label="h1")
+            self.mark(project, "in-use")
+            for image_id in (f"id-{project}", f"id-dangling-{project}"):
+                ps = subprocess.run(
+                    ["docker", "ps", "-q", "--filter", f"ancestor={image_id}"],
+                    env=self.harness._env(self.extra_env),
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True,
+                )
+                self.assertEqual(ps.stdout.strip(), "abc123", f"ps failed for {image_id}")
+                insp = subprocess.run(
+                    ["docker", "inspect", image_id],
+                    env=self.harness._env(self.extra_env),
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True,
+                )
+                self.assertIn("h1", insp.stdout, f"inspect failed for {image_id}")
 
 
 class RestartInstall(ImageHarnessMixin, DevContainerTestCase):

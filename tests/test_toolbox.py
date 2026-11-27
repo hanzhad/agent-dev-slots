@@ -421,12 +421,17 @@ class TestEnsureToolboxImage(unittest.TestCase):
         stub = """#!/usr/bin/env bash
 set -u
 echo "$*" >> "${TB_LOG:?}"
+if [[ "${1:-}" == buildx && "${2:-}" == version ]]; then
+  [[ ! -f "${TB_STATE:?}/no-buildx" ]] || exit 1
+  exit 0
+fi
 if [[ "${1:-}" == image && "${2:-}" == inspect ]]; then
   ref="${@: -1}"
   [[ -f "${TB_STATE:?}/present" ]] && grep -Fxq -- "$ref" "$TB_STATE/present" && exit 0
   exit 1
 fi
 if [[ "${1:-}" == build ]]; then
+  echo "DOCKER_BUILDKIT=${DOCKER_BUILDKIT-UNSET} BUILDX_NO_DEFAULT_ATTESTATIONS=${BUILDX_NO_DEFAULT_ATTESTATIONS-UNSET}" >> "${TB_STATE:?}/build-env.log"
   [[ ! -f "${TB_STATE:?}/fail-build" ]] || exit 1
   tag="" prev=""
   for a in "$@"; do
@@ -509,6 +514,35 @@ exit 0
         builds = [c for c in self._calls() if c.startswith("build ")]
         self.assertEqual(len(builds), 1, self._calls())
         self.assertIn(os.path.join(opt_root, "toolbox"), builds[0])
+
+    def test_ensure_toolbox_image_sets_buildkit_env_with_fallback_and_respects_explicit_zero(self):
+        env_log = os.path.join(self.docker_state, "build-env.log")
+
+        # 1. With buildx available and DOCKER_BUILDKIT unset -> DOCKER_BUILDKIT=1, attestations=1
+        res = self._run_lib('. "$1" && ensure_toolbox_image')
+        self.assertEqual(res.returncode, 0, output_of(res))
+        lines = read_text(env_log).splitlines()
+        self.assertEqual(lines[-1], "DOCKER_BUILDKIT=1 BUILDX_NO_DEFAULT_ATTESTATIONS=1")
+
+        # 2. Explicit DOCKER_BUILDKIT=0 is respected
+        res_zero = self._run_lib(
+            '. "$1" && ensure_toolbox_image',
+            DEV_CONTAINER_TOOLBOX_IMAGE="custom-tb:zero",
+            DOCKER_BUILDKIT="0",
+        )
+        self.assertEqual(res_zero.returncode, 0, output_of(res_zero))
+        lines = read_text(env_log).splitlines()
+        self.assertEqual(lines[-1], "DOCKER_BUILDKIT=0 BUILDX_NO_DEFAULT_ATTESTATIONS=1")
+
+        # 3. Without buildx -> DOCKER_BUILDKIT remains UNSET, attestations=1 still set
+        write_text(os.path.join(self.docker_state, "no-buildx"), "")
+        res_no_bx = self._run_lib(
+            'unset DOCKER_BUILDKIT; . "$1" && ensure_toolbox_image',
+            DEV_CONTAINER_TOOLBOX_IMAGE="custom-tb:nobx",
+        )
+        self.assertEqual(res_no_bx.returncode, 0, output_of(res_no_bx))
+        lines = read_text(env_log).splitlines()
+        self.assertEqual(lines[-1], "DOCKER_BUILDKIT=UNSET BUILDX_NO_DEFAULT_ATTESTATIONS=1")
 
 
 class TestRenderSlotOverlayYamlPureCore(unittest.TestCase):

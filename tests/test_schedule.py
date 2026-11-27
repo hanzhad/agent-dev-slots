@@ -357,6 +357,24 @@ class ReapAll(ScheduleCase):
 
         self.assertEqual(result.returncode, 0, self.output(result))
 
+    def test_reap_all_prunes_dangling_labelled_images_only_and_ignores_failure(self):
+        result = self.engine("reap", "--all")
+        self.assertEqual(result.returncode, 0, self.output(result))
+        lines = []
+        if os.path.isfile(self.harness.docker_log):
+            with open(self.harness.docker_log, encoding="utf-8") as handle:
+                lines = [line.strip() for line in handle if "image prune" in line or "builder prune" in line]
+        self.assertTrue(
+            any(
+                "image prune" in l
+                and "--filter label=dev-container.compose-project" in l
+                and "--filter until=1h" in l
+                for l in lines
+            ),
+            f"expected label-scoped image prune with until=1h in reap --all, got: {lines}",
+        )
+        self.assertFalse(any("builder prune" in l for l in lines), lines)
+
     def test_the_fast_job_is_reap_all_and_writes_to_its_log(self):
         gone = os.path.join(self.harness.tmp, "moved-away")
         self.write_lease("one", gone)

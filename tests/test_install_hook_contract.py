@@ -35,6 +35,8 @@ out="$state_dir/$project.hook-seen"
   echo "SLOT_GH_TOKEN=${SLOT_GH_TOKEN-UNSET}"
   echo "SLOT_WORKSPACE_VOLUME=${SLOT_WORKSPACE_VOLUME-UNSET}"
   echo "SLOT_ENV_FILE=${SLOT_ENV_FILE-UNSET}"
+  echo "DOCKER_BUILDKIT=${DOCKER_BUILDKIT-UNSET}"
+  echo "BUILDX_NO_DEFAULT_ATTESTATIONS=${BUILDX_NO_DEFAULT_ATTESTATIONS-UNSET}"
   if [[ -e "$state_dir/$project.image-hash" ]]; then echo "image_built=yes"; else echo "image_built=no"; fi
   echo "SECRET_IN_ENV=$(env | grep -v "^SECRET_PROBE=" | grep -c -F "$SECRET_PROBE" || true)"
 } > "$out"
@@ -103,6 +105,14 @@ class InstallHookInAVolumeSlot(DevContainerTestCase):
     def test_the_callers_own_forge_token_is_not_passed_to_the_hook(self):
         _, seen = self._seen(self._acquire_with_hook(env={"GH_TOKEN": "ghp_callers_own_token"}))
         self.assertEqual(seen["GH_TOKEN"], "UNSET")
+
+    def test_the_hook_receives_buildkit_env_when_buildx_is_available(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("DOCKER_BUILDKIT", None)
+            os.environ.pop("BUILDX_NO_DEFAULT_ATTESTATIONS", None)
+            _, seen = self._seen(self._acquire_with_hook())
+        self.assertEqual(seen["DOCKER_BUILDKIT"], "1")
+        self.assertEqual(seen["BUILDX_NO_DEFAULT_ATTESTATIONS"], "1")
 
     def test_a_failing_hook_stops_acquire_and_no_image_is_built(self):
         result = self._acquire_with_hook(hook=FAILING_HOOK)

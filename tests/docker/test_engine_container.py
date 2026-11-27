@@ -45,6 +45,7 @@ class ListedTools(RealEngineCase):
         for tool in ("bash", "jq", "git", "gh", "docker", "ssh-keygen", "openssl", "curl", "tar", "tini", "realpath"):
             self.assertEqual(self.inside("sh", "-c", "command -v " + tool, check=False).returncode, 0, tool)
         self.assertEqual(self.inside("docker", "compose", "version", check=False).returncode, 0)
+        self.assertEqual(self.inside("docker", "buildx", "version", check=False).returncode, 0)
         self.assertEqual(self.inside("realpath", "-m", "/a/../b").stdout.strip(), "/b")
 
     def test_the_engine_is_on_the_path_and_prints_its_usage(self):

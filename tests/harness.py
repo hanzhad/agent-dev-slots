@@ -473,6 +473,9 @@ case "${1:-}" in
     # the image a build left, found by the compose-project label filter
     case "${2:-}" in
       ls)
+        if [[ " $* " == *"dangling=true"* ]]; then
+          exit 0
+        fi
         for arg in "$@"; do
           case "$arg" in
             label=dev-container.compose-project=*)
@@ -647,24 +650,31 @@ case "${1:-}" in
   run)
     shift
     vol=""
+    src=""
     cmd=()
     while [[ $# -gt 0 ]]; do
       case "$1" in
         -v|--volume)
           if [[ "$2" == *:/workspace* ]]; then
             vol="${2%%:/workspace*}"
+          elif [[ "$2" == *:/src* ]]; then
+            src="${2%%:/src*}"
           fi
           shift 2 ;;
         -v*)
           varg="${1#-v}"
           if [[ "$varg" == *:/workspace* ]]; then
             vol="${varg%%:/workspace*}"
+          elif [[ "$varg" == *:/src* ]]; then
+            src="${varg%%:/src*}"
           fi
           shift ;;
         --volume=*)
           varg="${1#--volume=}"
           if [[ "$varg" == *:/workspace* ]]; then
             vol="${varg%%:/workspace*}"
+          elif [[ "$varg" == *:/src* ]]; then
+            src="${varg%%:/src*}"
           fi
           shift ;;
         -w|--workdir) shift 2 ;;
@@ -681,6 +691,30 @@ case "${1:-}" in
           break ;;
       esac
     done
+    if [[ "${cmd[*]-}" == *dev-container-clone* ]]; then
+      vol="${vol:-${SLOT_WORKSPACE_VOLUME:-${project}-workspace}}"
+      voldir="$state_dir/volumes/$vol"
+      mkdir -p "$voldir"
+      src="${src:-$proj_dir}"
+      if [[ -n "$src" && -d "$src" ]]; then
+        if [[ ! -d "$voldir/.git" ]]; then
+          rm -rf "$voldir"
+          mkdir -p "$voldir"
+          git clone --quiet "$src" "$voldir" 2>/dev/null || true
+        fi
+        origin=""
+        for (( i=0; i<${#cmd[@]}; i++ )); do
+          if [[ "${cmd[i]}" == "/workspace" && $((i+1)) -lt ${#cmd[@]} ]]; then
+            origin="${cmd[i+1]}"
+            break
+          fi
+        done
+        if [[ -n "$origin" && -d "$voldir/.git" ]]; then
+          git -C "$voldir" remote set-url origin "$origin" 2>/dev/null || true
+        fi
+      fi
+      exit 0
+    fi
     if [[ -n "$vol" ]]; then
       mkdir -p "$state_dir/volumes/$vol"
       cd "$state_dir/volumes/$vol" || exit 1

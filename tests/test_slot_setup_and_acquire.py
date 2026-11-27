@@ -868,6 +868,9 @@ exec "$(dirname "$0")/docker-real" "$@"
 
     LABELLED_IMAGE_DOCKER = """#!/usr/bin/env bash
 if [[ "${1:-}" == image && "${2:-}" == ls ]]; then
+  if [[ " $* " == *"dangling=true"* ]]; then
+    exit 0
+  fi
   echo "$(cat "$DOCKER_STUB_STATE/image.project")-app:latest"
   exit 0
 fi

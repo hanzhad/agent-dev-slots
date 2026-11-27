@@ -1026,7 +1026,7 @@ class CallerLifelineLifecycle(DevContainerTestCase):
                 timeout=30,
             )
 
-        # Case 1: docker volume rm fails — remove_slot_volume and abort_acquire_slot return 1 and keep reservation.
+        # Case 1: docker volume rm fails — confirm_slot_absent detects surviving volume, abort_acquire_slot returns 1 and keeps reservation.
         self.harness.write_volume_labels(
             vol,
             {
@@ -1125,6 +1125,49 @@ class CallerLifelineLifecycle(DevContainerTestCase):
         self.assertTrue(os.path.isfile(res_path), "reservation dropped when docker rm -f failed")
         os.remove(res_path)
         self.harness._write_stub("docker", DOCKER_STUB)
+
+    def test_teardown_dir_cleans_per_slot_state_when_volume_rm_fails(self):
+        acquired = self.harness.run("acquire", "--for", "teardown-holder", "--as", "Caller [s1]")
+        self.assertEqual(acquired.returncode, 0, acquired.stderr.decode())
+        sid = self.harness.slot_project_of("slot-1")
+        ports_file = self.harness.ports_path("slot-1")
+        env_file = self.harness.env_path("slot-1")
+        token_file = self.harness.lease_token_path("slot-1")
+        self.assertTrue(os.path.isfile(ports_file))
+        self.assertTrue(os.path.isfile(env_file))
+        self.assertTrue(os.path.isfile(token_file))
+
+        self.harness._write_stub("docker-real", DOCKER_STUB)
+        self.harness._write_stub(
+            "docker",
+            "#!/usr/bin/env bash\n"
+            'if [[ "${1:-}" == volume && "${2:-}" == rm ]]; then\n'
+            '  echo "volume is in use" >&2\n'
+            "  exit 1\n"
+            "fi\n"
+            'exec "$(dirname "$0")/docker-real" "$@"\n',
+        )
+
+        env = self.harness._env(None)
+        env["DEV_CONTAINER_LIB"] = "1"
+        body = (
+            '. "$0"; '
+            'if teardown_dir "" "$1"; then echo "TEARDOWN_RC=0"; else echo "TEARDOWN_RC=$?"; fi'
+        )
+        res = subprocess.run(
+            ["bash", "-c", body, self.harness.script, sid],
+            cwd=self.harness.tmp,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+        self.assertIn("TEARDOWN_RC=0", res.stdout.decode(), res.stderr.decode())
+        self.assertIn("could not remove volume", res.stderr.decode())
+        self.assertTrue(self.harness.volume_exists("slot-1"))
+        self.assertFalse(os.path.exists(ports_file), f"{ports_file} leaked when docker volume rm failed")
+        self.assertFalse(os.path.exists(env_file), f"{env_file} leaked when docker volume rm failed")
+        self.assertFalse(os.path.exists(token_file), f"{token_file} leaked when docker volume rm failed")
 
     def test_failed_disconnect_rollback_quarantines_slot_without_wedging_cap_until_reap_cleans_it(self):
         self._write_limits({"default": 1})

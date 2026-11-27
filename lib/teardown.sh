@@ -43,11 +43,8 @@ remove_slot_volume() {
     return 0
   fi
   echo "▸ removing volume $vol"
-  if ! docker volume rm "$vol" >/dev/null; then
-    echo "  ! could not remove volume $vol — a container still holds it" >&2
-    spec_reset "$proj"
-    return 1
-  fi
+  docker volume rm "$vol" >/dev/null \
+    || echo "  ! could not remove volume $vol — a container still holds it" >&2
   spec_reset "$proj"
 }
 

@@ -264,8 +264,8 @@ class VolumeSlotComposeTestCase(DevContainerTestCase):
         self.assertIn("GH=UNSET\tGITHUB=UNSET", buildx_probes[0])
 
         compose_lines = [l for l in lines if l.startswith("compose ")]
-        non_build_lines = compose_lines[:3]
-        build_up_lines = compose_lines[3:]
+        non_build_lines = compose_lines[:4]
+        build_up_lines = compose_lines[4:]
         for line in non_build_lines:
             self.assertIn("BUILDKIT=UNSET", line, line)
         for line in build_up_lines:
@@ -321,13 +321,14 @@ class VolumeSlotComposeTestCase(DevContainerTestCase):
     def test_volume_only_git_identity_and_holder_helpers_use_slot_exec_stream_not_compose_run(self):
         slot_id = f"{PROJECT_PREFIX}-slot-1"
         script = f"""
+        unset DOCKER_STUB_STATE
         source "{ENGINE}"
         mkdir -p "$STATE/leases" "$STATE/env"
-        printf 'GIT_USER_NAME=Bot\\nGIT_USER_EMAIL=bot@example.com\\n' > "$STATE/env/.env"
+        printf 'GIT_USER_NAME=Bot\\nGIT_USER_EMAIL=bot@example.com\\n' > "$STATE/env/{slot_id}.env"
         echo '{{"holder":"task-65","owner":"Agent [a]","since":1700000000}}' > "$STATE/leases/{slot_id}.json"
-        apply_checkout_git_identity "" "{slot_id}"
+        apply_checkout_git_identity "{slot_id}"
         write_holder_file "" "task-65" "Agent [a]" "{slot_id}" "1700000000"
-        clear_holder_file "" "{slot_id}"
+        clear_holder_file "{slot_id}"
         """
         proc = self._call_bash(script, STRICT_DOCKER_STOPPED="1")
         self.assertEqual(proc.returncode, 0, proc.stderr.decode())
@@ -337,7 +338,7 @@ class VolumeSlotComposeTestCase(DevContainerTestCase):
         self.assertEqual(compose_runs, [], f"unexpected compose run on stopped volume slot: {compose_runs}")
         helper_runs = [c for c in calls if c.startswith("run ")]
         self.assertGreaterEqual(len(helper_runs), 3, calls)
-        self.assertTrue(any("safe.directory=*" in c for c in helper_runs), helper_runs)
+        self.assertTrue(any('safe.directory="*"' in c for c in helper_runs), helper_runs)
 
 
 if __name__ == "__main__":

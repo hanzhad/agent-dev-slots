@@ -13,5 +13,7 @@ COPY templates /opt/dev-container/templates
 COPY image/toolbox /opt/dev-container/toolbox
 RUN ln -s /opt/dev-container/bin/dev-container /usr/local/bin/dev-container
 
+ENV DOCKER_BUILDKIT=1 BUILDX_NO_DEFAULT_ATTESTATIONS=1
+
 ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["dev-container", "schedule", "run"]

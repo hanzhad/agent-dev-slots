@@ -81,6 +81,7 @@ install_engine() {
     --label com.docker.compose.service=engine \
     --user "$uid:$gid" --group-add "$socket_gid" \
     -e "HOME=$HOME" -e "DEV_CONTAINER_HOME=$state" -e "DEV_CONTAINER_PROJECTS_ROOT=$root" \
+    -e "DEV_CONTAINER_ENGINE_IMAGE=$image" \
     --tmpfs "$HOME:uid=$uid,gid=$gid,mode=0700,size=64m" \
     --tmpfs "/run/dev-container:uid=$uid,gid=$gid,mode=0700,noexec,nosuid,nodev,size=16m" \
     -v "$state:$state" -v "$root:$root" \

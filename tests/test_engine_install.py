@@ -141,7 +141,7 @@ class EngineInstall(FakeDockerCase):
         self.assertIn("DEV_CONTAINER_ENGINE_IMAGE=dev-container-engine:local", default_envs)
 
         custom_img = "dct1234-engine:local"
-        res = self.install("--projects-root", self.projects, DEV_CONTAINER_ENGINE_IMAGE=custom_img)
+        res = self.install("--projects-root", self.projects, env=self.env(DEV_CONTAINER_ENGINE_IMAGE=custom_img))
         self.assertEqual(res.returncode, 0, res.stderr.decode())
         custom_call = self.calls_of("run")[-1]
         self.assertIn(f"DEV_CONTAINER_ENGINE_IMAGE={custom_img}", option_values(custom_call, "-e", "--env"))

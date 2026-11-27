@@ -715,9 +715,12 @@ create_slot() {
   svc=$(container_service_of "" "$proj") || exit 1
 
   echo "▸ cloning the main checkout into $vol"
-  slot_compose "$proj" run --rm --no-deps -T -u root \
-      -v "$repo_root:/src:ro" --entrypoint sh "$svc" -c \
-      'set -e; ws=$1; origin=$2; user=$3; cat_excludes=${6-}; git config --global --add safe.directory "*"; git clone --quiet --no-hardlinks --no-checkout /src "$ws/.dev-container-clone"; mv "$ws/.dev-container-clone/.git" "$ws/.git"; rmdir "$ws/.dev-container-clone"; git -C "$ws" remote set-url origin "$origin"; git -C "$ws" reset --quiet --hard; git -C "$ws" config --local core.checkStat minimal; [ ! -d "/src/$5" ] || [ -d "$ws/$5" ] || { set -f; tar -C /src -cf - $4 "$5" | tar -C "$ws" -xpf -; set +f; }; [ ! -f /src/project.env ] || [ -f "$ws/project.env" ] || cp /src/project.env "$ws/project.env"; [ ! -f /src/bin/dev-container ] || [ -f "$ws/bin/dev-container" ] || { mkdir -p "$ws/bin"; cp /src/bin/dev-container "$ws/bin/dev-container"; }; exclude=$(git -C "$ws" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || git -C "$ws" rev-parse --git-path info/exclude 2>/dev/null || echo "$ws/.git/info/exclude"); case "$exclude" in /*) ;; *) exclude="$ws/$exclude" ;; esac; mkdir -p "$(dirname "$exclude")"; for p in "/$5/" "/project.env" "/bin/dev-container"; do grep -Fxq "$p" "$exclude" 2>/dev/null || echo "$p" >>"$exclude"; done; for cp in $cat_excludes; do [ -n "$cp" ] || continue; grep -Fxq "/$cp" "$exclude" 2>/dev/null || printf "/%s\n" "$cp" >>"$exclude"; done; mounts=$(awk -v ws="$ws/" "index(\$5, ws) == 1 { print \$5 }" /proc/self/mountinfo); set --; for m in $mounts; do set -- "$@" -path "$m" -prune -o; done; find "$ws" "$@" -exec chown -h "$user:$user" {} +' sh "/workspace" "$origin_url" "${CONTAINER_USER:-node}" "$(devcontainer_exclude_words "$repo_root")" "$COMPOSE_DIR" "$excludes_sp" \
+  local engine_image="${DEV_CONTAINER_ENGINE_IMAGE:-dev-container-engine:local}"
+  local clone_owner="${CONTAINER_UID:-1000}:${CONTAINER_GID:-1000}"
+  docker run --rm --network none --user 0 \
+      -v "$vol:/workspace" -v "$repo_root:/src:ro" \
+      "$engine_image" sh -c \
+      'set -e; ws=$1; origin=$2; user=$3; cat_excludes=${6-}; git config --global --add safe.directory "*"; git clone --quiet --no-hardlinks --no-checkout /src "$ws/.dev-container-clone"; mv "$ws/.dev-container-clone/.git" "$ws/.git"; rmdir "$ws/.dev-container-clone"; git -C "$ws" remote set-url origin "$origin"; git -C "$ws" reset --quiet --hard; git -C "$ws" config --local core.checkStat minimal; [ ! -d "/src/$5" ] || [ -d "$ws/$5" ] || { set -f; tar -C /src -cf - $4 "$5" | tar -C "$ws" -xpf -; set +f; }; [ ! -f /src/project.env ] || [ -f "$ws/project.env" ] || cp /src/project.env "$ws/project.env"; [ ! -f /src/bin/dev-container ] || [ -f "$ws/bin/dev-container" ] || { mkdir -p "$ws/bin"; cp /src/bin/dev-container "$ws/bin/dev-container"; }; exclude=$(git -C "$ws" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || git -C "$ws" rev-parse --git-path info/exclude 2>/dev/null || echo "$ws/.git/info/exclude"); case "$exclude" in /*) ;; *) exclude="$ws/$exclude" ;; esac; mkdir -p "$(dirname "$exclude")"; for p in "/$5/" "/project.env" "/bin/dev-container"; do grep -Fxq "$p" "$exclude" 2>/dev/null || echo "$p" >>"$exclude"; done; for cp in $cat_excludes; do [ -n "$cp" ] || continue; grep -Fxq "/$cp" "$exclude" 2>/dev/null || printf "/%s\n" "$cp" >>"$exclude"; done; mounts=$(awk -v ws="$ws/" "index(\$5, ws) == 1 { print \$5 }" /proc/self/mountinfo); set --; for m in $mounts; do set -- "$@" -path "$m" -prune -o; done; find "$ws" "$@" -exec chown -h "$user" {} +' sh "/workspace" "$origin_url" "$clone_owner" "$(devcontainer_exclude_words "$repo_root")" "$COMPOSE_DIR" "$excludes_sp" \
     || die "cloning into '$proj' failed — the reason is above this line."
 
   apply_checkout_git_identity "$proj"
@@ -813,6 +816,7 @@ create_slot() {
     echo "  with the overlay $overlay"
   done < <(slot_overlay_files "$proj")
   slot_compose "$proj" up -d
+  sweep_dangling_slot_images "$proj"
 
   SLOT_DIR=""
   SLOT_ID="$proj"

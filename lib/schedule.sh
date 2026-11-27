@@ -238,6 +238,7 @@ cmd_reap_all() {
     DEV_CONTAINER_REPO_ROOT="$root" DEV_CONTAINER_CALLER_PWD="$root" bash "$engine_src" reap || rc=$?
     (( rc == 0 )) || echo "⚠ reap of $root exited $rc — going on to the next project" >&2
   done < <(collect_all_project_roots "▸")
+  docker image prune -f --filter "label=dev-container.compose-project" --filter "until=1h" >/dev/null 2>&1 || true
   exit 0
 }
 

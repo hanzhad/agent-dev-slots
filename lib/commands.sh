@@ -753,6 +753,7 @@ cmd_restart() {
 
   echo "▸ starting compose project '$proj' on $(ports_summary "$target")"
   slot_compose "$dir" "$proj" up -d
+  sweep_dangling_slot_images "$proj"
 
   provision_slot "$dir" "$proj" \
     || die "'$name' is up but was not provisioned — the reason and the fix are above; '$CALLER restart $name' runs it again."
@@ -1206,7 +1207,7 @@ cmd_up() {
       [[ -f "$stub_holder" ]] || die "refusing 'up $name --secrets' — $COMPOSE_DIR/.slot-holder (.slot-holder) is missing; the lease is not confirmed from the slot's side."
       hcontent=$(cat "$stub_holder")
     else
-      hcontent=$(slot_sh "$sid" sh -c 'cat "$1"' sh "$COMPOSE_DIR/.slot-holder" 2>/dev/null || true)
+      hcontent=$(slot_exec_stream "$sid" sh -c 'cat "$1"' sh "$COMPOSE_DIR/.slot-holder" 2>/dev/null || true)
       [[ -n "$hcontent" ]] || die "refusing 'up $name --secrets' — $COMPOSE_DIR/.slot-holder (.slot-holder) is missing; the lease is not confirmed from the slot's side."
     fi
     [[ "$(sed -n 's/^holder=//p' <<<"$hcontent")" == "$holder" ]] \

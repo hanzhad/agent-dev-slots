@@ -193,8 +193,8 @@ write_holder_file() {
         printf 'slot_id=%s\n' "$sid"
         printf 'since_epoch=%s\n' "$since"
         printf 'since_iso=%s\n' "$(iso_of_epoch "$since")"
-      } | slot_sh "$sid" sh -c \
-        'f=$1; x=$(git rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || git rev-parse --git-path info/exclude 2>/dev/null) && { mkdir -p "$(dirname "$x")" && touch "$x"; grep -qxF "$(basename "$f")" "$x" 2>/dev/null || echo "$(basename "$f")" >>"$x"; }; mkdir -p "$(dirname "$f")" && cat >"$f.tmp" && mv "$f.tmp" "$f"' sh "$hfile" 2>/dev/null || true
+      } | slot_exec_stream "$sid" sh -c \
+        'f=$1; x=$(git -c safe.directory="*" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || git -c safe.directory="*" rev-parse --git-path info/exclude 2>/dev/null) && { mkdir -p "$(dirname "$x")" && touch "$x"; grep -qxF "$(basename "$f")" "$x" 2>/dev/null || echo "$(basename "$f")" >>"$x"; }; mkdir -p "$(dirname "$f")" && cat >"$f.tmp" && mv "$f.tmp" "$f"' sh "$hfile" 2>/dev/null || true
     fi
   fi
 }
@@ -210,7 +210,7 @@ clear_holder_file() {
     if [[ -n "${DOCKER_STUB_STATE:-}" ]]; then
       rm -f "$DOCKER_STUB_STATE/volumes/$(slot_volume_of "$sid")/$hfile"
     else
-      slot_sh "$sid" sh -c 'rm -f "$1"' sh "$hfile" 2>/dev/null || true
+      slot_exec_stream "$sid" sh -c 'rm -f "$1"' sh "$hfile" 2>/dev/null || true
     fi
   fi
 }

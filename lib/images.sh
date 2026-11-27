@@ -82,7 +82,8 @@ refuse_unclean_checkout() {
 # from COMPOSE_PROJECT_NAME. A name prefix cannot tell slot 'foo' from slot
 # 'foo-bar': the two read the same once a service name is joined on.
 slot_image_names() {
-  docker image ls --filter "label=dev-container.compose-project=$1" --format '{{.Repository}}:{{.Tag}}' 2>/dev/null || true
+  docker image ls --filter "dangling=false" --filter "label=dev-container.compose-project=$1" --format '{{.Repository}}:{{.Tag}}' 2>/dev/null \
+    | awk -F: '$1 != "<none>" && $2 != "<none>"' || true
 }
 
 # The same images as slot_image_names, by id and without repeats: an image
@@ -96,12 +97,14 @@ slot_image_label() {
 }
 
 slot_images_current() {
-  local proj="$1" want="$2" img
+  local proj="$1" want="$2" img found=0
   [[ -n "$want" ]] || return 1
   while IFS= read -r img; do
     [[ -n "$img" ]] || continue
+    found=1
     [[ "$(slot_image_label "$img")" == "$want" ]] || return 1
   done < <(slot_image_names "$proj")
+  (( found ))
 }
 
 slot_image_is_stale() {
@@ -149,47 +152,28 @@ drop_leftover_slot_images() {
   done < <(slot_image_ids "$proj")
 }
 
-# "<tag> <image id>" for each image of a compose project, read before a build so
-# the build's own result can be compared with it.
-image_ids_for_tags() {
-  local img id
-  while IFS= read -r img; do
-    [[ -n "$img" ]] || continue
-    id=$(docker image inspect --format '{{.Id}}' "$img" 2>/dev/null) || continue
-    [[ -z "$id" ]] || printf '%s %s\n' "$img" "$id"
-  done < <(slot_image_names "$1")
-}
-
-# A build moves its tag to the new image and leaves the one it replaced
-# untagged. Given the listing image_ids_for_tags made before the build, remove
-# each id a tag no longer points to, unless a container (running or stopped) or
-# another tag still uses it. Only the project's own earlier images are ever
-# named; a failed removal is logged and ignored, never fatal.
-remove_superseded_images() {
-  local proj="$1" before="$2" tag old now current seen=" "
-  current=$(image_ids_for_tags "$proj")
-  while read -r tag old; do
-    [[ -n "$tag" && -n "$old" ]] || continue
-    [[ "$seen" != *" $old "* ]] || continue
-    now=$(printf '%s\n' "$current" | awk -v t="$tag" '$1 == t { print $2 }')
-    [[ -n "$now" && "$now" != "$old" ]] || continue
-    seen="$seen$old "
-    printf '%s\n' "$current" | awk -v i="$old" '$2 == i { f = 1 } END { exit !f }' && continue
-    [[ -z "$(docker ps -aq --filter "ancestor=$old" 2>/dev/null)" ]] || continue
-    if docker rmi "$old" >/dev/null 2>&1; then
-      echo "  removed the superseded image $old"
+# Remove untagged (<none>:<none>) images carrying this compose project's label
+# unless a container (running or stopped) still references them. Only the
+# project's own earlier images are ever named; a failed removal is logged and
+# ignored, never fatal.
+sweep_dangling_slot_images() {
+  local proj="$1" id
+  while IFS= read -r id; do
+    [[ -n "$id" ]] || continue
+    [[ -z "$(docker ps -aq --filter "ancestor=$id" 2>/dev/null)" ]] || continue
+    if docker image rm "$id" >/dev/null 2>&1; then
+      echo "  removed the dangling image $id"
     else
-      echo "  ! could not remove the superseded image $old of '$proj' — left in place" >&2
+      echo "  ! could not remove the dangling image $id of '$proj' — left in place" >&2
     fi
-  done <<<"$before"
+  done < <(docker image ls --filter "dangling=true" --filter "label=dev-container.compose-project=$proj" --format '{{.ID}}' 2>/dev/null || true)
 }
 
 build_slot_image() {
-  local dir="$1" proj="$2" refresh="${3:-0}" hash before
+  local dir="$1" proj="$2" refresh="${3:-0}" hash
   local -a cache_flag=()
   (( ! refresh )) || cache_flag=(--no-cache)
   hash=$(slot_build_hash) || die "cannot read the build hash of $repo_root."
-  before=$(image_ids_for_tags "$proj")
   echo "▸ building a fresh image for '$proj'"
   if ! DEV_CONTAINER_BUILD_HASH="$hash" slot_compose "$dir" "$proj" build ${cache_flag[@]+"${cache_flag[@]}"}; then
     die "building the image for '$proj' failed — nothing was started."
@@ -201,7 +185,7 @@ build_slot_image() {
   if ! slot_images_current "$proj" "$hash"; then
     die "an image of '$proj' does not carry the label dev-container.build-hash=$hash — the build did not apply the engine's overlay labels; nothing was started."
   fi
-  remove_superseded_images "$proj" "$before"
+  sweep_dangling_slot_images "$proj"
 }
 
 remove_slot_images() {
@@ -209,12 +193,12 @@ remove_slot_images() {
   local -a imgs=()
   while IFS= read -r img; do
     [[ -z "$img" ]] || imgs+=("$img")
-  done < <(slot_image_names "$proj")
+  done < <(slot_image_ids "$proj")
   (( ${#imgs[@]} == 0 )) || docker image rm -f "${imgs[@]}" >/dev/null 2>&1 || true
   imgs=()
   while IFS= read -r img; do
     [[ -z "$img" ]] || imgs+=("$img")
-  done < <(slot_image_names "$proj")
+  done < <(slot_image_ids "$proj")
   if (( ${#imgs[@]} > 0 )); then
     echo "  ! image(s) of '$proj' remain: ${imgs[*]}" >&2
     return 1

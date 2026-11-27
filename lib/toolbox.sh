@@ -35,6 +35,26 @@ toolbox_context_dir() {
   fi
 }
 
+_BUILDKIT_AVAILABLE=""
+
+has_docker_buildx() {
+  if [[ -z "$_BUILDKIT_AVAILABLE" ]]; then
+    if env -u GH_TOKEN -u GITHUB_TOKEN docker buildx version >/dev/null 2>&1; then
+      _BUILDKIT_AVAILABLE=1
+    else
+      _BUILDKIT_AVAILABLE=0
+    fi
+  fi
+  [[ "$_BUILDKIT_AVAILABLE" == 1 ]]
+}
+
+ensure_buildkit_env() {
+  export BUILDX_NO_DEFAULT_ATTESTATIONS="${BUILDX_NO_DEFAULT_ATTESTATIONS:-1}"
+  if [[ -z "${DOCKER_BUILDKIT+x}" ]] && has_docker_buildx; then
+    export DOCKER_BUILDKIT=1
+  fi
+}
+
 ensure_toolbox_image() {
   local image ctx
   image=$(toolbox_image_ref)
@@ -45,6 +65,7 @@ ensure_toolbox_image() {
     echo "toolbox Dockerfile directory not found" >&2
     return 1
   }
+  ensure_buildkit_env
   echo "▸ building toolbox image $image from $ctx" >&2
   docker build -t "$image" "$ctx"
 }

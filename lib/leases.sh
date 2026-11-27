@@ -66,7 +66,7 @@ lock_acquire() {
         done
       fi
     fi
-    sleep "$interval"
+    caller_sleep "$interval"
     slept_us=$(( slept_us + interval_us ))
     lock_take "$LOCK_DIR" && break
   done

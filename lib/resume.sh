@@ -63,6 +63,8 @@ find_archive_dir() {
 }
 
 cmd_resume() {
+  caller_lifeline_start
+  caller_warn_if_stale_launcher
   [[ $# -ge 1 ]] || die "Usage: $CALLER resume <branch or lease>"
   local target="$1"
   shift
@@ -106,6 +108,8 @@ cmd_resume() {
     local restoring_dir="$STATE/rescue/$(rescue_name)/.restoring-$lease_name"
     rm -rf "$restoring_dir" 2>/dev/null || true
     mv "$archive_dir" "$restoring_dir" || die "failed to mark archive for restoration"
+    RESUME_RESTORING_DIR="$restoring_dir"
+    RESUME_ARCHIVE_DIR="$archive_dir"
 
     meta="$restoring_dir/meta.json"
     local branch_to_checkout=""
@@ -122,6 +126,8 @@ cmd_resume() {
     echo "? allocating slot to resume $target"
     cmd_acquire --for "resume" || {
       mv "$restoring_dir" "$archive_dir" 2>/dev/null || true
+      RESUME_RESTORING_DIR=""
+      RESUME_ARCHIVE_DIR=""
       die "could not allocate slot to resume $target"
     }
 
@@ -143,6 +149,8 @@ cmd_resume() {
       tar -xf "$restoring_dir/new-files.tar" -C "$new_dir" 2>/dev/null || true
     fi
 
+    RESUME_RESTORING_DIR=""
+    RESUME_ARCHIVE_DIR=""
     rm -rf "$restoring_dir" 2>/dev/null || true
     return 0
   fi

@@ -452,7 +452,7 @@ class CallerLifelineLifecycle(DevContainerTestCase):
         scratch = os.path.join(self.harness.state_dir, "scratch")
         if not os.path.isdir(scratch):
             return []
-        return sorted(os.listdir(scratch))
+        return sorted(n for n in os.listdir(scratch) if n not in ("spec", "facts"))
 
     def test_early_refusal_exits_2_3_4_and_1_close_stdout_stderr_without_hanging_live_caller(self):
         self._write_limits({"machine_max": 0, "default": 1})

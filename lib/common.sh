@@ -10,7 +10,7 @@ die() {
 
 usage_text() {
   cat <<USAGE
-Usage: $CALLER acquire --for <holder> [--as '<name> [<ref>]'] [--ephemeral] [--toolbox] [--repo <alias>[,<alias>]...] [--all-repos] [--allow-host <host>[,<host>]]... [--wait [--timeout <duration>]] [--refresh]
+Usage: $CALLER acquire --for <holder> [--as '<name> [<ref>]'] [--ephemeral] [--toolbox] [--repo <alias>[,<alias>]...] [--all-repos] [--allow-host <host>[,<host>]]... [--wait [--timeout <duration>]] [--refresh] — --timeout bounds queue wait prior to reservation; disconnecting aborts and rolls back an uncommitted slot
        $CALLER attach <slot> --repo <alias>[,<alias>]... [--for <holder>] — clone optional catalog repositories into a live leased slot without restarting it
        $CALLER release <slot> --for <holder> [--discard] — <holder> must match the lease's own holder; --discard tears down dirty slots without rescue; 'evict' takes a slot that isn't yours; wipes the slot (containers, volumes, directory) once everything in it is delivered
        $CALLER park <slot>            — give back the lease on a slot that is NOT reuse-clean, without pretending it's free
@@ -73,7 +73,9 @@ acquire always builds a new slot, in the first free index under the machine
 cap; a directory left behind is skipped, never reused, and a slot cannot be
 named.
 --wait waits for a slot instead of exiting 2 when none is free — as long as
-it takes, or until --timeout, which exits 3. --wait queues on session limits as
+it takes, or until --timeout (which bounds queue wait prior to reservation and
+exits 3); disconnecting the acquire client at any stage aborts and rolls back
+the uncommitted slot. --wait queues on session limits as
 well as machine_max. Exit 4: non---wait refusal when the session is at its slot
 limit (keyed by CLAUDE_CODE_HOST_SESSION_ID when set, else the --as ref, with or
 without a leading local_), or missing [<ref>] when $STATE/limits.json exists

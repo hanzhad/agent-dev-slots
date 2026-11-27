@@ -26,6 +26,8 @@ CALLER=${DEV_CONTAINER_CALLER:-$0}
 
 # shellcheck source=../lib/common.sh
 source "$lib_dir/common.sh"
+# shellcheck source=../lib/caller.sh
+source "$lib_dir/caller.sh"
 # shellcheck source=../lib/project-env.sh
 source "$lib_dir/project-env.sh"
 # shellcheck source=../lib/engine-paths.sh
@@ -329,7 +331,7 @@ source "$lib_dir/slot-get.sh"
 # shellcheck source=../lib/expose.sh
 source "$lib_dir/expose.sh"
 
-trap '(( LOCK_HELD )) && lock_release; (( AGENT_TOKEN_LOCK_HELD )) && rm -f "$AGENT_TOKEN_LOCK"; (( LIVE_LOCK_HELD )) && live_gateway_cleanup; [[ -n "$RESERVED_LEASE" ]] && rm -f "$RESERVED_LEASE"' EXIT
+trap 'caller_lifeline_stop; (( LOCK_HELD )) && lock_release; (( AGENT_TOKEN_LOCK_HELD )) && rm -f "$AGENT_TOKEN_LOCK"; (( LIVE_LOCK_HELD )) && live_gateway_cleanup; [[ -n "$RESERVED_LEASE" ]] && rm -f "$RESERVED_LEASE"; caller_resume_restore' EXIT
 
 if [[ "${DEV_CONTAINER_LIB:-}" != 1 ]]; then
 case "$verb" in

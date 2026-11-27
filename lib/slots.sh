@@ -815,7 +815,10 @@ create_slot() {
   while IFS= read -r overlay; do
     echo "  with the overlay $overlay"
   done < <(slot_overlay_files "$proj")
-  slot_compose "$proj" up -d
+  if ! slot_compose "$proj" up -d; then
+    slot_compose "$proj" down --remove-orphans || true
+    die "starting compose project '$proj' failed — the reason is above this line."
+  fi
   sweep_dangling_slot_images "$proj"
 
   SLOT_DIR=""
@@ -860,6 +863,7 @@ finish_acquire() {
 
   local slot_repos_json
   slot_repos_json="${ACQUIRE_STATE_REPOS_JSON:-$(slot_repos_read_state "$slot_id")}"
+  caller_commit_or_abort "$dir" "$slot_id"
   write_lease "$(lease_file_of "$slot_id")" "$holder" "$slot_id" "$epoch" "$key" "$ssh_port" "$owner" "$repo_root" "$token_sha256" "$ephemeral" "$idle_limit" "$slot_repos_json"
   RESERVED_LEASE=""
   write_holder_file "$dir" "$holder" "$owner" "$slot_id" "$epoch"

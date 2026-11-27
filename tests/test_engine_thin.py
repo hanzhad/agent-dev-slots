@@ -350,7 +350,9 @@ class ThinCommand(FakeDockerCase):
 
         # Retry across candidate directory suffixes when the first mkdir collides.
         mkfifo_log2, probe_out2 = self._install_lifeline_probe_stubs(tmpdir, fail_first_mkdir=True)
-        os.remove(self.docker_log)
+        for log_path in (self.docker_log, mkfifo_log2, probe_out2):
+            if os.path.exists(log_path):
+                os.remove(log_path)
         retried = self.thin("acquire", "--for", "holder", TMPDIR=tmpdir)
         self.assertEqual(retried.returncode, 0, retried.stderr.decode())
         self.assertIn("DEV_CONTAINER_CALLER_LIFELINE=stdin", self.env_of(self.exec_call()))

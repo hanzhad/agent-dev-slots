@@ -109,3 +109,46 @@ teardown_dir() {
   facts_reset "$proj"
   activity_clear "$proj"
 }
+
+abort_acquire_slot() {
+  local dir="${1:-}" sid="${2:-}"
+  [[ -n "$sid" ]] || sid=$(basename "${RESERVED_LEASE:-}" .json)
+  if [[ -z "$sid" ]]; then
+    drop_reservation
+    return 0
+  fi
+
+  spec_reset "$sid"
+
+  local vol cids cid
+  vol=$(slot_volume_of "$sid")
+  local -a rm_ids=()
+  cids=$(docker ps -a -q --filter "label=com.docker.compose.project=$sid" 2>/dev/null || true)
+  for cid in $cids; do
+    [[ -n "$cid" ]] && rm_ids+=("$cid")
+  done
+  cids=$(docker ps -a -q --filter "volume=$vol" 2>/dev/null || true)
+  for cid in $cids; do
+    [[ -n "$cid" ]] && rm_ids+=("$cid")
+  done
+  if (( ${#rm_ids[@]} > 0 )); then
+    docker rm -f "${rm_ids[@]}" >/dev/null 2>&1 || true
+  fi
+
+  if [[ -f "$(compose_file_of)" ]]; then
+    slot_compose "$dir" "$sid" down -v --remove-orphans --rmi local || true
+  fi
+
+  teardown_dir "$dir" "$sid" || true
+
+  clear_slot_allow_hosts "$sid"
+  rm -f "$(slot_env_file_of "$sid")" "$STATE/ports/$sid.ports" "$(slot_overlay_of "$sid")" "$(lease_token_file_of "$sid")"
+  rm -f "$(allow_hosts_file_of "$sid")" "$(allow_hosts_base_file_of "$sid")" "$STATE/repos/$sid.json" "$STATE/seen/$sid"
+  rm -f "$STATE/keys/${sid}-"* 2>/dev/null || true
+  toolbox_clear "$sid"
+  spec_reset "$sid"
+  facts_reset "$sid"
+  activity_clear "$sid"
+
+  drop_reservation
+}

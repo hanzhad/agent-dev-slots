@@ -1003,6 +1003,203 @@ class CallerLifelineLifecycle(DevContainerTestCase):
         self.assertIn("reservation", help_text)
         self.assertTrue("disconnect" in help_text and "roll" in help_text, help_res.stdout.decode())
 
+    def test_abort_acquire_slot_keeps_reservation_when_volume_dir_or_container_remains(self):
+        sid = self.harness.slot_project_of("slot-1")
+        vol = f"{sid}-workspace"
+        res_path = self.harness.lease_path("slot-1")
+
+        def run_abort_in_lib(slot_dir_arg=""):
+            env = self.harness._env(None)
+            env["DEV_CONTAINER_LIB"] = "1"
+            body = (
+                '. "$0"; '
+                'mkdir -p "$(dirname "$(lease_file_of "$2")")"; '
+                'write_reservation "$(lease_file_of "$2")" create "abort-holder" "Caller [s1]"; '
+                'if abort_acquire_slot "$1" "$2"; then echo "ABORT_RC=0"; else echo "ABORT_RC=$?"; fi'
+            )
+            return subprocess.run(
+                ["bash", "-c", body, self.harness.script, slot_dir_arg, sid],
+                cwd=self.harness.tmp,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+            )
+
+        # Case 1: docker volume rm fails — remove_slot_volume and abort_acquire_slot return 1 and keep reservation.
+        self.harness.write_volume_labels(
+            vol,
+            {
+                "dev-container.sid": sid,
+                "dev-container.project": "demo",
+                "dev-container.origin": "https://example.invalid/fixture.git",
+                "dev-container.repo-root": self.harness.fixture_repo,
+            },
+        )
+        self.harness._write_stub("docker-real", DOCKER_STUB)
+        self.harness._write_stub(
+            "docker",
+            "#!/usr/bin/env bash\n"
+            'if [[ "${1:-}" == volume && "${2:-}" == rm ]]; then\n'
+            '  echo "volume is in use" >&2\n'
+            "  exit 1\n"
+            "fi\n"
+            'exec "$(dirname "$0")/docker-real" "$@"\n',
+        )
+        res_vol_fail = run_abort_in_lib()
+        self.assertIn("ABORT_RC=1", res_vol_fail.stdout.decode(), res_vol_fail.stderr.decode())
+        self.assertIn("keeping reservation", res_vol_fail.stderr.decode())
+        self.assertTrue(self.harness.volume_exists("slot-1"))
+        self.assertTrue(os.path.isfile(res_path), "reservation dropped while volume rm failed")
+
+        # Case 2: validate_slot_volume refuses — foreign volume and its containers are untouched, reservation stays.
+        os.remove(res_path)
+        rm_called = os.path.join(self.harness.docker_state, "foreign-rm-called")
+        self.harness.write_volume_labels(
+            vol,
+            {
+                "dev-container.sid": sid,
+                "dev-container.project": "foreign-project",
+                "dev-container.origin": "https://example.invalid/fixture.git",
+                "dev-container.repo-root": self.harness.fixture_repo,
+            },
+        )
+        self.harness._write_stub(
+            "docker",
+            "#!/usr/bin/env bash\n"
+            'if [[ "${1:-}" == ps && "$*" == *-q* && "$*" == *volume=* ]]; then\n'
+            "  echo foreign-cid\n"
+            "  exit 0\n"
+            "fi\n"
+            'if [[ "${1:-}" == rm ]]; then\n'
+            f'  : > "{rm_called}"\n'
+            "  exit 0\n"
+            "fi\n"
+            'exec "$(dirname "$0")/docker-real" "$@"\n',
+        )
+        res_foreign_vol = run_abort_in_lib()
+        self.assertIn("ABORT_RC=1", res_foreign_vol.stdout.decode(), res_foreign_vol.stderr.decode())
+        self.assertIn("refusing to remove volume", res_foreign_vol.stderr.decode())
+        self.assertIn("keeping reservation", res_foreign_vol.stderr.decode())
+        self.assertFalse(os.path.exists(rm_called), "killed container on foreign volume after validation refusal")
+        self.assertTrue(self.harness.volume_exists("slot-1"))
+        self.assertTrue(os.path.isfile(res_path), "reservation dropped when validate_slot_volume refused")
+
+        # Clean foreign volume before Case 3.
+        shutil.rmtree(os.path.join(self.harness.volumes_dir, vol))
+        os.remove(os.path.join(self.harness.volumes_dir, f"{vol}.labels"))
+        os.remove(res_path)
+        self.harness._write_stub("docker", DOCKER_STUB)
+
+        # Case 3: slot_dir_established refuses (symlink under slots_dir) — dir and reservation stay.
+        os.makedirs(self.harness.slots_dir, exist_ok=True)
+        bad_dir = os.path.join(self.harness.slots_dir, "slot-1")
+        target_dir = os.path.join(self.harness.tmp, "outside-target")
+        os.makedirs(target_dir, exist_ok=True)
+        os.symlink(target_dir, bad_dir)
+        res_bad_dir = run_abort_in_lib(bad_dir)
+        self.assertIn("ABORT_RC=1", res_bad_dir.stdout.decode(), res_bad_dir.stderr.decode())
+        self.assertIn("keeping reservation", res_bad_dir.stderr.decode())
+        self.assertTrue(os.path.islink(bad_dir))
+        self.assertTrue(os.path.isfile(res_path), "reservation dropped when slot_dir_established refused")
+        os.unlink(bad_dir)
+        os.remove(res_path)
+
+        # Case 4: container removal (docker rm -f) fails — reservation stays.
+        self.harness._write_stub(
+            "docker",
+            "#!/usr/bin/env bash\n"
+            f'if [[ "${{1:-}}" == ps && "$*" == *-q* && "$*" == *"label=com.docker.compose.project={sid}"* ]]; then\n'
+            "  echo stuck-cid\n"
+            "  exit 0\n"
+            "fi\n"
+            'if [[ "${1:-}" == rm ]]; then\n'
+            '  echo "cannot remove container" >&2\n'
+            "  exit 1\n"
+            "fi\n"
+            'exec "$(dirname "$0")/docker-real" "$@"\n',
+        )
+        res_rm_fail = run_abort_in_lib()
+        self.assertIn("ABORT_RC=1", res_rm_fail.stdout.decode(), res_rm_fail.stderr.decode())
+        self.assertIn("keeping reservation", res_rm_fail.stderr.decode())
+        self.assertTrue(os.path.isfile(res_path), "reservation dropped when docker rm -f failed")
+        os.remove(res_path)
+        self.harness._write_stub("docker", DOCKER_STUB)
+
+    def test_failed_disconnect_rollback_quarantines_slot_without_wedging_cap_until_reap_cleans_it(self):
+        self._write_limits({"default": 1})
+        fail_rollback = os.path.join(self.harness.docker_state, "fail-rollback")
+        with open(fail_rollback, "w", encoding="utf-8"):
+            pass
+        hold_sshd = os.path.join(self.harness.docker_state, "hold-sshd-rb")
+        sshd_probed = os.path.join(self.harness.docker_state, "sshd-probed-rb")
+        with open(hold_sshd, "w", encoding="utf-8"):
+            pass
+
+        self.harness._write_stub("docker-real", DOCKER_STUB)
+        self.harness._write_stub(
+            "docker",
+            "#!/usr/bin/env bash\n"
+            f'if [[ "$*" == *"pgrep sshd"* && -f "{hold_sshd}" ]]; then\n'
+            f'  : > "{sshd_probed}"\n'
+            "  exit 1\n"
+            "fi\n"
+            f'if [[ -f "{fail_rollback}" ]]; then\n'
+            '  if [[ "${1:-}" == compose && " $* " == *" down "* ]]; then\n'
+            '    echo "compose down refused" >&2\n'
+            "    exit 1\n"
+            "  fi\n"
+            '  if [[ "${1:-}" == volume && "${2:-}" == rm ]]; then\n'
+            '    echo "volume busy" >&2\n'
+            "    exit 1\n"
+            "  fi\n"
+            "fi\n"
+            'exec "$(dirname "$0")/docker-real" "$@"\n',
+        )
+
+        proc1, close1 = self._spawn_with_lifeline(
+            "acquire", "--for", "first-caller", "--as", "Caller [s1]"
+        )
+        wait_until(
+            lambda: os.path.isfile(sshd_probed),
+            timeout=15.0,
+            interval=0.02,
+            message="first acquire never reached wait_for_sshd",
+        )
+        close1()
+        _out1, err1 = proc1.communicate(timeout=10)
+        self.assertEqual(proc1.returncode, 143, err1.decode())
+        self.assertIn("keeping reservation", err1.decode())
+        self.assertTrue(os.path.isfile(self.harness.lease_path("slot-1")))
+        self.assertTrue(self.harness.volume_exists("slot-1"))
+        self.assertTrue(os.path.isfile(self.harness.running_path("slot-1")))
+        self.assertFalse(os.path.exists(self.harness.lease_token_path("slot-1")))
+
+        # Next acquire under default:1 is not wedged, keeps slot-1's failed reservation, and allocates slot-2.
+        os.remove(hold_sshd)
+        proc2, _close2 = self._spawn_with_lifeline(
+            "acquire", "--for", "second-caller", "--as", "Caller [s1]"
+        )
+        out2, err2 = proc2.communicate(timeout=60)
+        self.assertEqual(proc2.returncode, 0, err2.decode())
+        self.assertEqual(
+            self.harness.acquired_slot_name(type("Res", (), {"stdout": out2})()),
+            "slot-2",
+        )
+        self.assertTrue(
+            os.path.isfile(self.harness.lease_path("slot-1")),
+            "sweep_dead_reservations dropped a failed-rollback reservation",
+        )
+
+        # Once the underlying failure clears, reap tears down the running unleased stack + volume and drops the reservation.
+        os.remove(fail_rollback)
+        reaped = self.harness.run("reap")
+        self.assertEqual(reaped.returncode, 0, reaped.stderr.decode())
+        self.assertFalse(os.path.exists(self.harness.running_path("slot-1")))
+        self.assertFalse(self.harness.volume_exists("slot-1"))
+        self.assertFalse(os.path.exists(self.harness.lease_path("slot-1")))
+        self.assertTrue(os.path.isfile(self.harness.lease_path("slot-2")))
+
 
 if __name__ == "__main__":
     unittest.main()

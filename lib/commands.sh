@@ -557,6 +557,12 @@ cmd_reap() {
     sid_is_this_projects "$sid" || continue
     local name; name=$(slot_name_of "$sid")
     local dir="$slots_dir/$name"
+    if [[ -n "$(lease_field "$f" setup)" ]]; then
+      lease_is_live "$f" && continue
+      [[ -d "$dir" ]] || dir=""
+      RESERVED_LEASE="$f" abort_acquire_slot "$dir" "$sid" || true
+      continue
+    fi
     slot_exists "$sid" || continue
     [[ -d "$dir" ]] || dir=""
     lease_is_live "$f" && continue

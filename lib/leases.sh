@@ -332,10 +332,23 @@ drop_reservation() {
   RESERVED_LEASE=""
 }
 
+preserve_failed_reservation() {
+  local sid="${1:-}" file="${RESERVED_LEASE:-}"
+  [[ -n "$file" ]] || { [[ -n "$sid" ]] && file=$(lease_file_of "$sid"); }
+  if [[ -n "$file" && -f "$file" ]]; then
+    local updated=""
+    if updated=$(jq -c 'if type == "object" then . + {rollback_failed: true} else error end' "$file" 2>/dev/null) && [[ -n "$updated" ]]; then
+      printf '%s\n' "$updated" >"$file.tmp.$$" && mv "$file.tmp.$$" "$file"
+    fi
+  fi
+  RESERVED_LEASE=""
+}
+
 sweep_dead_reservations() {
   local f pid boot
   for f in "$STATE"/leases/*.json; do
     [[ -f "$f" ]] || continue
+    [[ "$(lease_field "$f" rollback_failed)" == "true" ]] && continue
     pid=$(lease_field "$f" pid)
     [[ -n "$pid" ]] || continue
     boot=$(lease_field "$f" boot_id)

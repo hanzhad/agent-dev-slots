@@ -173,7 +173,7 @@ caller_abort() {
   if [[ -n "${RESERVED_LEASE:-}" ]]; then
     local abort_dir="${1:-${ACQUIRED_DIR:-}}" abort_sid="${2:-${ACQUIRED_ID:-}}"
     [[ -n "$abort_sid" ]] || abort_sid=$(basename "$RESERVED_LEASE" .json)
-    abort_acquire_slot "$abort_dir" "$abort_sid"
+    abort_acquire_slot "$abort_dir" "$abort_sid" || true
   fi
   caller_resume_restore
   exit 143

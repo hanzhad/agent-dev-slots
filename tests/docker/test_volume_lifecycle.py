@@ -517,8 +517,35 @@ class TestVolumeLifecycle(RealEngineCase):
 
     def test_acquire_builds_once_and_restart_after_new_commit_leaves_no_dangling_images(self):
         checkout, compose_dir, origin, proj_prefix, _key = self._create_project("vldangle")
-        sid = f"{proj_prefix}-slot-1"
+        sid = f"0-slot-1-{proj_prefix}"
         self.addCleanup(self._cleanup_slot, compose_dir, sid)
+
+        write(
+            os.path.join(checkout, "project.env"),
+            "\n".join([
+                f"PROJECT={proj_prefix}",
+                "DEFAULT_BRANCH=main",
+                "SLOT_PORTS=SSH_PORT",
+                "COMPOSE_FILES=docker-compose.yml",
+                "SLOT_GIT_NAME=demo-agent",
+                "SLOT_GIT_EMAIL=demo-agent@example.com",
+                "",
+            ]),
+        )
+        write(
+            os.path.join(compose_dir, "ctx", "Dockerfile"),
+            "\n".join([
+                f"FROM {self.fixture}",
+                "USER root",
+                "RUN cp /bin/bash /usr/local/bin/sshd && mkdir -p /etc/ssh/authorized_keys.d && chown node /etc/ssh/authorized_keys.d",
+                "USER node",
+                'CMD ["/usr/local/bin/sshd", "-c", "while :; do sleep 3600; done"]',
+                "",
+            ]),
+        )
+        self._git(checkout, "add", "project.env", ".devcontainer/ctx/Dockerfile")
+        self._git(checkout, "commit", "-q", "-m", "configure acquire git identity and sshd")
+        self._git(checkout, "push", "-q", "origin", "main")
 
         acquired = self._in_engine(checkout, "acquire", "--for", "test-dangle")
         self.assertEqual(acquired.returncode, 0, acquired.stdout + acquired.stderr)
@@ -535,7 +562,7 @@ class TestVolumeLifecycle(RealEngineCase):
         ).stdout.split()
         self.assertEqual(dangling_after_acquire, [], f"acquire left dangling images: {dangling_after_acquire}")
 
-        write(os.path.join(checkout, "README.md"), "updated readme for rebuild\\n")
+        write(os.path.join(checkout, "README.md"), "updated readme for rebuild\n")
         self._git(checkout, "add", "README.md")
         self._git(checkout, "commit", "-q", "-m", "trigger rebuild")
         self._git(checkout, "push", "-q", "origin", "main")

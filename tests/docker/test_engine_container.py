@@ -53,7 +53,7 @@ class ListedTools(RealEngineCase):
         self.assertEqual(listed_tools() - installed, set())
 
     def test_the_tools_the_engine_calls_are_there_and_work(self):
-        for tool in ("bash", "jq", "git", "gh", "docker", "ssh-keygen", "openssl", "curl", "tar", "tini", "realpath"):
+        for tool in ("bash", "jq", "git", "gh", "docker", "ssh-keygen", "openssl", "curl", "tar", "tini", "realpath", "perl"):
             self.assertEqual(self.inside("sh", "-c", "command -v " + tool, check=False).returncode, 0, tool)
         self.assertEqual(self.inside("docker", "compose", "version", check=False).returncode, 0)
         self.assertEqual(self.inside("docker", "buildx", "version", check=False).returncode, 0)
@@ -226,6 +226,165 @@ class ThinAgainstARealEngine(RealEngineCase):
         self.assertEqual(after_entries, [])
         after = self.thin("check", cwd=self.tmp)
         self.assertIn("locked", (after.stdout + after.stderr).lower())
+
+    def test_killing_host_thin_acquire_client_rolls_back_slot_and_reacquires_slot_1_under_session_cap(self):
+        fixture = self.ensure_fixture_image()
+        checkout = os.path.join(self.projects, "lifeline-proj")
+        compose_dir = os.path.join(checkout, ".devcontainer")
+        origin = os.path.join(self.projects, "lifeline-origin.git")
+        proj_prefix = f"dct{self.uid}ll"
+        sid = f"0-slot-1-{proj_prefix}"
+        vol = f"{sid}-workspace"
+
+        def cleanup_slot():
+            self.inside(
+                "docker", "compose", "-p", sid, "down", "-v", "--remove-orphans",
+                workdir=compose_dir, check=False,
+            )
+            docker("volume", "rm", "-f", vol, check=False)
+            imgs = docker(
+                "image", "ls", "--filter", f"label=dev-container.compose-project={sid}", "-q", check=False
+            ).stdout.split()
+            if imgs:
+                docker("rmi", "-f", *imgs, check=False)
+
+        self.addCleanup(cleanup_slot)
+
+        host_tmp = os.path.join(self.tmp, "host-tmp")
+        os.makedirs(host_tmp, mode=0o1777)
+        coord_dir = os.path.join(self.state, "lifeline-coord")
+        os.makedirs(coord_dir, exist_ok=True)
+        hold_file = os.path.join(coord_dir, "hold-install")
+        held_file = os.path.join(coord_dir, "install-held")
+        child_pid_file = os.path.join(coord_dir, "child.pid")
+        write(hold_file, "1\n")
+        write(os.path.join(self.state, "limits.json"), json.dumps({"default": 1}))
+
+        compose_yml = (
+            "services:\n"
+            "  app:\n"
+            "    build: ./ctx\n"
+            "    user: node\n"
+            "    working_dir: /workspace\n"
+            "    volumes:\n"
+            "      - ${WORKSPACE_DIR:-..}:/workspace\n"
+            "    ports:\n"
+            "      - \"127.0.0.1:${SSH_PORT}:22\"\n"
+        )
+        write(
+            os.path.join(checkout, "project.env"),
+            "\n".join([
+                f"PROJECT={proj_prefix}",
+                "DEFAULT_BRANCH=main",
+                "SLOT_PORTS=SSH_PORT",
+                "COMPOSE_FILES=docker-compose.yml",
+                "SLOT_REPOS_FILE=.devcontainer/repos.json",
+                "",
+            ]),
+        )
+        write(
+            os.path.join(compose_dir, ".env"),
+            "GIT_USER_NAME=demo-agent\nGIT_USER_EMAIL=demo-agent@example.com\n",
+            mode=0o600,
+        )
+        write(os.path.join(compose_dir, "repos.json"), json.dumps({"version": 1, "repos": []}))
+        write(os.path.join(compose_dir, "docker-compose.yml"), compose_yml)
+        write(
+            os.path.join(compose_dir, "ctx", "Dockerfile"),
+            "\n".join([
+                f"FROM {fixture}",
+                "USER root",
+                "RUN cp /bin/bash /usr/local/bin/sshd && mkdir -p /etc/ssh/authorized_keys.d && chown node /etc/ssh/authorized_keys.d",
+                "USER node",
+                'CMD ["/usr/local/bin/sshd", "-c", "while :; do sleep 3600; done"]',
+                "",
+            ]),
+        )
+        write(
+            os.path.join(compose_dir, "install.sh"),
+            "\n".join([
+                "#!/usr/bin/env bash",
+                "set -euo pipefail",
+                f'if [ -f "{hold_file}" ]; then',
+                f'  sleep 300 & echo $! > "{child_pid_file}"',
+                f'  : > "{held_file}"',
+                "  wait",
+                "fi",
+                "",
+            ]),
+            mode=0o755,
+        )
+        write(os.path.join(checkout, ".gitignore"), ".devcontainer/.env\n")
+        write(os.path.join(checkout, "README.md"), "lifeline e2e\n")
+
+        subprocess.run(["git", "init", "-q", "--bare", origin], check=True)
+        subprocess.run(["git", "-C", origin, "symbolic-ref", "HEAD", "refs/heads/main"], check=True)
+        for gargs in (
+            ["init", "-q", "-b", "main"],
+            [
+                "add", "project.env", ".gitignore", "README.md",
+                ".devcontainer/repos.json", ".devcontainer/docker-compose.yml",
+                ".devcontainer/ctx/Dockerfile", ".devcontainer/install.sh",
+            ],
+            ["-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "init"],
+            ["remote", "add", "origin", origin],
+            ["push", "-q", "origin", "main"],
+            ["fetch", "-q", "origin"],
+        ):
+            subprocess.run(["git", "-C", checkout, *gargs], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+        proc = subprocess.Popen(
+            ["/bin/sh", THIN, "acquire", "--for", "first-caller", "--as", "Caller [s1]"],
+            cwd=checkout,
+            env=self.env(PWD=checkout, TMPDIR=host_tmp),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self.addCleanup(lambda: proc.poll() is None and proc.kill() or proc.wait(timeout=30))
+
+        wait_until(
+            lambda: os.path.isfile(held_file) and os.path.isfile(child_pid_file),
+            timeout=90.0,
+            interval=0.05,
+            message="real-docker acquire never reached install.sh",
+        )
+        self.assertEqual(os.listdir(host_tmp), [], "host lifeline FIFO or dir leaked past exec")
+        lease_file = os.path.join(self.state, "leases", f"{sid}.json")
+        self.assertTrue(os.path.isfile(lease_file))
+        self.assertEqual(docker("volume", "inspect", vol, check=False).returncode, 0)
+        child_pid = open(child_pid_file, encoding="utf-8").read().strip()
+
+        proc.kill()
+        proc.wait(timeout=30)
+
+        wait_until(
+            lambda: (
+                not os.path.exists(lease_file)
+                and docker("volume", "inspect", vol, check=False).returncode != 0
+                and self.inside("sh", "-c", f"[ ! -e /proc/{child_pid} ]", check=False).returncode == 0
+            ),
+            timeout=20.0,
+            interval=0.05,
+            message="engine did not abort create_slot, kill child, and roll back slot after host client kill",
+        )
+        self.assertFalse(os.path.exists(os.path.join(self.state, "ports", f"{sid}.ports")))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "env", f"{sid}.env")))
+        self.assertFalse(os.path.exists(os.path.join(self.state, "lock")))
+        self.assertEqual(os.listdir(host_tmp), [])
+
+        os.remove(hold_file)
+        second = self.script(
+            THIN, "acquire", "--for", "second-caller", "--as", "Caller [s1]",
+            cwd=checkout, env=self.env(PWD=checkout, TMPDIR=host_tmp),
+        )
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        self.assertIn(f'"id": "{sid}"', second.stdout)
+        self.assertEqual(os.listdir(host_tmp), [])
+
+        released = self.thin("release", "slot-1", "--for", "second-caller", cwd=checkout)
+        self.assertEqual(released.returncode, 0, released.stdout + released.stderr)
 
 
 @needs_docker

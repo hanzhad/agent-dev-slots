@@ -1,5 +1,6 @@
 import os
 import pty
+import shutil
 import subprocess
 import unittest
 
@@ -219,6 +220,194 @@ class ThinCommand(FakeDockerCase):
         with open(THIN, encoding="utf-8") as handle:
             text = handle.read()
         self.assertNotIn("node" + "@" + "127.0.0.1", text)
+
+    def _install_lifeline_probe_stubs(self, tmpdir, *, fail_first_mkdir=False):
+        real_mkfifo = shutil.which("mkfifo")
+        self.assertTrue(real_mkfifo, "mkfifo is required on PATH")
+        mkfifo_log = os.path.join(self.tmp, "mkfifo.log")
+        self._stub(
+            "mkfifo",
+            "#!/bin/sh\n"
+            "last=\n"
+            "for a in \"$@\"; do last=$a; done\n"
+            "dir=$(dirname \"$last\")\n"
+            "mode=$(stat -c '%a' \"$dir\" 2>/dev/null || stat -f '%Lp' \"$dir\" 2>/dev/null || echo unknown)\n"
+            f"printf '%s|%s\\n' \"$dir\" \"$mode\" >> \"{mkfifo_log}\"\n"
+            f"exec \"{real_mkfifo}\" \"$@\"\n",
+        )
+        if fail_first_mkdir:
+            real_mkdir = shutil.which("mkdir")
+            self.assertTrue(real_mkdir, "mkdir is required on PATH")
+            mkdir_once = os.path.join(self.tmp, "mkdir-failed-once")
+            self._stub(
+                "mkdir",
+                "#!/bin/sh\n"
+                "case \"$*\" in\n"
+                "  *dev-container-lifeline*)\n"
+                f"    if [ ! -e \"{mkdir_once}\" ]; then\n"
+                f"      : > \"{mkdir_once}\"\n"
+                "      echo 'mkdir: File exists' >&2\n"
+                "      exit 1\n"
+                "    fi ;;\n"
+                "esac\n"
+                f"exec \"{real_mkdir}\" \"$@\"\n",
+            )
+        probe_out = os.path.join(self.tmp, "exec-stdin-probe.txt")
+        probe_snippet = (
+            "  exec)\n"
+            "    is_pipe=0\n"
+            "    [ -p /dev/fd/0 ] && is_pipe=1\n"
+            f"    tmp_left=$(ls -A \"{tmpdir}\" 2>/dev/null | tr '\\n' ',')\n"
+            "    fd_stat=\n"
+            "    fd_flags=\n"
+            "    if [ -e /proc/self/fdinfo/0 ]; then\n"
+            "      fd_stat=$(stat -L -c '%F:%a:%h' /proc/self/fd/0 2>/dev/null || true)\n"
+            "      fd_flags=$(awk '/^flags:/ {print $2}' /proc/self/fdinfo/0 2>/dev/null || true)\n"
+            "    fi\n"
+            f"    printf 'is_pipe=%s\\ntmp_left=%s\\nfd_stat=%s\\nfd_flags=%s\\n' \"$is_pipe\" \"$tmp_left\" \"$fd_stat\" \"$fd_flags\" > \"{probe_out}\"\n"
+            "    exit \"${FAKE_EXEC_RC:-0}\" ;;"
+        )
+        self._stub(
+            "docker",
+            FAKE_DOCKER.replace('  exec) exit "${FAKE_EXEC_RC:-0}" ;;', probe_snippet, 1),
+        )
+        return mkfifo_log, probe_out
+
+    @staticmethod
+    def _read_kv(path):
+        data = {}
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as handle:
+                for line in handle:
+                    if "=" in line:
+                        k, _, v = line.rstrip("\n").partition("=")
+                        data[k] = v
+        return data
+
+    def test_lifeline_commands_attach_unlinked_rdwr_fifo_in_0700_tmpdir_disable_tty_and_pass_env(self):
+        tmpdir = os.path.join(self.tmp, "sticky-tmp")
+        os.makedirs(tmpdir, mode=0o1777)
+        mkfifo_log, probe_out = self._install_lifeline_probe_stubs(tmpdir)
+
+        cases = [
+            (("acquire", "--for", "holder"), {}),
+            (("acquire", "--for", "holder", "--", "--help"), {}),
+            (("acquire", "--for", "holder"), {SESSION_VAR: "sess-lifeline"}),
+            (("resume", "slot-1"), {}),
+            (("resume", "feat-branch", "--", "--help"), {}),
+            (("up",), {}),
+        ]
+        for args, extra_env in cases:
+            for use_pty in (False, True):
+                with self.subTest(args=args, extra_env=extra_env, use_pty=use_pty):
+                    for log_path in (self.docker_log, mkfifo_log, probe_out):
+                        if os.path.exists(log_path):
+                            os.remove(log_path)
+                    if use_pty:
+                        master, slave = pty.openpty()
+                        self.addCleanup(os.close, master)
+                        try:
+                            result = self.thin(*args, stdin=slave, TMPDIR=tmpdir, **extra_env)
+                        finally:
+                            os.close(slave)
+                    else:
+                        result = self.thin(*args, stdin=subprocess.DEVNULL, TMPDIR=tmpdir, **extra_env)
+
+                    self.assertEqual(result.returncode, 0, result.stderr.decode())
+                    call = self.exec_call()
+                    self.assertTrue({"-i", "--interactive"} & set(call), call)
+                    self.assertFalse({"-t", "-it", "-ti", "--tty"} & set(call), call)
+                    passed = self.env_of(call)
+                    self.assertIn("DEV_CONTAINER_CALLER_LIFELINE=stdin", passed)
+                    if SESSION_VAR in extra_env:
+                        self.assertTrue(
+                            {SESSION_VAR, f"{SESSION_VAR}={extra_env[SESSION_VAR]}"} & set(passed),
+                            passed,
+                        )
+
+                    self.assertTrue(os.path.isfile(mkfifo_log), "mkfifo was not called")
+                    with open(mkfifo_log, encoding="utf-8") as handle:
+                        mk_lines = [ln.strip() for ln in handle if ln.strip()]
+                    self.assertEqual(len(mk_lines), 1, mk_lines)
+                    fifo_dir, dir_mode = mk_lines[0].split("|", 1)
+                    self.assertTrue(
+                        fifo_dir.startswith(tmpdir + os.sep + "dev-container-lifeline."),
+                        fifo_dir,
+                    )
+                    self.assertEqual(dir_mode, "700")
+
+                    probe = self._read_kv(probe_out)
+                    self.assertEqual(probe.get("is_pipe"), "1", probe)
+                    self.assertEqual(probe.get("tmp_left"), "", "FIFO or temp dir was not removed before exec")
+                    if probe.get("fd_stat"):
+                        self.assertEqual(probe["fd_stat"], "fifo:600:0", probe)
+                    if probe.get("fd_flags"):
+                        acc_mode = int(probe["fd_flags"], 8) & os.O_ACCMODE
+                        self.assertEqual(acc_mode, os.O_RDWR, probe)
+
+                    self.assertEqual(os.listdir(tmpdir), [])
+                    self.assertEqual(self.forbidden_calls(), [])
+
+        # Retry across candidate directory suffixes when the first mkdir collides.
+        mkfifo_log2, probe_out2 = self._install_lifeline_probe_stubs(tmpdir, fail_first_mkdir=True)
+        for log_path in (self.docker_log, mkfifo_log2, probe_out2):
+            if os.path.exists(log_path):
+                os.remove(log_path)
+        retried = self.thin("acquire", "--for", "holder", TMPDIR=tmpdir)
+        self.assertEqual(retried.returncode, 0, retried.stderr.decode())
+        self.assertIn("DEV_CONTAINER_CALLER_LIFELINE=stdin", self.env_of(self.exec_call()))
+        with open(mkfifo_log2, encoding="utf-8") as handle:
+            retry_dir, retry_mode = handle.read().strip().split("|", 1)
+        self.assertTrue(retry_dir.endswith(".1"), retry_dir)
+        self.assertEqual(retry_mode, "700")
+        self.assertEqual(self._read_kv(probe_out2).get("tmp_left"), "")
+        self.assertEqual(os.listdir(tmpdir), [])
+        self.assertEqual(self.forbidden_calls(), [])
+
+        # Adjacent negative and boundary commands must NOT attach lifeline or suppress PTY.
+        mkfifo_log, _probe_out = self._install_lifeline_probe_stubs(tmpdir)
+        non_lifeline_exec_cases = [
+            ("acquire", "--help"),
+            ("acquire", "--for", "holder", "--help"),
+            ("resume", "--help"),
+            ("resume", "slot-1", "--help"),
+            ("up", "slot-1"),
+            ("up", "--help"),
+            ("up", "slot-1", "--toolbox"),
+            ("list",),
+            ("release", "slot-1", "--for", "holder"),
+            ("run", "slot-1", "--", "true"),
+            ("doctor",),
+            (),
+        ]
+        for args in non_lifeline_exec_cases:
+            with self.subTest(args=args):
+                for log_path in (self.docker_log, mkfifo_log):
+                    if os.path.exists(log_path):
+                        os.remove(log_path)
+                result = self.thin(*args, TMPDIR=tmpdir)
+                self.assertEqual(result.returncode, 0, result.stderr.decode())
+                passed = self.env_of(self.exec_call())
+                self.assertFalse(
+                    [e for e in passed if e.startswith("DEV_CONTAINER_CALLER_LIFELINE")],
+                    passed,
+                )
+                self.assertFalse(os.path.exists(mkfifo_log), f"mkfifo ran for {args}")
+                self.assertEqual(os.listdir(tmpdir), [])
+                self.assertEqual(self.forbidden_calls(), [])
+
+        for tty_args in (("acquire", "--help"), ("resume", "--help"), ("up", "slot-1")):
+            with self.subTest(tty_args=tty_args):
+                os.remove(self.docker_log)
+                master, slave = pty.openpty()
+                self.addCleanup(os.close, master)
+                try:
+                    self.thin(*tty_args, stdin=slave, TMPDIR=tmpdir)
+                finally:
+                    os.close(slave)
+                call = self.exec_call()
+                self.assertTrue({"-t", "-it", "-ti", "--tty"} & set(call), call)
+                self.assertNotIn("DEV_CONTAINER_CALLER_LIFELINE=stdin", self.env_of(call))
 
 
 if __name__ == "__main__":

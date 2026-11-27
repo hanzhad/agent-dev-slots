@@ -263,7 +263,7 @@ wait_for_sshd() {
   until slot_compose "$dir" "$proj" exec -T "$svc" pgrep sshd >/dev/null 2>&1; do
     waited=$((waited + 1))
     (( waited > 30 )) && die "'$proj' — sshd never came up within 30s of the container starting; check 'docker compose -p $proj logs app'."
-    sleep 1
+    caller_sleep 1
   done
 }
 

@@ -8,6 +8,8 @@ no_term_refusal() {
 }
 
 cmd_acquire() {
+  caller_lifeline_start
+  caller_warn_if_stale_launcher
   local holder="" wait=0 owner="-" timeout_seconds="" deadline=0 refresh=0 ephemeral=0 eph_idle_limit="" toolbox=0 all_repos=0
   COLLECTED_REPO_ALIASES=()
   ALLOW_HOSTS_REQUESTED=()
@@ -60,11 +62,12 @@ cmd_acquire() {
     deadline=$(( $(now_epoch) + timeout_seconds ))
   fi
   if (( toolbox )); then
-    ensure_toolbox_image || die "building the toolbox image failed — nothing was acquired."
+    caller_run_interruptible ensure_toolbox_image || die "building the toolbox image failed — nothing was acquired."
   fi
 
   local last_leased=""
   while :; do
+    caller_abort_if_dead
     WAIT_DEADLINE=$deadline
     activity_refresh
     lock_acquire
@@ -78,6 +81,7 @@ cmd_acquire() {
       seen=$(lease_state_signature)
     fi
     lock_release
+    caller_abort_if_dead "${ACQUIRED_DIR:-}" "${ACQUIRED_ID:-}"
     if (( ok )); then
       local slot_name="${ACQUIRED_NAME:-$(basename "$ACQUIRED_DIR")}"
       if (( toolbox )); then
@@ -85,7 +89,10 @@ cmd_acquire() {
       else
         toolbox_clear "$ACQUIRED_ID"
       fi
-      create_slot "$slot_name" "$refresh" || { clear_slot_allow_hosts "$ACQUIRED_ID"; toolbox_clear "$ACQUIRED_ID"; die "creating '$slot_name' failed — the reason is above this line."; }
+      ACQUIRE_STATE_REPOS_JSON=$(slot_repos_to_state_entries "$ACQUIRE_SELECTED_REPOS_JSON")
+      caller_run_interruptible create_slot "$slot_name" "$refresh" || { clear_slot_allow_hosts "$ACQUIRED_ID"; toolbox_clear "$ACQUIRED_ID"; die "creating '$slot_name' failed — the reason is above this line."; }
+      SLOT_DIR="$ACQUIRED_DIR"
+      SLOT_ID="$ACQUIRED_ID"
       finish_acquire "$ACQUIRED_DIR" "$ACQUIRED_ID" "$holder" "$owner" "$ephemeral" "$eph_idle_limit"
       resync_node_modules "$slot_name" "$ACQUIRED_DIR" "$ACQUIRED_ID" || true
       return 0
@@ -110,6 +117,9 @@ cmd_acquire() {
       echo "run 'acquire --wait --for $holder' (e.g. in the background) to wait for one" >&2
       exit 2
     fi
+    local interval interval_us
+    read -r interval interval_us <<<"$(wait_interval_spec)"
+    [[ "$(lease_state_signature)" == "$seen" ]] || continue
     local leased s_used wait_key wait_limit=30
     if [[ "$ACQUIRE_BLOCKED" == memory ]]; then
       wait_key="memory/$MEMORY_FLOOR"
@@ -138,16 +148,14 @@ cmd_acquire() {
         last_leased="$wait_key"
       fi
     fi
-    local interval interval_us
-    read -r interval interval_us <<<"$(wait_interval_spec)"
     local start_sec=$SECONDS slept_us=0 wall_us=0 elapsed_us=0 wait_limit_us=$(( wait_limit * 1000000 ))
     while (( elapsed_us < wait_limit_us )); do
-      [[ "$(lease_state_signature)" == "$seen" ]] || break
-      sleep "$interval"
+      caller_sleep "$interval"
       slept_us=$(( slept_us + interval_us ))
       wall_us=$(( (SECONDS - start_sec) * 1000000 ))
       elapsed_us=$(( slept_us > wall_us ? slept_us : wall_us ))
       wait_deadline_check
+      [[ "$(lease_state_signature)" == "$seen" ]] || break
     done
   done
 }
@@ -549,6 +557,12 @@ cmd_reap() {
     sid_is_this_projects "$sid" || continue
     local name; name=$(slot_name_of "$sid")
     local dir="$slots_dir/$name"
+    if [[ -n "$(lease_field "$f" setup)" ]]; then
+      lease_is_live "$f" && continue
+      [[ -d "$dir" ]] || dir=""
+      RESERVED_LEASE="$f" abort_acquire_slot "$dir" "$sid" || true
+      continue
+    fi
     slot_exists "$sid" || continue
     [[ -d "$dir" ]] || dir=""
     lease_is_live "$f" && continue
